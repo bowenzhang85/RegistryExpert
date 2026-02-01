@@ -9,33 +9,53 @@ RegistryExpert is a .NET 8.0 Windows Forms application for viewing and analyzing
 ```bash
 dotnet restore              # Restore dependencies
 dotnet build                # Build (debug)
-dotnet build -c Release     # Build (release)
 dotnet run                  # Run the application
+dotnet build -c Release     # Build (release)
 
 # Publish self-contained executable
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\publish
 ```
 
+## CI/CD
+
+GitHub Actions (`.github/workflows/release.yml`) auto-builds releases on version tags:
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+### Release Checklist
+
+**IMPORTANT: Before pushing a new release tag, always verify:**
+
+1. **Update version in `RegistryExpert.csproj`** - The `<Version>` element must match your tag:
+   ```xml
+   <Version>1.0.1</Version>
+   ```
+2. **Commit the version change** before creating the tag
+3. **Verify the About dialog** shows the correct version by running locally:
+   ```bash
+   dotnet publish -c Release -r win-x64 --self-contained true -o publish
+   # Run publish\RegistryExpert.exe and check Help > About
+   ```
+4. **Create and push the tag** only after confirming the version is correct
+
 ## Testing
 
-**No automated test suite exists.** Manual testing should verify:
-- Loading hive types: SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, USRCLASS.DAT, Amcache.hve
-- Search across keys, values, and data
-- Theme switching (dark/light)
-- Export and Compare features
+**No automated tests.** Manual testing: load SYSTEM/SOFTWARE/SAM/SECURITY/NTUSER.DAT hives, search, theme switching, export, compare features.
 
 ## Project Structure
 
 ```
-Program.cs              - Entry point
-MainForm.cs             - Main window (tree/list view, menus, toolbar)
-ModernTheme.cs          - Theme system (dark/light) and UI styling
-OfflineRegistryParser.cs - Registry hive loading and parsing
+Program.cs               - Entry point
+MainForm.cs              - Main window - tree/list view, menus, toolbar
+ModernTheme.cs           - Theme system (dark/light) and UI factory methods
+OfflineRegistryParser.cs - Registry hive loading wrapper
 RegistryInfoExtractor.cs - Extracts system/user/network info from hives
-CompareForm.cs          - Side-by-side hive comparison UI
-SearchForm.cs           - Search dialog
-TimelineForm.cs         - Timeline view of registry modifications
-AppSettings.cs          - Persisted user settings (JSON)
+RegistryComparer.cs      - Diff logic for comparing two hives
+CompareForm.cs           - Side-by-side hive comparison UI
+SearchForm.cs            - Search dialog with cancellation support
+TimelineForm.cs          - Timeline view of registry modifications
+AppSettings.cs           - Persisted settings (JSON in %LOCALAPPDATA%)
 ```
 
 ## Dependencies
@@ -43,7 +63,7 @@ AppSettings.cs          - Persisted user settings (JSON)
 - **Registry** (v1.3.4): Offline registry hive parser
 - **Superpower** (v3.1.0): Parser combinator (Registry dependency)
 
-## Code Style Guidelines
+## Code Style
 
 ### Naming Conventions
 
@@ -52,103 +72,81 @@ AppSettings.cs          - Persisted user settings (JSON)
 | Classes | PascalCase | `OfflineRegistryParser` |
 | Methods | PascalCase | `LoadHive`, `GetRootKey` |
 | Private fields | `_camelCase` | `_parser`, `_hiveType` |
-| Local variables | camelCase | `computerName`, `shutdownTime` |
-| Properties | PascalCase | `IsLoaded`, `CurrentHiveType` |
-| UI controls | `_descriptiveSuffix` | `_treeView`, `_statusPanel` |
-
-### Imports
-
-Order: System namespaces → Third-party → Project namespaces
-
-```csharp
-using System;
-using System.Collections.Generic;
-using System.Windows.Forms;
-using Registry;
-using Registry.Abstractions;
-
-namespace RegistryExpert
-{
-```
+| Local variables | camelCase | `computerName` |
+| UI controls | `_descriptiveName` | `_treeView`, `_searchButton` |
 
 ### Nullability
 
-**Nullable reference types are enabled.** Always handle nullability explicitly:
+**Nullable reference types enabled.** Handle nulls explicitly:
 
 ```csharp
 private RegistryHive? _hive;
-private string? _filePath;
-
 public RegistryKey? GetRootKey() => _hive?.Root;
 
-// Use null-conditional and null-coalescing operators
-var name = value?.ToString() ?? "Unknown";
+// IMPORTANT: Use null-conditional before method calls
+switch (value.ValueType?.ToUpperInvariant() ?? "")  // NOT: value.ValueType.ToUpperInvariant()
 ```
 
 ### Error Handling
 
-- Try-catch for file I/O and parsing operations
-- Log to `System.Diagnostics.Debug.WriteLine()` for debugging
-- Wrap exceptions with context in public APIs
-- Silently catch in recursive operations to avoid breaking traversal
-
 ```csharp
-catch (Exception ex)
-{
+try {
+    // risky operation
+} catch (Exception ex) {
     System.Diagnostics.Debug.WriteLine($"Error: {ex.Message}");
-    throw new Exception($"Failed to load hive: {ex.Message}", ex);
 }
 ```
 
-### Dispose Pattern
-
-Implement full `IDisposable` for classes holding resources:
+### Async & Cancellation
 
 ```csharp
-public class MyClass : IDisposable
-{
-    private bool _disposed;
+private CancellationTokenSource? _cts;
 
-    public void Dispose() { Dispose(true); GC.SuppressFinalize(this); }
-    
-    protected virtual void Dispose(bool disposing)
-    {
-        if (!_disposed) { /* cleanup */ _disposed = true; }
-    }
-    
-    ~MyClass() { Dispose(false); }
+private async Task DoWorkAsync()
+{
+    _cts = new CancellationTokenSource();
+    await Task.Run(() => Work(_cts.Token), _cts.Token).ConfigureAwait(true);
+    UpdateUI();  // Safe - ConfigureAwait(true) returns to UI thread
+}
+
+private void CancelButton_Click(object? s, EventArgs e) => _cts?.Cancel();
+```
+
+### Resource Disposal
+
+**Dispose images explicitly** - PictureBox.Image is not auto-disposed:
+
+```csharp
+if (ctrl is PictureBox pb && pb.Image != null)
+{
+    pb.Image.Dispose();
+    pb.Image = null;
 }
 ```
 
 ### Windows Forms Patterns
 
 ```csharp
-// UI control declarations - use null! for InitializeComponent-initialized controls
+// UI controls - use null! for InitializeComponent-initialized controls
 private TreeView _treeView = null!;
-private Panel _statusPanel = null!;
 
 // Always apply theme
 ModernTheme.ApplyTo(this);
-ModernTheme.ApplyTo(_treeView);
 
-// Theme change subscription (unsubscribe in FormClosing)
-private EventHandler? _themeChangedHandler;
-_themeChangedHandler = (s, e) => ApplyTheme();
-ModernTheme.ThemeChanged += _themeChangedHandler;
-
-// Unsubscribe in FormClosing to prevent memory leaks
-ModernTheme.ThemeChanged -= _themeChangedHandler;
+// Subscribe to theme changes, unsubscribe in FormClosing
+private EventHandler? _themeHandler;
+_themeHandler = (s, e) => ApplyTheme();
+ModernTheme.ThemeChanged += _themeHandler;
+FormClosing += (s, e) => ModernTheme.ThemeChanged -= _themeHandler;
 ```
 
-### Async Patterns
+### Data Validation
+
+Validate external data (e.g., registry values) before using:
 
 ```csharp
-// Use Task.Run for CPU work, ConfigureAwait(true) to return to UI thread
-private async Task LoadHiveFileAsync(string filePath)
-{
-    await Task.Run(() => _parser.LoadHive(filePath)).ConfigureAwait(true);
-    PopulateTreeView(); // Safe - back on UI thread
-}
+if (year < 1 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31)
+    return "Unknown";
 ```
 
 ### Common Patterns
@@ -162,37 +160,25 @@ return startType switch { "0" => "Boot", "1" => "System", _ => startType };
 
 // LINQ
 keys.OrderBy(k => k.KeyName).Take(50).ToList();
-
-// StringBuilder for loops
-var sb = new StringBuilder();
-foreach (var item in items) sb.AppendLine(item);
 ```
-
-### Performance
-
-- `HashSet<T>` for O(1) lookups in search
-- `ConcurrentDictionary` for thread-safe collections  
-- Cache frequently accessed registry keys
-- Limit recursion depth (`MaxSearchDepth = 100`)
 
 ## Theme System
 
 Access via `ModernTheme` static class:
 - Colors: `ModernTheme.Background`, `ModernTheme.TextPrimary`, `ModernTheme.Accent`
-- Apply: `ModernTheme.ApplyTo(control)` - overloads for Form, TreeView, ListView, etc.
+- Apply: `ModernTheme.ApplyTo(control)`
 - Switch: `ModernTheme.SetTheme(ThemeType.Dark)` or `ModernTheme.ToggleTheme()`
-- Events: Subscribe to `ModernTheme.ThemeChanged` for dynamic updates
+- Events: `ModernTheme.ThemeChanged`
 
 ## Adding New Features
 
 ### New Analysis Category
 1. Add extraction method in `RegistryInfoExtractor.cs`
 2. Create `AnalysisSection` with `AnalysisItem` entries
-3. Include registry paths and value names
-4. Add to `GetFullAnalysis()` or category method
+3. Add to `GetFullAnalysis()`
 
 ### New Form
 1. Inherit from `Form`, call `ModernTheme.ApplyTo(this)`
-2. Track in `MainForm` for disposal (e.g., `_myForm?.Dispose()`)
-3. Subscribe to `ThemeChanged`, unsubscribe in `FormClosing`
-4. Implement dispose pattern if holding resources
+2. Subscribe to `ThemeChanged`, unsubscribe in `FormClosing`
+3. Use `CancellationTokenSource` for long-running operations
+4. Track in `MainForm` for disposal
