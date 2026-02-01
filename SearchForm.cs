@@ -44,6 +44,21 @@ namespace RegistryExpert
             }
         }
 
+        /// <summary>
+        /// Handle DPI changes when moving between monitors with different DPI settings.
+        /// </summary>
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            // Reset the cached DPI scale factor so it gets recalculated
+            DpiHelper.ResetScaleFactor();
+            
+            base.OnDpiChanged(e);
+            
+            // Update controls that need manual DPI adjustment
+            _resultsGrid.RowTemplate.Height = DpiHelper.Scale(28);
+            _resultsGrid.ColumnHeadersHeight = DpiHelper.Scale(32);
+        }
+
         private void InitializeComponent()
         {
             this.Text = "Search Registry";
@@ -51,15 +66,17 @@ namespace RegistryExpert
             this.StartPosition = FormStartPosition.CenterParent;
             this.FormBorderStyle = FormBorderStyle.Sizable;
             this.MinimumSize = new Size(700, 500);
+            this.AutoScaleMode = AutoScaleMode.Dpi;
             ModernTheme.ApplyTo(this);
 
-            // Top search panel
-            var topPanel = new Panel
+            // Top search panel - use FlowLayoutPanel for DPI scaling
+            var topPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 70,
+                Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(20)
+                Padding = new Padding(15, 10, 15, 10),
+                WrapContents = false
             };
 
             var searchLabel = new Label
@@ -67,26 +84,27 @@ namespace RegistryExpert
                 Text = "Search for:",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(20, 24),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 10, 0)
             };
 
             _searchBox = new TextBox
             {
-                Location = new Point(100, 20),
-                Size = new Size(550, 28),
-                Font = ModernTheme.RegularFont
+                Size = DpiHelper.ScaleSize(550, 28),
+                Font = ModernTheme.RegularFont,
+                Margin = new Padding(0, 0, 10, 0)
             };
             ModernTheme.ApplyTo(_searchBox);
             _searchBox.KeyDown += async (s, e) => { if (e.KeyCode == Keys.Enter) await SearchAsync(); };
 
-            _searchButton = ModernTheme.CreateButton("🔍 Search", async (s, e) => await SearchAsync());
-            _searchButton.Location = new Point(660, 18);
-            _searchButton.Size = new Size(100, 32);
+            _searchButton = ModernTheme.CreateButton("Search", async (s, e) => await SearchAsync());
+            _searchButton.AutoSize = true;
+            _searchButton.Padding = new Padding(15, 5, 15, 5);
+            _searchButton.Margin = new Padding(0, 0, 10, 0);
 
-            _cancelButton = ModernTheme.CreateButton("✕ Cancel", (s, e) => CancelSearch());
-            _cancelButton.Location = new Point(770, 18);
-            _cancelButton.Size = new Size(90, 32);
+            _cancelButton = ModernTheme.CreateButton("Cancel", (s, e) => CancelSearch());
+            _cancelButton.AutoSize = true;
+            _cancelButton.Padding = new Padding(15, 5, 15, 5);
             _cancelButton.BackColor = ModernTheme.Error;
             _cancelButton.Visible = false;
 
@@ -96,7 +114,7 @@ namespace RegistryExpert
             var statusPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(12, 0, 12, 0)
             };
@@ -115,7 +133,7 @@ namespace RegistryExpert
             _previewPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 120,
+                Height = DpiHelper.Scale(120),
                 BackColor = ModernTheme.TreeViewBack,
                 Padding = new Padding(10)
             };
@@ -126,7 +144,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.BoldFont,
                 Dock = DockStyle.Top,
-                Height = 20
+                Height = DpiHelper.Scale(20)
             };
 
             _previewPathLabel = new Label
@@ -135,7 +153,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.Accent,
                 Font = ModernTheme.MonoFont,
                 Dock = DockStyle.Top,
-                Height = 22,
+                Height = DpiHelper.Scale(22),
                 AutoEllipsis = true
             };
 
@@ -158,9 +176,9 @@ namespace RegistryExpert
             var resultsHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 36,
+                Height = DpiHelper.Scale(36),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(12, 0, 12, 0)
+                Padding = DpiHelper.ScalePadding(12, 0, 12, 0)
             };
 
             var resultsLabel = new Label
@@ -185,8 +203,8 @@ namespace RegistryExpert
             // Results DataGridView for better column handling
             _resultsGrid = new DataGridView { Dock = DockStyle.Fill };
             ModernTheme.ApplyTo(_resultsGrid);
-            _resultsGrid.RowTemplate.Height = 26;  // Override default
-            _resultsGrid.ColumnHeadersHeight = 30; // Override default
+            _resultsGrid.RowTemplate.Height = DpiHelper.Scale(28);  // Scale for DPI
+            _resultsGrid.ColumnHeadersHeight = DpiHelper.Scale(32); // Scale for DPI
 
             // Add columns with proper sizing
             _resultsGrid.Columns.Add("keyPath", "Key Path");
@@ -244,12 +262,13 @@ namespace RegistryExpert
             this.Controls.Add(topPanel);
             this.Controls.Add(statusPanel);
 
-            // Resize handler for search box
+            // Resize handler for search box - make it expand to fill available space
+            // Note: Setting Left on buttons is not needed in FlowLayoutPanel (it manages positioning automatically)
             this.Resize += (s, e) =>
             {
-                _searchBox.Width = Math.Max(200, topPanel.Width - 380);
-                _searchButton.Left = _searchBox.Right + 10;
-                _cancelButton.Left = _searchButton.Right + 10;
+                // Calculate available width after accounting for label, buttons, margins, and padding
+                // Using DpiHelper.Scale for DPI-aware minimum width
+                _searchBox.Width = Math.Max(DpiHelper.Scale(200), topPanel.Width - DpiHelper.Scale(380));
             };
         }
 

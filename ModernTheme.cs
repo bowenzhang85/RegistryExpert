@@ -198,9 +198,10 @@ namespace RegistryExpert
             tree.Font = TreeFont;
             tree.BorderStyle = BorderStyle.None;
             tree.LineColor = Border;
-            tree.Indent = 24;
-            tree.ItemHeight = 26;
+            tree.Indent = 24;  // Don't scale - let AutoScaleMode handle it
+            tree.ItemHeight = 26;  // Don't scale - allows +/- button hit-detection to work properly
             tree.ShowLines = false;  // Cleaner modern look
+            tree.ShowPlusMinus = true;  // Ensure expand/collapse buttons work on single click
             tree.FullRowSelect = true;
         }
 
@@ -329,7 +330,7 @@ namespace RegistryExpert
             grid.ReadOnly = true;
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            grid.RowTemplate.Height = 28;
+            grid.RowTemplate.Height = DpiHelper.Scale(28);
             grid.Font = DataFont;
             
             // Ensure scrollbars are visible
@@ -350,7 +351,7 @@ namespace RegistryExpert
             grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = TreeViewBack;
             grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = TextSecondary;
             grid.ColumnHeadersDefaultCellStyle.Font = DataBoldFont;
-            grid.ColumnHeadersHeight = 32;
+            grid.ColumnHeadersHeight = DpiHelper.Scale(32);
             grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
         }
 
@@ -450,7 +451,7 @@ namespace RegistryExpert
         {
             var panel = new Panel
             {
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 Dock = DockStyle.Top,
                 BackColor = Surface,
                 Padding = new Padding(10, 0, 0, 0)
@@ -483,7 +484,7 @@ namespace RegistryExpert
                 ForeColor = Color.White,
                 Font = BoldFont,
                 Cursor = Cursors.Hand,
-                Height = 36,
+                Height = DpiHelper.Scale(36),
                 Padding = new Padding(16, 0, 16, 0)
             };
             btn.FlatAppearance.BorderSize = 0;
@@ -509,7 +510,7 @@ namespace RegistryExpert
                 ForeColor = Accent,
                 Font = BoldFont,
                 Cursor = Cursors.Hand,
-                Height = 36,
+                Height = DpiHelper.Scale(36),
                 Padding = new Padding(16, 0, 16, 0)
             };
             btn.FlatAppearance.BorderColor = Accent;

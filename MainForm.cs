@@ -122,9 +122,31 @@ namespace RegistryExpert
             base.Dispose(disposing);
         }
 
+        /// <summary>
+        /// Handle DPI changes when moving between monitors with different DPI settings.
+        /// </summary>
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            // Reset the cached DPI scale factor so it gets recalculated
+            DpiHelper.ResetScaleFactor();
+            
+            base.OnDpiChanged(e);
+            
+            // Update controls that need manual DPI adjustment
+            _toolbarPanel.Height = DpiHelper.Scale(52);
+            _statusPanel.Height = DpiHelper.Scale(32);
+            
+            // Refresh the toolbar to recalculate button layouts
+            CreateModernToolbar();
+        }
+
         private void InitializeComponent()
         {
             this.SuspendLayout();
+            
+            // Enable DPI scaling
+            this.AutoScaleMode = AutoScaleMode.Dpi;
+            this.AutoScaleDimensions = new SizeF(96F, 96F);
             
             // Form settings
             this.Text = "Registry Expert";
@@ -162,7 +184,7 @@ namespace RegistryExpert
             _toolbarPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 52,
+                Height = DpiHelper.Scale(52),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(8, 8, 8, 8)
             };
@@ -172,7 +194,7 @@ namespace RegistryExpert
             _statusPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(16, 0, 16, 0)
             };
@@ -336,7 +358,7 @@ namespace RegistryExpert
             // Card-like center panel with subtle border
             var centerPanel = new Panel
             {
-                Size = new Size(450, 400),
+                Size = DpiHelper.ScaleSize(450, 400),
                 BackColor = ModernTheme.Surface
             };
             centerPanel.Paint += (s, e) =>
@@ -358,8 +380,8 @@ namespace RegistryExpert
             // Program icon - load from PNG for best quality
             var iconBox = new PictureBox
             {
-                Size = new Size(72, 72),
-                Location = new Point((450 - 72) / 2, 30),
+                Size = DpiHelper.ScaleSize(72, 72),
+                Location = DpiHelper.ScalePoint((450 - 72) / 2, 30),
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent
             };
@@ -379,8 +401,8 @@ namespace RegistryExpert
                 Font = ModernTheme.TitleFont,
                 ForeColor = ModernTheme.TextPrimary,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = new Size(450, 45),
-                Location = new Point(0, 115)
+                Size = DpiHelper.ScaleSize(450, 45),
+                Location = DpiHelper.ScalePoint(0, 115)
             };
             
             var subtitleLabel = new Label
@@ -389,18 +411,18 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextSecondary,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = new Size(450, 50),
-                Location = new Point(0, 160)
+                Size = DpiHelper.ScaleSize(450, 50),
+                Location = DpiHelper.ScalePoint(0, 160)
             };
             
             var openButton = ModernTheme.CreateButton("  Open Hive File  ", OpenHive_Click);
-            openButton.Size = new Size(160, 40);
-            openButton.Location = new Point(145, 225);
+            openButton.Size = DpiHelper.ScaleSize(160, 40);
+            openButton.Location = DpiHelper.ScalePoint(145, 225);
             
             // Compare button
             var compareButton = ModernTheme.CreateButton("  Compare Hives  ", (s, e) => ShowCompare_Click(s, e));
-            compareButton.Size = new Size(160, 40);
-            compareButton.Location = new Point(145, 280);
+            compareButton.Size = DpiHelper.ScaleSize(160, 40);
+            compareButton.Location = DpiHelper.ScalePoint(145, 280);
             compareButton.BackColor = ModernTheme.Surface;
             compareButton.ForeColor = ModernTheme.TextPrimary;
             compareButton.FlatAppearance.BorderColor = ModernTheme.Accent;
@@ -413,8 +435,8 @@ namespace RegistryExpert
                 Font = ModernTheme.SmallFont,
                 ForeColor = ModernTheme.TextDisabled,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = new Size(450, 25),
-                Location = new Point(0, 340)
+                Size = DpiHelper.ScaleSize(450, 25),
+                Location = DpiHelper.ScalePoint(0, 340)
             };
             
             centerPanel.Controls.AddRange(new Control[] { iconBox, titleLabel, subtitleLabel, openButton, compareButton, hintLabel });
@@ -474,7 +496,7 @@ namespace RegistryExpert
         {
             var panel = new Panel
             {
-                Height = 40,
+                Height = DpiHelper.Scale(40),
                 Dock = DockStyle.Top,
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(16, 0, 16, 0)
@@ -491,11 +513,11 @@ namespace RegistryExpert
                 // Icon
                 using var iconFont = new Font("Segoe MDL2 Assets", 12F);
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
-                e.Graphics.DrawString(icon, iconFont, iconBrush, 16, (panel.Height - 12) / 2);
+                e.Graphics.DrawString(icon, iconFont, iconBrush, DpiHelper.Scale(16), (panel.Height - iconFont.Height) / 2);
                 
                 // Text
                 using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
-                e.Graphics.DrawString(text, ModernTheme.HeaderFont, textBrush, 40, (panel.Height - ModernTheme.HeaderFont.Height) / 2);
+                e.Graphics.DrawString(text, ModernTheme.HeaderFont, textBrush, DpiHelper.Scale(40), (panel.Height - ModernTheme.HeaderFont.Height) / 2);
             };
             
             // Bottom border
@@ -594,8 +616,8 @@ namespace RegistryExpert
                 BackColor = Color.Transparent,
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.RegularFont,
-                Size = new Size(105, 36),
-                Margin = new Padding(2),
+                Size = DpiHelper.ScaleSize(105, 36),
+                Margin = DpiHelper.ScalePadding(2),
                 Cursor = Cursors.Hand
             };
             btn.FlatAppearance.BorderSize = 0;
@@ -609,14 +631,19 @@ namespace RegistryExpert
                 var g = e.Graphics;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 
-                // Draw icon
+                // Draw icon - font sizes in points are already DPI-aware, don't scale them
                 using var iconFont = new Font("Segoe MDL2 Assets", 13F);
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
-                g.DrawString(icon, iconFont, iconBrush, 8, (btn.Height - 16) / 2);
+                var iconSize = g.MeasureString(icon, iconFont);
+                var iconX = DpiHelper.Scale(10);
+                var iconY = (btn.Height - iconSize.Height) / 2;
+                g.DrawString(icon, iconFont, iconBrush, iconX, iconY);
                 
-                // Draw text
+                // Draw text after icon with proper gap
                 using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
-                g.DrawString(text, ModernTheme.RegularFont, textBrush, 30, (btn.Height - ModernTheme.RegularFont.Height) / 2);
+                var textX = iconX + iconSize.Width + DpiHelper.Scale(4);  // 4px gap after icon
+                var textY = (btn.Height - ModernTheme.RegularFont.Height) / 2;
+                g.DrawString(text, ModernTheme.RegularFont, textBrush, textX, textY);
             };
             
             _sharedToolTip ??= new ToolTip();
@@ -629,9 +656,9 @@ namespace RegistryExpert
         {
             return new Panel
             {
-                Width = 1,
-                Height = 28,
-                Margin = new Padding(8, 4, 8, 4),
+                Width = DpiHelper.Scale(1),
+                Height = DpiHelper.Scale(28),
+                Margin = DpiHelper.ScalePadding(8, 4, 8, 4),
                 BackColor = ModernTheme.Border
             };
         }
@@ -1149,9 +1176,9 @@ namespace RegistryExpert
             var form = new Form
             {
                 Text = $"Registry Statistics - {_parser.CurrentHiveType}",
-                Size = new Size(900, 650),
+                Size = DpiHelper.ScaleSize(900, 650),
                 StartPosition = FormStartPosition.CenterScreen,
-                MinimumSize = new Size(700, 500),
+                MinimumSize = DpiHelper.ScaleSize(700, 500),
                 ShowInTaskbar = true
             };
             ModernTheme.ApplyTo(form);
@@ -1169,7 +1196,7 @@ namespace RegistryExpert
             var headerPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 100,
+                Height = DpiHelper.Scale(110),  // Increased for stat cards
                 BackColor = ModernTheme.Surface
             };
             headerPanel.Paint += (s, ev) =>
@@ -1186,7 +1213,7 @@ namespace RegistryExpert
                 Text = "\uE9D9  Registry Statistics",
                 Font = ModernTheme.HeaderFont,
                 ForeColor = ModernTheme.TextPrimary,
-                Location = new Point(20, 15),
+                Location = DpiHelper.ScalePoint(20, 15),
                 AutoSize = true
             };
             titleLabel.Paint += (s, ev) =>
@@ -1198,8 +1225,8 @@ namespace RegistryExpert
 
             var summaryFlow = new FlowLayoutPanel
             {
-                Location = new Point(20, 50),
-                Size = new Size(850, 40),
+                Location = DpiHelper.ScalePoint(20, 50),
+                Size = DpiHelper.ScaleSize(850, 50),  // Increased height for stat cards
                 FlowDirection = FlowDirection.LeftToRight,
                 BackColor = Color.Transparent
             };
@@ -1346,7 +1373,7 @@ namespace RegistryExpert
                 ShowPlusMinus = true,
                 ShowRootLines = true,
                 FullRowSelect = true,
-                ItemHeight = 26,
+                ItemHeight = DpiHelper.Scale(26),  // Scale for OwnerDrawAll mode
                 DrawMode = TreeViewDrawMode.OwnerDrawAll
             };
 
@@ -1387,60 +1414,100 @@ namespace RegistryExpert
                 using var bgBrush = new SolidBrush(bgColor);
                 g.FillRectangle(bgBrush, e.Bounds);
 
-                // Expand/collapse button area
-                int indent = e.Node.Level * 20 + 5;
+                // Expand/collapse button area - scale for DPI
+                int levelIndent = DpiHelper.Scale(20);
+                int baseIndent = DpiHelper.Scale(5);
+                int indent = e.Node.Level * levelIndent + baseIndent;
+                int btnSize = DpiHelper.Scale(14);
+                int btnOffset = DpiHelper.Scale(5);
                 
                 // Draw +/- button if has children
                 if (e.Node.Nodes.Count > 0 || (e.Node.Tag as string) != "dummy")
                 {
-                    var btnRect = new Rectangle(indent, e.Bounds.Y + 5, 14, 14);
+                    var btnRect = new Rectangle(indent, e.Bounds.Y + (e.Bounds.Height - btnSize) / 2, btnSize, btnSize);
                     using var btnPen = new Pen(ModernTheme.TextSecondary, 1);
                     g.DrawRectangle(btnPen, btnRect);
                     
-                    // Horizontal line
-                    g.DrawLine(btnPen, btnRect.X + 3, btnRect.Y + 7, btnRect.X + 11, btnRect.Y + 7);
+                    // Horizontal line (centered in button)
+                    int lineMargin = DpiHelper.Scale(3);
+                    int centerY = btnRect.Y + btnSize / 2;
+                    int centerX = btnRect.X + btnSize / 2;
+                    g.DrawLine(btnPen, btnRect.X + lineMargin, centerY, btnRect.Right - lineMargin, centerY);
                     
                     // Vertical line (if collapsed)
                     if (!e.Node.IsExpanded && e.Node.Nodes.Count > 0 && 
                         !(e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy"))
                     {
-                        g.DrawLine(btnPen, btnRect.X + 7, btnRect.Y + 3, btnRect.X + 7, btnRect.Y + 11);
+                        g.DrawLine(btnPen, centerX, btnRect.Y + lineMargin, centerX, btnRect.Bottom - lineMargin);
                     }
                     else if (!e.Node.IsExpanded && e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy")
                     {
-                        g.DrawLine(btnPen, btnRect.X + 7, btnRect.Y + 3, btnRect.X + 7, btnRect.Y + 11);
+                        g.DrawLine(btnPen, centerX, btnRect.Y + lineMargin, centerX, btnRect.Bottom - lineMargin);
                     }
                 }
 
                 // Key path text
-                int textX = indent + 22;
-                int maxTextWidth = Math.Min(400, e.Bounds.Width / 2);
+                int textGap = DpiHelper.Scale(22);
+                int textX = indent + textGap;
+                int maxTextWidth = Math.Min(DpiHelper.Scale(400), e.Bounds.Width / 2);
                 var displayText = e.Node.Text;
                 if (displayText.Length > 50)
                     displayText = "..." + displayText.Substring(displayText.Length - 47);
                 
                 using var textBrush = new SolidBrush(e.Node.IsSelected ? ModernTheme.Accent : ModernTheme.TextPrimary);
-                var textRect = new RectangleF(textX, e.Bounds.Y + 4, maxTextWidth, e.Bounds.Height - 8);
+                var textRect = new RectangleF(textX, e.Bounds.Y + DpiHelper.Scale(4), maxTextWidth, e.Bounds.Height - DpiHelper.Scale(8));
                 using var sf = new StringFormat { Trimming = StringTrimming.EllipsisPath };
                 g.DrawString(displayText, ModernTheme.DataFont, textBrush, textRect, sf);
 
                 // Draw bar and value if this node has stats
                 if (nodeValues.TryGetValue(e.Node, out var valInfo))
                 {
-                    int barStartX = textX + maxTextWidth + 20;
-                    int barMaxWidth = Math.Max(100, e.Bounds.Width - barStartX - 100);
+                    int barGap = DpiHelper.Scale(20);
+                    int barStartX = textX + maxTextWidth + barGap;
+                    int barEndMargin = DpiHelper.Scale(100);
+                    int barMaxWidth = Math.Max(DpiHelper.Scale(100), e.Bounds.Width - barStartX - barEndMargin);
                     int barWidth = (int)((double)valInfo.value / valInfo.maxVal * barMaxWidth);
-                    if (barWidth < 3) barWidth = 3;
+                    if (barWidth < DpiHelper.Scale(3)) barWidth = DpiHelper.Scale(3);
 
-                    // Bar
-                    var barRect = new Rectangle(barStartX, e.Bounds.Y + 5, barWidth, 14);
+                    // Bar - vertically centered
+                    int barHeight = DpiHelper.Scale(14);
+                    var barRect = new Rectangle(barStartX, e.Bounds.Y + (e.Bounds.Height - barHeight) / 2, barWidth, barHeight);
                     using var barBrush = new SolidBrush(valInfo.color);
                     g.FillRectangle(barBrush, barRect);
 
                     // Value text
                     var valueText = FormatSize(valInfo.value);
                     using var valueBrush = new SolidBrush(ModernTheme.TextSecondary);
-                    g.DrawString(valueText, ModernTheme.DataFont, valueBrush, barStartX + barMaxWidth + 10, e.Bounds.Y + 5);
+                    g.DrawString(valueText, ModernTheme.DataFont, valueBrush, barStartX + barMaxWidth + DpiHelper.Scale(10), e.Bounds.Y + (e.Bounds.Height - ModernTheme.DataFont.Height) / 2);
+                }
+            };
+
+            // Handle single-click expand/collapse since OwnerDrawAll breaks default hit detection
+            tree.NodeMouseClick += (s, e) =>
+            {
+                if (e.Node == null || e.Node.Nodes.Count == 0) return;
+                
+                // Calculate the +/- button area for this node
+                int levelIndent = DpiHelper.Scale(20);
+                int baseIndent = DpiHelper.Scale(5);
+                int indent = e.Node.Level * levelIndent + baseIndent;
+                int btnSize = DpiHelper.Scale(14);
+                int btnY = (tree.ItemHeight - btnSize) / 2;
+                
+                // Check if click is within the +/- button area (with some padding for easier clicking)
+                var btnRect = new Rectangle(indent - DpiHelper.Scale(2), btnY - DpiHelper.Scale(2), 
+                                           btnSize + DpiHelper.Scale(4), btnSize + DpiHelper.Scale(4));
+                
+                // Adjust click Y to be relative to the node
+                int relativeY = e.Y - e.Node.Bounds.Y + btnY;
+                
+                if (e.X >= btnRect.Left && e.X <= btnRect.Right)
+                {
+                    // Toggle expand/collapse
+                    if (e.Node.IsExpanded)
+                        e.Node.Collapse();
+                    else
+                        e.Node.Expand();
                 }
             };
 
@@ -1667,24 +1734,28 @@ namespace RegistryExpert
         {
             var panel = new Panel
             {
-                Size = new Size(180, 35),
-                Margin = new Padding(0, 0, 15, 0),
+                Size = DpiHelper.ScaleSize(180, 45),  // Increased height for DPI scaling
+                Margin = DpiHelper.ScalePadding(0, 0, 15, 0),
                 BackColor = Color.Transparent
             };
             
             panel.Paint += (s, e) =>
             {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                
                 // Draw accent line
                 using var accentBrush = new SolidBrush(accentColor);
-                e.Graphics.FillRectangle(accentBrush, 0, 0, 3, panel.Height);
+                g.FillRectangle(accentBrush, 0, 0, DpiHelper.Scale(3), panel.Height);
                 
                 // Draw label
+                int textX = DpiHelper.Scale(10);
                 using var labelBrush = new SolidBrush(ModernTheme.TextSecondary);
-                e.Graphics.DrawString(label, ModernTheme.SmallFont, labelBrush, 10, 2);
+                g.DrawString(label, ModernTheme.SmallFont, labelBrush, textX, DpiHelper.Scale(2));
                 
-                // Draw value
+                // Draw value - position below label
                 using var valueBrush = new SolidBrush(ModernTheme.TextPrimary);
-                e.Graphics.DrawString(value, ModernTheme.BoldFont, valueBrush, 10, 16);
+                g.DrawString(value, ModernTheme.BoldFont, valueBrush, textX, DpiHelper.Scale(18));
             };
             
             return panel;
@@ -1931,7 +2002,7 @@ namespace RegistryExpert
             var categoryHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 50,
+                Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(15, 0, 15, 0)
             };
@@ -1955,7 +2026,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.RegularFont,
                 BorderStyle = BorderStyle.None,
-                ItemHeight = 48,
+                ItemHeight = DpiHelper.Scale(48),
                 DrawMode = DrawMode.OwnerDrawFixed
             };
             themeData.CategoryList = categoryList;
@@ -1997,12 +2068,19 @@ namespace RegistryExpert
                 // COMPONENTS hive only enables Update category (for CBS Components)
                 enabledCategories.Add("Update");
             }
-            else
+            else if (currentHiveType == OfflineRegistryParser.HiveType.SAM)
             {
-                // For other hive types, enable all
-                foreach (var cat in categories)
-                    enabledCategories.Add(cat.key);
+                // SAM hive contains user account information
+                enabledCategories.Add("Profiles");
             }
+            else if (currentHiveType == OfflineRegistryParser.HiveType.NTUSER)
+            {
+                // NTUSER.DAT contains user-specific settings
+                enabledCategories.Add("Profiles");
+                enabledCategories.Add("Software"); // User-specific software settings
+            }
+            // For BCD, SECURITY, USRCLASS, DEFAULT, AMCACHE, Unknown - no categories are enabled
+            // as the Analyze feature doesn't have specific support for these hive types
 
             // Add categories with enabled ones first, then disabled ones
             var availableCats = new List<(string icon, string text, string key)>();
@@ -2019,10 +2097,20 @@ namespace RegistryExpert
             foreach (var cat in unavailableCats)
                 categoryList.Items.Add(cat);
 
+            // Font point sizes are already DPI-aware, so don't scale them
             var iconFont = new Font("Segoe MDL2 Assets", 16F);
             var textFont = new Font("Segoe UI Semibold", 10.5F);
             themeData.CategoryIconFont = iconFont;
             themeData.CategoryTextFont = textFont;
+
+            // Pre-calculate DPI-scaled values for drawing positions (to match scaled ItemHeight)
+            int iconCenterXOffset = DpiHelper.Scale(32);
+            int iconCircleRadius = DpiHelper.Scale(16);
+            int iconCircleSize = DpiHelper.Scale(32);
+            int textXOffset = DpiHelper.Scale(60);
+            int textRightPadding = DpiHelper.Scale(65);
+            int accentBarWidth = DpiHelper.Scale(3);
+            int accentBarPadding = DpiHelper.Scale(8);
 
             // Custom draw for category items - modern card-like style
             categoryList.DrawItem += (s, ev) =>
@@ -2045,7 +2133,7 @@ namespace RegistryExpert
                 if (isSelected && isEnabled)
                 {
                     using var accentBrush = new SolidBrush(ModernTheme.Accent);
-                    ev.Graphics.FillRectangle(accentBrush, ev.Bounds.X, ev.Bounds.Y + 8, 3, ev.Bounds.Height - 16);
+                    ev.Graphics.FillRectangle(accentBrush, ev.Bounds.X, ev.Bounds.Y + accentBarPadding, accentBarWidth, ev.Bounds.Height - accentBarPadding * 2);
                 }
                 
                 Color textColor = isEnabled 
@@ -2056,24 +2144,24 @@ namespace RegistryExpert
                     : ModernTheme.TextDisabled;
 
                 // Draw icon in a subtle circle background
-                var iconCenterX = ev.Bounds.X + 32;
+                var iconCenterX = ev.Bounds.X + iconCenterXOffset;
                 var iconCenterY = ev.Bounds.Y + ev.Bounds.Height / 2;
                 
                 if (isEnabled)
                 {
                     using var circleBrush = new SolidBrush(Color.FromArgb(25, ModernTheme.Accent));
-                    ev.Graphics.FillEllipse(circleBrush, iconCenterX - 16, iconCenterY - 16, 32, 32);
+                    ev.Graphics.FillEllipse(circleBrush, iconCenterX - iconCircleRadius, iconCenterY - iconCircleRadius, iconCircleSize, iconCircleSize);
                 }
 
-                // Draw icon
+                // Draw icon - center it in the circle
                 using var iconBrush = new SolidBrush(iconColor);
                 using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                var iconRect = new RectangleF(iconCenterX - 16, iconCenterY - 10, 32, 20);
+                var iconRect = new RectangleF(iconCenterX - iconCircleRadius, iconCenterY - iconCircleRadius, iconCircleSize, iconCircleSize);
                 ev.Graphics.DrawString(item.icon, iconFont, iconBrush, iconRect, sf);
 
                 // Draw text
                 using var textBrush = new SolidBrush(textColor);
-                var textRect = new Rectangle(ev.Bounds.X + 60, ev.Bounds.Y, ev.Bounds.Width - 65, ev.Bounds.Height);
+                var textRect = new Rectangle(ev.Bounds.X + textXOffset, ev.Bounds.Y, ev.Bounds.Width - textRightPadding, ev.Bounds.Height);
                 ev.Graphics.DrawString(item.text, textFont, textBrush, textRect, sf);
             };
 
@@ -2194,7 +2282,7 @@ namespace RegistryExpert
             var contentHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 50,
+                Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(15, 0, 15, 0)
             };
@@ -2217,8 +2305,8 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(0, 48),
-                MaximumSize = new Size(0, 140), // Allow up to 3 rows
+                MinimumSize = DpiHelper.ScaleSize(0, 48),
+                MaximumSize = DpiHelper.ScaleSize(0, 140), // Allow up to 3 rows
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(5, 10, 5, 10),
                 FlowDirection = FlowDirection.LeftToRight,
@@ -2232,8 +2320,8 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(0, 0),
-                MaximumSize = new Size(0, 48),
+                MinimumSize = DpiHelper.ScaleSize(0, 0),
+                MaximumSize = DpiHelper.ScaleSize(0, 48),
                 BackColor = ModernTheme.TreeViewBack,
                 Padding = new Padding(10, 5, 5, 5),
                 FlowDirection = FlowDirection.LeftToRight,
@@ -2282,7 +2370,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.RegularFont,
                 BorderStyle = BorderStyle.None,
-                ItemHeight = 32,
+                ItemHeight = DpiHelper.Scale(32),
                 DrawMode = DrawMode.OwnerDrawFixed
             };
             themeData.NetworkAdaptersList = networkAdaptersList;
@@ -2310,7 +2398,7 @@ namespace RegistryExpert
             var networkAdaptersHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(10, 0, 10, 0)
             };
@@ -2339,7 +2427,7 @@ namespace RegistryExpert
             var networkDetailsHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(10, 0, 10, 0)
             };
@@ -2376,7 +2464,7 @@ namespace RegistryExpert
             var firewallProfileButtonsPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 44,
+                Height = DpiHelper.Scale(44),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(10, 8, 10, 8),
                 FlowDirection = FlowDirection.LeftToRight
@@ -2402,7 +2490,7 @@ namespace RegistryExpert
             var firewallRulesHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 32,
+                Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(10, 0, 10, 0)
             };
@@ -2419,8 +2507,8 @@ namespace RegistryExpert
 
             var firewallRulesGrid = new DataGridView { Dock = DockStyle.Fill };
             ModernTheme.ApplyTo(firewallRulesGrid);
-            firewallRulesGrid.RowTemplate.Height = 26;  // Override default
-            firewallRulesGrid.ColumnHeadersHeight = 30;  // Override default
+            firewallRulesGrid.RowTemplate.Height = DpiHelper.Scale(26);  // Override default
+            firewallRulesGrid.ColumnHeadersHeight = DpiHelper.Scale(30);  // Override default
 
             firewallRulesPanel.Controls.Add(firewallRulesGrid);
             firewallRulesPanel.Controls.Add(firewallRulesHeader);
@@ -2621,7 +2709,7 @@ namespace RegistryExpert
                         BackColor = filterKey == "InBox" ? ModernTheme.Accent : ModernTheme.Surface,
                         ForeColor = filterKey == "InBox" ? Color.White : ModernTheme.TextPrimary,
                         Font = ModernTheme.RegularFont,
-                        Height = 28,
+                        Height = DpiHelper.Scale(28),
                         AutoSize = true,
                         Padding = new Padding(8, 0, 8, 0),
                         Margin = new Padding(2),
@@ -2701,7 +2789,7 @@ namespace RegistryExpert
                         BackColor = filterKey == "Disk" ? ModernTheme.Accent : ModernTheme.Surface,
                         ForeColor = filterKey == "Disk" ? Color.White : ModernTheme.TextPrimary,
                         Font = ModernTheme.RegularFont,
-                        Height = 28,
+                        Height = DpiHelper.Scale(28),
                         AutoSize = true,
                         Padding = new Padding(8, 0, 8, 0),
                         Margin = new Padding(2),
@@ -2759,7 +2847,7 @@ namespace RegistryExpert
                         BackColor = viewKey == currentCbsSubView ? ModernTheme.Accent : ModernTheme.Surface,
                         ForeColor = viewKey == currentCbsSubView ? Color.White : ModernTheme.TextPrimary,
                         Font = ModernTheme.RegularFont,
-                        Height = 26,
+                        Height = DpiHelper.Scale(26),
                         AutoSize = true,
                         Padding = new Padding(8, 0, 8, 0),
                         Margin = new Padding(2),
@@ -2790,8 +2878,8 @@ namespace RegistryExpert
 
                 cbsSearchBox = new TextBox
                 {
-                    Width = 200,
-                    Height = 26,
+                    Width = DpiHelper.Scale(200),
+                    Height = DpiHelper.Scale(26),
                     Font = ModernTheme.RegularFont,
                     BackColor = ModernTheme.Surface,
                     ForeColor = ModernTheme.TextPrimary,
@@ -3108,7 +3196,7 @@ namespace RegistryExpert
                         (currentGuestAgentSubView == "Extensions" ? Color.White : ModernTheme.TextPrimary) : 
                         ModernTheme.TextDisabled,
                     Font = ModernTheme.RegularFont,
-                    Height = 26,
+                    Height = DpiHelper.Scale(26),
                     AutoSize = true,
                     Padding = new Padding(8, 0, 8, 0),
                     Margin = new Padding(2),
@@ -3439,7 +3527,7 @@ namespace RegistryExpert
                     cbsComponentsSearchPanel = new FlowLayoutPanel
                     {
                         Dock = DockStyle.Top,
-                        Height = 35,
+                        Height = DpiHelper.Scale(35),
                         BackColor = ModernTheme.TreeViewBack,
                         Padding = new Padding(5),
                         AutoSize = false,
@@ -3458,8 +3546,8 @@ namespace RegistryExpert
 
                     cbsComponentsSearchBox = new TextBox
                     {
-                        Width = 300,
-                        Height = 26,
+                        Width = DpiHelper.Scale(300),
+                        Height = DpiHelper.Scale(26),
                         Font = ModernTheme.RegularFont,
                         BackColor = ModernTheme.Surface,
                         ForeColor = ModernTheme.TextPrimary,
@@ -3560,7 +3648,7 @@ namespace RegistryExpert
                     cbsIdentitiesInfoPanel = new FlowLayoutPanel
                     {
                         Dock = DockStyle.Top,
-                        Height = 35,
+                        Height = DpiHelper.Scale(35),
                         BackColor = ModernTheme.TreeViewBack,
                         Padding = new Padding(5),
                         AutoSize = false,
@@ -3756,9 +3844,9 @@ namespace RegistryExpert
                             BackColor = ModernTheme.Surface,
                             ForeColor = ModernTheme.TextPrimary,
                             FlatStyle = FlatStyle.Flat,
-                            Height = 28,
+                            Height = DpiHelper.Scale(28),
                             AutoSize = true,
-                            MinimumSize = new Size(140, 28),
+                            MinimumSize = DpiHelper.ScaleSize(140, 28),
                             Font = ModernTheme.RegularFont,
                             Cursor = Cursors.Hand,
                             Margin = new Padding(0, 0, 8, 0),
@@ -4071,7 +4159,7 @@ namespace RegistryExpert
                         BackColor = filterKey == "All" ? ModernTheme.Accent : ModernTheme.Surface,
                         ForeColor = filterKey == "All" ? Color.White : ModernTheme.TextPrimary,
                         Font = ModernTheme.RegularFont,
-                        Height = 28,
+                        Height = DpiHelper.Scale(28),
                         AutoSize = true,
                         Padding = new Padding(8, 0, 8, 0),
                         Margin = new Padding(2),
@@ -4124,7 +4212,7 @@ namespace RegistryExpert
                 BackColor = ModernTheme.TreeViewBack,
                 Font = ModernTheme.SmallFont,
                 Dock = DockStyle.Top,
-                Height = 20,
+                Height = DpiHelper.Scale(20),
                 ReadOnly = true,
                 BorderStyle = BorderStyle.None
             };
@@ -4506,7 +4594,7 @@ namespace RegistryExpert
                         FlatStyle = FlatStyle.Flat,
                         BackColor = isAvailable ? ModernTheme.Surface : ModernTheme.TreeViewBack,
                         Font = ModernTheme.RegularFont,
-                        Height = 28,
+                        Height = DpiHelper.Scale(28),
                         AutoSize = false,
                         Margin = new Padding(2),
                         Cursor = isAvailable ? Cursors.Hand : Cursors.Default,
@@ -4585,7 +4673,7 @@ namespace RegistryExpert
                             FlatStyle = FlatStyle.Flat,
                             BackColor = ModernTheme.TreeViewBack,
                             Font = ModernTheme.RegularFont,
-                            Height = 28,
+                            Height = DpiHelper.Scale(28),
                             AutoSize = false,
                             Margin = new Padding(2),
                             Cursor = Cursors.Default,
@@ -4649,7 +4737,7 @@ namespace RegistryExpert
                         FlatStyle = FlatStyle.Flat,
                         BackColor = isSoftwareHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
                         Font = ModernTheme.RegularFont,
-                        Size = new Size(110, 28),
+                        Size = DpiHelper.ScaleSize(110, 28),
                         Margin = new Padding(2),
                         Cursor = isSoftwareHive ? Cursors.Hand : Cursors.Default,
                         Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null
@@ -4725,7 +4813,7 @@ namespace RegistryExpert
                         FlatStyle = FlatStyle.Flat,
                         BackColor = isComponentsHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
                         Font = ModernTheme.RegularFont,
-                        Size = new Size(120, 28),
+                        Size = DpiHelper.ScaleSize(120, 28),
                         Margin = new Padding(2),
                         Cursor = isComponentsHive ? Cursors.Hand : Cursors.Default,
                         Tag = "Components"
@@ -4885,7 +4973,7 @@ namespace RegistryExpert
             var toolbar = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
-                Height = 44,
+                Height = DpiHelper.Scale(44),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(8),
                 FlowDirection = FlowDirection.LeftToRight
@@ -5440,7 +5528,7 @@ namespace RegistryExpert
             var form = new Form
             {
                 Text = "About Registry Expert",
-                Size = new Size(480, 450),
+                Size = DpiHelper.ScaleSize(480, 450),
                 StartPosition = FormStartPosition.CenterParent,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
@@ -5455,8 +5543,8 @@ namespace RegistryExpert
             // App icon - use the application's icon
             var iconBox = new PictureBox
             {
-                Size = new Size(64, 64),
-                Location = new Point(30, 25),
+                Size = DpiHelper.ScaleSize(64, 64),
+                Location = DpiHelper.ScalePoint(30, 25),
                 BackColor = Color.Transparent,
                 SizeMode = PictureBoxSizeMode.Zoom
             };
@@ -5473,7 +5561,7 @@ namespace RegistryExpert
                 Font = new Font("Segoe UI Semibold", 22F),
                 ForeColor = ModernTheme.Accent,
                 AutoSize = true,
-                Location = new Point(105, 30)
+                Location = DpiHelper.ScalePoint(105, 30)
             };
             
             var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
@@ -5483,7 +5571,7 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextSecondary,
                 AutoSize = true,
-                Location = new Point(105, 68)
+                Location = DpiHelper.ScalePoint(105, 68)
             };
             
             var descLabel = new Label
@@ -5492,7 +5580,7 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextPrimary,
                 AutoSize = true,
-                Location = new Point(30, 110)
+                Location = DpiHelper.ScalePoint(30, 110)
             };
             
             // Author section
@@ -5502,7 +5590,7 @@ namespace RegistryExpert
                 Font = new Font("Segoe UI Semibold", 10F),
                 ForeColor = ModernTheme.TextSecondary,
                 AutoSize = true,
-                Location = new Point(30, 165)
+                Location = DpiHelper.ScalePoint(30, 165)
             };
             
             var authorLabel = new Label
@@ -5511,7 +5599,7 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextPrimary,
                 AutoSize = true,
-                Location = new Point(30, 185)
+                Location = DpiHelper.ScalePoint(30, 185)
             };
             
             // Feedback section
@@ -5521,7 +5609,7 @@ namespace RegistryExpert
                 Font = new Font("Segoe UI Semibold", 10F),
                 ForeColor = ModernTheme.TextSecondary,
                 AutoSize = true,
-                Location = new Point(30, 220)
+                Location = DpiHelper.ScalePoint(30, 220)
             };
             
             var emailLink = new LinkLabel
@@ -5529,7 +5617,7 @@ namespace RegistryExpert
                 Text = "bowenzhang@microsoft.com",
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Location = new Point(30, 240),
+                Location = DpiHelper.ScalePoint(30, 240),
                 LinkColor = ModernTheme.Accent,
                 ActiveLinkColor = ModernTheme.AccentDark,
                 VisitedLinkColor = ModernTheme.Accent
@@ -5553,7 +5641,7 @@ namespace RegistryExpert
                 Text = "Data Protection Notice",
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Location = new Point(30, 270),
+                Location = DpiHelper.ScalePoint(30, 270),
                 LinkColor = ModernTheme.Accent,
                 ActiveLinkColor = ModernTheme.AccentDark,
                 VisitedLinkColor = ModernTheme.Accent
@@ -5578,12 +5666,12 @@ namespace RegistryExpert
                 Font = new Font("Segoe UI", 8F),
                 ForeColor = ModernTheme.TextDisabled,
                 AutoSize = true,
-                Location = new Point(30, 300)
+                Location = DpiHelper.ScalePoint(30, 300)
             };
             
             var closeBtn = ModernTheme.CreateButton("Close", (s, e) => form.Close());
-            closeBtn.Location = new Point(185, 350);
-            closeBtn.Width = 100;
+            closeBtn.Location = DpiHelper.ScalePoint(185, 350);
+            closeBtn.Width = DpiHelper.Scale(100);
             
             panel.Controls.AddRange(new Control[] { iconBox, titleLabel, versionLabel, descLabel, 
                 authorTitleLabel, authorLabel, feedbackTitleLabel, emailLink, privacyLink, hivesLabel, closeBtn });
@@ -5726,8 +5814,8 @@ namespace RegistryExpert
             flow.Controls.Clear();
 
             // Calculate optimal column width based on available space
-            int columnWidth = 350;
-            int columnHeight = 280;
+            int columnWidth = DpiHelper.Scale(350);
+            int columnHeight = DpiHelper.Scale(280);
 
             foreach (var section in sections)
             {
@@ -5745,7 +5833,7 @@ namespace RegistryExpert
                 var header = new Panel
                 {
                     Dock = DockStyle.Top,
-                    Height = 35,
+                    Height = DpiHelper.Scale(35),
                     BackColor = ModernTheme.TreeViewBack,
                     Padding = new Padding(10, 0, 10, 0)
                 };
