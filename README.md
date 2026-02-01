@@ -10,4 +10,6 @@ A lightweight Windows application for viewing and analyzing offline Windows regi
 
 No installation required - just download `RegistryExpert.exe` and run it.
 
-UNDER CONSTRUCTION
+=============================================================
+
+DETAILS UNDER CONSTRUCTION
