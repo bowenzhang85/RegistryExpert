@@ -1,0 +1,3 @@
+@echo off
+echo Starting Registry Expert...
+dotnet run
