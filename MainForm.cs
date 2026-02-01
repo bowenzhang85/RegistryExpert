@@ -1,0 +1,5959 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using Registry.Abstractions;
+
+namespace RegistryExpert
+{
+    // Helper class to store theming controls for the Analyze form
+    internal class AnalyzeFormThemeData : IDisposable
+    {
+        public SplitContainer? MainSplit { get; set; }
+        public SplitContainer? NetworkSplit { get; set; }
+        public SplitContainer? ContentDetailSplit { get; set; }  // New: for resizable detail pane
+        public Panel? LeftPanel { get; set; }
+        public Panel? CategoryHeader { get; set; }
+        public Label? CategoryTitle { get; set; }
+        public ListBox? CategoryList { get; set; }
+        public Panel? RightPanel { get; set; }
+        public Panel? ContentHeader { get; set; }
+        public Label? ContentTitle { get; set; }
+        public FlowLayoutPanel? SubCategoryPanel { get; set; }
+        public DataGridView? ContentGrid { get; set; }
+        public Panel? DetailPanel { get; set; }  // Renamed from RegistryInfoPanel
+        public TextBox? RegistryPathLabel { get; set; }
+        public RichTextBox? RegistryValueBox { get; set; }  // Changed from TextBox to RichTextBox
+        public ListBox? NetworkAdaptersList { get; set; }
+        public Panel? NetworkAdaptersHeader { get; set; }
+        public Label? NetworkAdaptersLabel { get; set; }
+        public Panel? NetworkDetailsHeader { get; set; }
+        public Label? NetworkDetailsLabel { get; set; }
+        public DataGridView? NetworkDetailsGrid { get; set; }
+        public List<Button> SubCategoryButtons { get; set; } = new();
+        public List<Button> ServiceFilterButtons { get; set; } = new();
+        // Appx filter panel controls
+        public FlowLayoutPanel? AppxFilterPanel { get; set; }
+        public List<Button> AppxFilterButtons { get; set; } = new();
+        // Storage filter buttons
+        public List<Button> StorageFilterButtons { get; set; } = new();
+        // Firewall panel controls
+        public Panel? FirewallPanel { get; set; }
+        public FlowLayoutPanel? FirewallProfileButtonsPanel { get; set; }
+        public Label? FirewallProfileLabel { get; set; }
+        public Panel? FirewallRulesPanel { get; set; }
+        public Panel? FirewallRulesHeader { get; set; }
+        public Label? FirewallRulesLabel { get; set; }
+        public DataGridView? FirewallRulesGrid { get; set; }
+        public List<Button> FirewallProfileButtons { get; set; } = new();
+        public Action? RefreshFirewallDisplay { get; set; }
+        // Fonts used in drawing (need explicit disposal)
+        public Font? CategoryIconFont { get; set; }
+        public Font? CategoryTextFont { get; set; }
+        public ToolTip? CategoryToolTip { get; set; }
+        public ToolTip? SubCategoryToolTip { get; set; }
+
+        public void Dispose()
+        {
+            CategoryIconFont?.Dispose();
+            CategoryTextFont?.Dispose();
+            CategoryToolTip?.Dispose();
+            SubCategoryToolTip?.Dispose();
+        }
+    }
+
+    public partial class MainForm : Form
+    {
+        private OfflineRegistryParser? _parser;
+        private RegistryInfoExtractor? _infoExtractor;
+        private Form? _analyzeForm; // Track the analyze window for theme changes
+        private SearchForm? _searchForm; // Track the search window for theme changes
+        private Form? _statisticsForm; // Track the statistics window for theme changes
+        private CompareForm? _compareForm; // Track the compare window for disposal
+        private Form? _timelineForm; // Track the timeline window for theme changes
+        private ImageList? _imageList; // Track for disposal
+        private ToolTip? _sharedToolTip; // Single shared ToolTip for the form
+        private Icon? _customIcon; // Track custom icon for disposal
+        private string? _currentHivePath; // Track the current loaded hive file path
+        private TreeNode? _previousSelectedNode; // Track for folder icon switching
+        
+        // UI Controls
+        private MenuStrip _menuStrip = null!;
+        private Panel _toolbarPanel = null!;
+        private SplitContainer _mainSplitContainer = null!;
+        private SplitContainer _rightSplitContainer = null!;
+        private TreeView _treeView = null!;
+        private ListView _listView = null!;
+        private RichTextBox _detailsBox = null!;
+        private Panel _statusPanel = null!;
+        private Label _statusLabel = null!;
+        private Label _hiveTypeLabel = null!;
+        private Panel _dropPanel = null!;
+
+        public MainForm()
+        {
+            InitializeComponent();
+            _parser = new OfflineRegistryParser();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                // Dispose MenuStrip FIRST - critical to unsubscribe from SystemEvents.UserPreferenceChanged
+                // which holds a strong reference and prevents the application from closing
+                _menuStrip?.Dispose();
+                
+                _parser?.Dispose();
+                _imageList?.Dispose();
+                _analyzeForm?.Dispose();
+                _statisticsForm?.Dispose();
+                _searchForm?.Dispose();
+                _compareForm?.Dispose();
+                _timelineForm?.Dispose();
+                _sharedToolTip?.Dispose();
+                _customIcon?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
+        private void InitializeComponent()
+        {
+            this.SuspendLayout();
+            
+            // Form settings
+            this.Text = "Registry Expert";
+            this.Size = new Size(1280, 800);
+            this.MinimumSize = new Size(900, 600);
+            this.StartPosition = FormStartPosition.CenterScreen;
+            
+            // Set application icon
+            try
+            {
+                var iconPath = Path.Combine(AppContext.BaseDirectory, "registry_fixed.ico");
+                if (File.Exists(iconPath))
+                {
+                    _customIcon = new Icon(iconPath);
+                    this.Icon = _customIcon;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Icon loading failed: {ex.Message}");
+            }
+            
+            ModernTheme.ApplyTo(this);
+            this.AllowDrop = true;
+            this.DragEnter += MainForm_DragEnter;
+            this.DragDrop += MainForm_DragDrop;
+
+            // Menu Strip
+            _menuStrip = new MenuStrip();
+            ModernTheme.ApplyTo(_menuStrip);
+            _menuStrip.Padding = new Padding(8, 4, 0, 4);
+            CreateMenu();
+            
+            // Modern Toolbar Panel
+            _toolbarPanel = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 52,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(8, 8, 8, 8)
+            };
+            CreateModernToolbar();
+
+            // Status Panel (bottom)
+            _statusPanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = 32,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(16, 0, 16, 0)
+            };
+            
+            _statusLabel = new Label
+            {
+                Text = "Ready",
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.RegularFont,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            
+            _hiveTypeLabel = new Label
+            {
+                Text = "",
+                ForeColor = ModernTheme.Accent,
+                Font = ModernTheme.BoldFont,
+                AutoSize = true,
+                Dock = DockStyle.Right,
+                TextAlign = ContentAlignment.MiddleRight,
+                Padding = new Padding(12, 0, 0, 0)
+            };
+            
+            _statusPanel.Controls.Add(_statusLabel);
+            _statusPanel.Controls.Add(_hiveTypeLabel);
+
+            // Main content area
+            var contentPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(1)
+            };
+
+            // Drop Panel (shown when no hive is loaded)
+            _dropPanel = CreateDropPanel();
+            
+            // Main Split Container (Tree | Right Panel)
+            _mainSplitContainer = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 50,
+                Panel2MinSize = 50,
+                SplitterWidth = 3,
+                Visible = false
+            };
+            _mainSplitContainer.Panel1.BackColor = ModernTheme.Background;
+            _mainSplitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Left panel with header and tree
+            var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = ModernTheme.Background };
+            var treeHeader = CreateSectionHeader("Registry Keys", "\uE8B7");
+            
+            _imageList = CreateImageList();
+            _treeView = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                ImageList = _imageList,
+                HideSelection = false  // Keep selection visible when focus is lost
+            };
+            ModernTheme.ApplyTo(_treeView);
+            _treeView.AfterSelect += TreeView_AfterSelect;
+            _treeView.BeforeExpand += TreeView_BeforeExpand;
+            
+            leftPanel.Controls.Add(_treeView);
+            leftPanel.Controls.Add(treeHeader);
+            _mainSplitContainer.Panel1.Controls.Add(leftPanel);
+
+            // Right Split Container (ListView | Details)
+            _rightSplitContainer = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 50,
+                Panel2MinSize = 50,
+                SplitterWidth = 3
+            };
+            _rightSplitContainer.Panel1.BackColor = ModernTheme.Background;
+            _rightSplitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Values panel with header and list
+            var valuesPanel = new Panel { Dock = DockStyle.Fill, BackColor = ModernTheme.Background };
+            var valuesHeader = CreateSectionHeader("Values", "\uE8A5");
+            
+            _listView = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.Details,
+                FullRowSelect = true,
+                HeaderStyle = ColumnHeaderStyle.Nonclickable
+            };
+            ModernTheme.ApplyTo(_listView);
+            _listView.Columns.Add("Name", 220);
+            _listView.Columns.Add("Type", 100);
+            _listView.Columns.Add("Data", 450);
+            _listView.SelectedIndexChanged += ListView_SelectedIndexChanged;
+            _listView.DoubleClick += ListView_DoubleClick;
+            // Dynamically expand the Data column when the window/split resizes
+            _listView.Resize += (s, e) => AdjustValuesColumns();
+            _rightSplitContainer.SplitterMoved += (s, e) => AdjustValuesColumns();
+            _rightSplitContainer.SizeChanged += (s, e) => AdjustValuesColumns();
+            
+            valuesPanel.Controls.Add(_listView);
+            valuesPanel.Controls.Add(valuesHeader);
+            _rightSplitContainer.Panel1.Controls.Add(valuesPanel);
+            AdjustValuesColumns();
+
+            // Details panel with header and text
+            var detailsPanel = new Panel { Dock = DockStyle.Fill, BackColor = ModernTheme.Background };
+            var detailsHeader = CreateSectionHeader("Details", "\uE946");
+            
+            _detailsBox = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                WordWrap = true,
+                ScrollBars = RichTextBoxScrollBars.Vertical
+            };
+            ModernTheme.ApplyTo(_detailsBox);
+            _detailsBox.Padding = new Padding(8);
+            
+            detailsPanel.Controls.Add(_detailsBox);
+            detailsPanel.Controls.Add(detailsHeader);
+            _rightSplitContainer.Panel2.Controls.Add(detailsPanel);
+
+            _mainSplitContainer.Panel2.Controls.Add(_rightSplitContainer);
+            
+            contentPanel.Controls.Add(_mainSplitContainer);
+            contentPanel.Controls.Add(_dropPanel);
+
+            // Add controls to form in correct order
+            this.Controls.Add(contentPanel);
+            this.Controls.Add(_statusPanel);
+            this.Controls.Add(_toolbarPanel);
+            this.Controls.Add(_menuStrip);
+            this.MainMenuStrip = _menuStrip;
+            
+            this.ResumeLayout(false);
+            this.PerformLayout();
+            
+            // Set splitter distances after layout
+            this.Load += (s, e) => {
+                _mainSplitContainer.SplitterDistance = 280;
+                _rightSplitContainer.SplitterDistance = Math.Max(250, _rightSplitContainer.Height * 2 / 3);
+            };
+        }
+
+        private Panel CreateDropPanel()
+        {
+            var panel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+            
+            // Card-like center panel with subtle border
+            var centerPanel = new Panel
+            {
+                Size = new Size(450, 400),
+                BackColor = ModernTheme.Surface
+            };
+            centerPanel.Paint += (s, e) =>
+            {
+                // Draw border manually with four lines for proper corner connection
+                var w = centerPanel.Width - 1;
+                var h = centerPanel.Height - 1;
+                using var pen = new Pen(ModernTheme.Border, 1);
+                // Top line
+                e.Graphics.DrawLine(pen, 0, 0, w, 0);
+                // Right line
+                e.Graphics.DrawLine(pen, w, 0, w, h);
+                // Bottom line
+                e.Graphics.DrawLine(pen, w, h, 0, h);
+                // Left line
+                e.Graphics.DrawLine(pen, 0, h, 0, 0);
+            };
+            
+            // Program icon - load from PNG for best quality
+            var iconBox = new PictureBox
+            {
+                Size = new Size(72, 72),
+                Location = new Point((450 - 72) / 2, 30),
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.Transparent
+            };
+            try
+            {
+                var pngPath = Path.Combine(AppContext.BaseDirectory, "registry.png");
+                if (File.Exists(pngPath))
+                {
+                    iconBox.Image = Image.FromFile(pngPath);
+                }
+            }
+            catch { }
+            
+            var titleLabel = new Label
+            {
+                Text = "Registry Expert",
+                Font = ModernTheme.TitleFont,
+                ForeColor = ModernTheme.TextPrimary,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(450, 45),
+                Location = new Point(0, 115)
+            };
+            
+            var subtitleLabel = new Label
+            {
+                Text = "Drag and drop a registry hive file here\nor click the button below to browse",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextSecondary,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(450, 50),
+                Location = new Point(0, 160)
+            };
+            
+            var openButton = ModernTheme.CreateButton("  Open Hive File  ", OpenHive_Click);
+            openButton.Size = new Size(160, 40);
+            openButton.Location = new Point(145, 225);
+            
+            // Compare button
+            var compareButton = ModernTheme.CreateButton("  Compare Hives  ", (s, e) => ShowCompare_Click(s, e));
+            compareButton.Size = new Size(160, 40);
+            compareButton.Location = new Point(145, 280);
+            compareButton.BackColor = ModernTheme.Surface;
+            compareButton.ForeColor = ModernTheme.TextPrimary;
+            compareButton.FlatAppearance.BorderColor = ModernTheme.Accent;
+            compareButton.FlatAppearance.BorderSize = 1;
+            
+            // Hint text
+            var hintLabel = new Label
+            {
+                Text = "Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, and more",
+                Font = ModernTheme.SmallFont,
+                ForeColor = ModernTheme.TextDisabled,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Size = new Size(450, 25),
+                Location = new Point(0, 340)
+            };
+            
+            centerPanel.Controls.AddRange(new Control[] { iconBox, titleLabel, subtitleLabel, openButton, compareButton, hintLabel });
+            panel.Controls.Add(centerPanel);
+            
+            // Center the panel
+            panel.Resize += (s, e) =>
+            {
+                centerPanel.Location = new Point(
+                    (panel.Width - centerPanel.Width) / 2,
+                    (panel.Height - centerPanel.Height) / 2
+                );
+            };
+            
+            return panel;
+        }
+
+        private void RefreshDropPanel()
+        {
+            if (_dropPanel == null) return;
+            
+            var parent = _dropPanel.Parent;
+            var wasVisible = _dropPanel.Visible;
+            var index = parent?.Controls.IndexOf(_dropPanel) ?? -1;
+            
+            // Remove old drop panel and dispose image resources
+            parent?.Controls.Remove(_dropPanel);
+            foreach (Control ctrl in _dropPanel.Controls)
+            {
+                if (ctrl is Panel innerPanel)
+                {
+                    foreach (Control innerCtrl in innerPanel.Controls)
+                    {
+                        if (innerCtrl is PictureBox pb && pb.Image != null)
+                        {
+                            pb.Image.Dispose();
+                            pb.Image = null;
+                        }
+                    }
+                }
+            }
+            _dropPanel.Dispose();
+            
+            // Create new drop panel with updated theme colors
+            _dropPanel = CreateDropPanel();
+            _dropPanel.Visible = wasVisible;
+            
+            // Add back to parent at same position
+            if (parent != null && index >= 0)
+            {
+                parent.Controls.Add(_dropPanel);
+                parent.Controls.SetChildIndex(_dropPanel, index);
+            }
+        }
+
+        private Panel CreateSectionHeader(string text, string icon)
+        {
+            var panel = new Panel
+            {
+                Height = 40,
+                Dock = DockStyle.Top,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(16, 0, 16, 0)
+            };
+            
+            // Custom paint for gradient and icon
+            panel.Paint += (s, e) =>
+            {
+                // Subtle gradient
+                using var brush = new LinearGradientBrush(panel.ClientRectangle, 
+                    ModernTheme.GradientStart, ModernTheme.GradientEnd, LinearGradientMode.Vertical);
+                e.Graphics.FillRectangle(brush, panel.ClientRectangle);
+                
+                // Icon
+                using var iconFont = new Font("Segoe MDL2 Assets", 12F);
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                e.Graphics.DrawString(icon, iconFont, iconBrush, 16, (panel.Height - 12) / 2);
+                
+                // Text
+                using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
+                e.Graphics.DrawString(text, ModernTheme.HeaderFont, textBrush, 40, (panel.Height - ModernTheme.HeaderFont.Height) / 2);
+            };
+            
+            // Bottom border
+            var border = new Panel
+            {
+                Height = 1,
+                Dock = DockStyle.Bottom,
+                BackColor = ModernTheme.Border
+            };
+            
+            panel.Controls.Add(border);
+            return panel;
+        }
+
+        private ImageList CreateImageList()
+        {
+            var imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(18, 18)
+            };
+            
+            imageList.Images.Add("folder", ModernTheme.CreateFolderIcon(false));
+            imageList.Images.Add("folder_open", ModernTheme.CreateFolderIcon(true));
+            imageList.Images.Add("value", ModernTheme.CreateValueIcon());
+            
+            return imageList;
+        }
+
+        private void CreateMenu()
+        {
+            var fileMenu = new ToolStripMenuItem("File");
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Open Hive...", null, OpenHive_Click) { ShortcutKeys = Keys.Control | Keys.O });
+            fileMenu.DropDownItems.Add(new ToolStripSeparator());
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Export Key...", null, ExportKey_Click) { ShortcutKeys = Keys.Control | Keys.E });
+            fileMenu.DropDownItems.Add(new ToolStripSeparator());
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Exit", null, (s, e) => Close()) { ShortcutKeys = Keys.Alt | Keys.F4 });
+            _menuStrip.Items.Add(fileMenu);
+
+            var viewMenu = new ToolStripMenuItem("View");
+            
+            var darkThemeItem = new ToolStripMenuItem("Dark Theme", null, (s, e) => SwitchTheme(ThemeType.Dark));
+            var lightThemeItem = new ToolStripMenuItem("Light Theme", null, (s, e) => SwitchTheme(ThemeType.Light));
+            darkThemeItem.Checked = ModernTheme.CurrentTheme == ThemeType.Dark;
+            lightThemeItem.Checked = ModernTheme.CurrentTheme == ThemeType.Light;
+            viewMenu.DropDownItems.Add(darkThemeItem);
+            viewMenu.DropDownItems.Add(lightThemeItem);
+            _menuStrip.Items.Add(viewMenu);
+
+            var toolsMenu = new ToolStripMenuItem("Tools");
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Search...", null, Search_Click) { ShortcutKeys = Keys.Control | Keys.F });
+            toolsMenu.DropDownItems.Add(new ToolStripSeparator());
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Analyze...", null, ShowAnalyzeDialog_Click) { ShortcutKeys = Keys.F5 });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Statistics...", null, ShowStatistics_Click) { ShortcutKeys = Keys.Control | Keys.I });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Timeline...", null, ShowTimeline_Click) { ShortcutKeys = Keys.Control | Keys.T });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Compare...", null, ShowCompare_Click) { ShortcutKeys = Keys.Control | Keys.M });
+            _menuStrip.Items.Add(toolsMenu);
+
+            var helpMenu = new ToolStripMenuItem("Help");
+            helpMenu.DropDownItems.Add("About", null, About_Click);
+            _menuStrip.Items.Add(helpMenu);
+        }
+
+        private void CreateModernToolbar()
+        {
+            var flow = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                Padding = new Padding(4, 0, 0, 0)
+            };
+
+            flow.Controls.Add(CreateToolbarButton("Open", "\uE838", OpenHive_Click, "Open registry hive (Ctrl+O)"));
+            flow.Controls.Add(CreateToolbarSeparator());
+            flow.Controls.Add(CreateToolbarButton("Search", "\uE721", Search_Click, "Search registry (Ctrl+F)"));
+            flow.Controls.Add(CreateToolbarSeparator());
+            flow.Controls.Add(CreateToolbarButton("Analyze", "\uE9D9", ShowAnalyzeDialog_Click, "Analyze registry (F5)"));
+            flow.Controls.Add(CreateToolbarSeparator());
+            flow.Controls.Add(CreateToolbarButton("Statistics", "\uE9F9", ShowStatistics_Click, "View registry statistics"));
+            flow.Controls.Add(CreateToolbarSeparator());
+            flow.Controls.Add(CreateToolbarButton("Compare", "\uE8F4", ShowCompare_Click, "Compare two registry hives"));
+            flow.Controls.Add(CreateToolbarSeparator());
+            flow.Controls.Add(CreateToolbarButton("Timeline", "\uE81C", ShowTimeline_Click, "View registry keys by last modified time (Ctrl+T)"));
+            
+            _toolbarPanel.Controls.Add(flow);
+        }
+
+        private Button CreateToolbarButton(string text, string icon, EventHandler onClick, string tooltip)
+        {
+            var btn = new Button
+            {
+                Text = "",  // We'll draw text manually
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                Size = new Size(105, 36),
+                Margin = new Padding(2),
+                Cursor = Cursors.Hand
+            };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.FlatAppearance.MouseOverBackColor = ModernTheme.SurfaceHover;
+            btn.FlatAppearance.MouseDownBackColor = ModernTheme.AccentDark;
+            btn.Click += onClick;
+            
+            // Custom paint for icon and text
+            btn.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                
+                // Draw icon
+                using var iconFont = new Font("Segoe MDL2 Assets", 13F);
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                g.DrawString(icon, iconFont, iconBrush, 8, (btn.Height - 16) / 2);
+                
+                // Draw text
+                using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
+                g.DrawString(text, ModernTheme.RegularFont, textBrush, 30, (btn.Height - ModernTheme.RegularFont.Height) / 2);
+            };
+            
+            _sharedToolTip ??= new ToolTip();
+            _sharedToolTip.SetToolTip(btn, tooltip);
+            
+            return btn;
+        }
+
+        private Panel CreateToolbarSeparator()
+        {
+            return new Panel
+            {
+                Width = 1,
+                Height = 28,
+                Margin = new Padding(8, 4, 8, 4),
+                BackColor = ModernTheme.Border
+            };
+        }
+
+        private void MainForm_DragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            {
+                e.Effect = DragDropEffects.Copy;
+                _dropPanel.BackColor = ModernTheme.SurfaceLight;
+            }
+        }
+
+        private void MainForm_DragDrop(object? sender, DragEventArgs e)
+        {
+            _dropPanel.BackColor = ModernTheme.Background;
+            var files = e.Data?.GetData(DataFormats.FileDrop) as string[];
+            if (files?.Length > 0)
+            {
+                _ = LoadHiveFileAsync(files[0]);
+            }
+        }
+
+        private void OpenHive_Click(object? sender, EventArgs e)
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "Open Registry Hive",
+                Filter = "Registry Hives|NTUSER.DAT;SAM;SECURITY;SOFTWARE;SYSTEM;USRCLASS.DAT;DEFAULT;Amcache.hve;BCD|All Files|*.*",
+                FilterIndex = 2
+            };
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                _ = LoadHiveFileAsync(dialog.FileName);
+            }
+        }
+
+        private async Task LoadHiveFileAsync(string filePath)
+        {
+            try
+            {
+                _statusLabel.Text = "Loading hive...";
+                _statusLabel.ForeColor = ModernTheme.Warning;
+                _statusLabel.Refresh(); // Force UI update without reentrancy issues
+
+                _parser?.Dispose();
+                _parser = new OfflineRegistryParser();
+                
+                // Run the heavy hive loading on a background thread to keep UI responsive
+                await Task.Run(() => _parser.LoadHive(filePath)).ConfigureAwait(true);
+                _currentHivePath = filePath; // Store the path for later use
+                
+                _infoExtractor = new RegistryInfoExtractor(_parser);
+
+                PopulateTreeView();
+                
+                // Show main view, hide drop panel
+                _dropPanel.Visible = false;
+                _mainSplitContainer.Visible = true;
+                _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+                
+                _hiveTypeLabel.Text = $"● {_parser.CurrentHiveType}";
+                _statusLabel.Text = $"Loaded: {Path.GetFileName(filePath)}";
+                _statusLabel.ForeColor = ModernTheme.Success;
+                this.Text = $"Registry Expert - {Path.GetFileName(filePath)}";
+            }
+            catch (Exception ex)
+            {
+                ShowError($"Error loading hive: {ex.Message}");
+                _statusLabel.Text = "Failed to load hive";
+                _statusLabel.ForeColor = ModernTheme.Error;
+            }
+        }
+
+        private void PopulateTreeView()
+        {
+            _previousSelectedNode = null;  // Reset before clearing tree to prevent stale references
+            _treeView.Nodes.Clear();
+            _listView.Items.Clear();
+            _detailsBox.Clear();
+
+            var root = _parser?.GetRootKey();
+            if (root == null || _parser == null) return;
+
+            var rootNode = CreateTreeNode(root);
+            rootNode.Text = $"{_parser.CurrentHiveType}";
+            rootNode.NodeFont = ModernTheme.BoldFont;
+            _treeView.Nodes.Add(rootNode);
+            rootNode.Expand();
+        }
+
+        private TreeNode CreateTreeNode(RegistryKey key)
+        {
+            var node = new TreeNode(key.KeyName)
+            {
+                Tag = key,
+                ImageKey = "folder",
+                SelectedImageKey = "folder_open"
+            };
+
+            if (key.SubKeys?.Count > 0)
+            {
+                node.Nodes.Add(new TreeNode("Loading...") { Tag = "placeholder" });
+            }
+
+            return node;
+        }
+
+        private void TreeView_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
+        {
+            var node = e.Node;
+            if (node == null) return;
+
+            if (node.Nodes.Count == 1 && node.Nodes[0].Tag?.ToString() == "placeholder")
+            {
+                node.Nodes.Clear();
+                
+                if (node.Tag is RegistryKey key && key.SubKeys != null)
+                {
+                    foreach (var subKey in key.SubKeys.OrderBy(k => k.KeyName))
+                    {
+                        node.Nodes.Add(CreateTreeNode(subKey));
+                    }
+                }
+            }
+        }
+
+        private void TreeView_AfterSelect(object? sender, TreeViewEventArgs e)
+        {
+            // Reset previous node to closed folder icon
+            // Check if node is still valid (in the tree) to prevent access issues
+            if (_previousSelectedNode != null && 
+                _previousSelectedNode != e.Node &&
+                _previousSelectedNode.TreeView != null)
+            {
+                _previousSelectedNode.ImageKey = "folder";
+                _previousSelectedNode.SelectedImageKey = "folder";
+            }
+            
+            // Set current node to open folder icon
+            if (e.Node != null)
+            {
+                e.Node.ImageKey = "folder_open";
+                e.Node.SelectedImageKey = "folder_open";
+                _previousSelectedNode = e.Node;
+            }
+            
+            // Existing functionality
+            if (e.Node?.Tag is RegistryKey key)
+            {
+                PopulateListView(key);
+                UpdateDetailsForKey(key);
+            }
+        }
+
+        private void PopulateListView(RegistryKey key)
+        {
+            _listView.Items.Clear();
+            
+            foreach (var value in key.Values.OrderBy(v => v.ValueName == "" ? "" : v.ValueName))
+            {
+                var name = string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName;
+                var type = value.ValueType;
+                var data = FormatValueData(value);
+                
+                var item = new ListViewItem(name);
+                item.SubItems.Add(type);
+                item.SubItems.Add(data);
+                item.Tag = value;
+                _listView.Items.Add(item);
+            }
+        }
+
+        private string FormatValueData(KeyValue value)
+        {
+            try
+            {
+                if (value.ValueData == null) return "(null)";
+                
+                switch (value.ValueType?.ToUpperInvariant() ?? "")
+                {
+                    case "REGBINARY":
+                        var bytes = value.ValueDataRaw;
+                        if (bytes == null || bytes.Length == 0) return "(empty)";
+                        var hex = BitConverter.ToString(bytes.Take(64).ToArray()).Replace("-", " ");
+                        return bytes.Length > 64 ? $"{hex}... ({bytes.Length} bytes)" : hex;
+                    
+                    case "REGMULTISTRING":
+                    case "REGMULTISZ":
+                        return value.ValueData?.ToString()?.Replace("\0", " | ") ?? "";
+                    
+                    case "REGQWORD":
+                    case "REGDWORD":
+                        return $"{value.ValueData} (0x{Convert.ToInt64(value.ValueData):X})";
+                    
+                    default:
+                        return value.ValueData?.ToString() ?? "";
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error formatting value: {ex.Message}");
+                return value.ValueData?.ToString() ?? "(error)";
+            }
+        }
+
+        private void UpdateDetailsForKey(RegistryKey key)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"Path: {key.KeyPath}");
+            sb.AppendLine($"Name: {key.KeyName}");
+            sb.AppendLine($"Last Modified: {key.LastWriteTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Unknown"}");
+            sb.AppendLine($"Subkeys: {key.SubKeys?.Count ?? 0}");
+            sb.AppendLine($"Values: {key.Values.Count}");
+            
+            _detailsBox.Text = sb.ToString();
+        }
+
+        private void ListView_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is KeyValue value)
+            {
+                ShowValueDetails(value);
+            }
+        }
+
+        private void ListView_DoubleClick(object? sender, EventArgs e)
+        {
+            if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is KeyValue value)
+            {
+                ShowValueInDialog(value);
+            }
+        }
+
+        private void ShowValueDetails(KeyValue value)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"Name: {(string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName)}");
+            sb.AppendLine($"Type: {value.ValueType}");
+            sb.AppendLine($"Slack: {value.ValueSlack?.Length ?? 0} bytes");
+            sb.AppendLine();
+            sb.AppendLine("─── Data ───");
+            sb.AppendLine(value.ValueData?.ToString() ?? "(null)");
+            
+            if (value.ValueDataRaw != null && value.ValueDataRaw.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("─── Hex Dump ───");
+                sb.AppendLine(FormatHexDump(value.ValueDataRaw));
+            }
+            
+            _detailsBox.Text = sb.ToString();
+        }
+
+        private void ShowValueInDialog(KeyValue value)
+        {
+            var form = new Form
+            {
+                Text = $"Value: {(string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName)}",
+                Size = new Size(700, 550),
+                StartPosition = FormStartPosition.CenterParent,
+                ShowInTaskbar = false
+            };
+            ModernTheme.ApplyTo(form);
+
+            var textBox = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                Text = FormatFullValueDetails(value),
+                Padding = new Padding(12)
+            };
+            ModernTheme.ApplyTo(textBox);
+
+            form.Controls.Add(textBox);
+            form.ShowDialog(this);
+        }
+
+        private string FormatFullValueDetails(KeyValue value)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine($"Name: {(string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName)}");
+            sb.AppendLine($"Type: {value.ValueType}");
+            sb.AppendLine();
+            sb.AppendLine("═══ Interpreted Data ═══");
+            sb.AppendLine(value.ValueData?.ToString() ?? "(null)");
+            
+            if (value.ValueDataRaw != null && value.ValueDataRaw.Length > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine("═══ Raw Hex Dump ═══");
+                sb.AppendLine(FormatHexDump(value.ValueDataRaw));
+            }
+            
+            return sb.ToString();
+        }
+
+        private string FormatHexDump(byte[] data)
+        {
+            var sb = new StringBuilder();
+            int offset = 0;
+            int bytesToShow = Math.Min(data.Length, 1024);
+            
+            while (offset < bytesToShow)
+            {
+                sb.Append($"{offset:X8}  ");
+                
+                for (int i = 0; i < 16; i++)
+                {
+                    if (offset + i < bytesToShow)
+                        sb.Append($"{data[offset + i]:X2} ");
+                    else
+                        sb.Append("   ");
+                    if (i == 7) sb.Append(" ");
+                }
+                
+                sb.Append(" ");
+                
+                for (int i = 0; i < 16 && offset + i < bytesToShow; i++)
+                {
+                    byte b = data[offset + i];
+                    sb.Append(b >= 32 && b < 127 ? (char)b : '.');
+                }
+                
+                sb.AppendLine();
+                offset += 16;
+            }
+            
+            if (data.Length > bytesToShow)
+                sb.AppendLine($"... ({data.Length - bytesToShow} more bytes)");
+            
+            return sb.ToString();
+        }
+
+        private void ExportKey_Click(object? sender, EventArgs e)
+        {
+            if (_treeView.SelectedNode?.Tag is not RegistryKey key)
+            {
+                ShowInfo("Please select a key to export.");
+                return;
+            }
+
+            using var dialog = new SaveFileDialog
+            {
+                Title = "Export Registry Key",
+                Filter = "Text Files|*.txt|All Files|*.*",
+                FileName = $"{key.KeyName}_export.txt"
+            };
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                try
+                {
+                    var sb = new StringBuilder();
+                    ExportKeyRecursive(key, sb, 0);
+                    File.WriteAllText(dialog.FileName, sb.ToString());
+                    ShowInfo("Export completed successfully.");
+                }
+                catch (Exception ex)
+                {
+                    ShowError($"Export failed: {ex.Message}");
+                }
+            }
+        }
+
+        private void AdjustValuesColumns()
+        {
+            try
+            {
+                if (_listView == null || _listView.Columns.Count < 3)
+                    return;
+
+                // Keep Name and Type fixed, expand Data to fill remaining space
+                int clientWidth = _listView.ClientSize.Width;
+                int fixedWidth = _listView.Columns[0].Width + _listView.Columns[1].Width;
+                int padding = 4; // minimal padding
+                int remaining = clientWidth - fixedWidth - padding;
+                _listView.Columns[2].Width = Math.Max(150, remaining);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error adjusting columns: {ex.Message}");
+            }
+        }
+
+        // Pre-computed indent strings for export (avoids per-call allocations)
+        private static readonly string[] _indentCache = Enumerable.Range(0, 50).Select(i => new string(' ', i * 2)).ToArray();
+        
+        private static string GetIndent(int indent)
+        {
+            if (indent < _indentCache.Length)
+                return _indentCache[indent];
+            return new string(' ', indent * 2); // Fallback for deeply nested keys
+        }
+
+        private void ExportKeyRecursive(RegistryKey key, StringBuilder sb, int indent)
+        {
+            string indentStr = GetIndent(indent);
+            sb.AppendLine($"{indentStr}[{key.KeyPath}]");
+            sb.AppendLine($"{indentStr}Last Write: {key.LastWriteTime}");
+            
+            string valueIndent = GetIndent(indent) + "  ";
+            foreach (var value in key.Values)
+            {
+                var name = string.IsNullOrEmpty(value.ValueName) ? "@" : $"\"{value.ValueName}\"";
+                sb.AppendLine($"{valueIndent}{name} = {value.ValueData} ({value.ValueType})");
+            }
+            
+            sb.AppendLine();
+            
+            if (key.SubKeys != null)
+            {
+                foreach (var subKey in key.SubKeys)
+                {
+                    ExportKeyRecursive(subKey, sb, indent + 1);
+                }
+            }
+        }
+
+        private void ExpandAll_Click(object? sender, EventArgs e)
+        {
+            if (_treeView.SelectedNode != null)
+            {
+                _treeView.BeginUpdate();
+                ExpandAllNodes(_treeView.SelectedNode);
+                _treeView.EndUpdate();
+            }
+        }
+
+        private void ExpandAllNodes(TreeNode node)
+        {
+            if (node.Nodes.Count == 1 && node.Nodes[0].Tag?.ToString() == "placeholder")
+            {
+                node.Expand();
+            }
+            
+            foreach (TreeNode child in node.Nodes)
+            {
+                ExpandAllNodes(child);
+            }
+            node.Expand();
+        }
+
+        private void CollapseAll_Click(object? sender, EventArgs e)
+        {
+            _treeView.CollapseAll();
+            if (_treeView.Nodes.Count > 0)
+                _treeView.Nodes[0].Expand();
+        }
+
+        private void ShowStatistics_Click(object? sender, EventArgs e)
+        {
+            if (_parser == null || !_parser.IsLoaded)
+            {
+                ShowInfo("Please load a registry hive first.");
+                return;
+            }
+
+            ShowStatisticsDialog();
+        }
+
+        private void ShowCompare_Click(object? sender, EventArgs e)
+        {
+            // Close existing compare form if open
+            if (_compareForm != null && !_compareForm.IsDisposed)
+            {
+                _compareForm.Close();
+            }
+            
+            _compareForm = new CompareForm();
+            _compareForm.FormClosed += (s, ev) => { _compareForm = null; };
+            
+            // If a hive is already loaded, pre-load it as the left (base) hive
+            if (_parser != null && _parser.IsLoaded && !string.IsNullOrEmpty(_currentHivePath))
+            {
+                _compareForm.SetLeftHive(_currentHivePath);
+            }
+            
+            // Show as non-modal so user can still interact with main form
+            _compareForm.Show();
+        }
+
+        private void ShowTimeline_Click(object? sender, EventArgs e)
+        {
+            if (_parser == null || !_parser.IsLoaded)
+            {
+                ShowInfo("Please load a registry hive first.");
+                return;
+            }
+
+            // Close existing timeline form if open, or bring to front
+            if (_timelineForm != null && !_timelineForm.IsDisposed)
+            {
+                _timelineForm.BringToFront();
+                _timelineForm.Activate();
+                return;
+            }
+
+            _timelineForm = new TimelineForm(_parser, this);
+            _timelineForm.FormClosed += (s, ev) => { _timelineForm = null; };
+            _timelineForm.Show();
+        }
+
+        private void ShowStatisticsDialog()
+        {
+            if (_parser == null) return;
+            
+            // Close existing statistics form if open
+            if (_statisticsForm != null && !_statisticsForm.IsDisposed)
+            {
+                _statisticsForm.Close();
+            }
+
+            var form = new Form
+            {
+                Text = $"Registry Statistics - {_parser.CurrentHiveType}",
+                Size = new Size(900, 650),
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimumSize = new Size(700, 500),
+                ShowInTaskbar = true
+            };
+            ModernTheme.ApplyTo(form);
+            _statisticsForm = form; // Track the form;
+
+            // Main panel with padding
+            var mainPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(20)
+            };
+
+            // Header section
+            var headerPanel = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 100,
+                BackColor = ModernTheme.Surface
+            };
+            headerPanel.Paint += (s, ev) =>
+            {
+                using var pen = new Pen(ModernTheme.Border);
+                ev.Graphics.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
+            };
+
+            var stats = _parser.GetStatistics();
+            
+            // Summary labels in header
+            var titleLabel = new Label
+            {
+                Text = "\uE9D9  Registry Statistics",
+                Font = ModernTheme.HeaderFont,
+                ForeColor = ModernTheme.TextPrimary,
+                Location = new Point(20, 15),
+                AutoSize = true
+            };
+            titleLabel.Paint += (s, ev) =>
+            {
+                using var iconFont = new Font("Segoe MDL2 Assets", 16F);
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                ev.Graphics.DrawString("\uE9D9", iconFont, iconBrush, 0, 2);
+            };
+
+            var summaryFlow = new FlowLayoutPanel
+            {
+                Location = new Point(20, 50),
+                Size = new Size(850, 40),
+                FlowDirection = FlowDirection.LeftToRight,
+                BackColor = Color.Transparent
+            };
+
+            summaryFlow.Controls.Add(CreateStatCard("File Size", stats.FormattedFileSize, ModernTheme.Accent));
+            summaryFlow.Controls.Add(CreateStatCard("Total Keys", stats.TotalKeys.ToString("N0"), ModernTheme.Success));
+            summaryFlow.Controls.Add(CreateStatCard("Total Values", stats.TotalValues.ToString("N0"), ModernTheme.Warning));
+            summaryFlow.Controls.Add(CreateStatCard("Hive Type", stats.HiveType.ToString(), ModernTheme.Info));
+
+            headerPanel.Controls.Add(titleLabel);
+            headerPanel.Controls.Add(summaryFlow);
+
+            // Tab control for different views
+            var tabControl = new TabControl
+            {
+                Dock = DockStyle.Fill,
+                Font = ModernTheme.RegularFont
+            };
+            ModernTheme.ApplyTo(tabControl);
+
+            // Key Count Tab
+            var keyCountTab = new TabPage("Key Counts (Bloat Detection)")
+            {
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(10)
+            };
+
+            // Key Size Tab (shows data content size, not including registry structure overhead)
+            var keySizeTab = new TabPage("Data Sizes")
+            {
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(10)
+            };
+
+            // Analyze registry in background
+            var statusLabel = new Label
+            {
+                Text = "Analyzing registry structure...",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            keyCountTab.Controls.Add(statusLabel);
+
+            var statusLabel2 = new Label
+            {
+                Text = "Analyzing registry structure...",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            keySizeTab.Controls.Add(statusLabel2);
+
+            tabControl.TabPages.Add(keyCountTab);
+            tabControl.TabPages.Add(keySizeTab);
+
+            mainPanel.Controls.Add(tabControl);
+            mainPanel.Controls.Add(headerPanel);
+            form.Controls.Add(mainPanel);
+
+            form.FormClosed += (s, ev) => { _statisticsForm = null; };
+            form.Show();
+
+            // Capture parser reference to avoid race condition if user loads new hive
+            var parser = _parser;
+            if (parser == null) return;
+
+            // Analyze in background - only top level initially for speed
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    var keyStats = AnalyzeTopLevelKeys(parser);
+                    
+                    if (form.IsDisposed) return;
+                    
+                    form.Invoke(() =>
+                    {
+                        if (form.IsDisposed) return;
+                        
+                        keyCountTab.Controls.Clear();
+                        keySizeTab.Controls.Clear();
+                        
+                        // Create expandable Key Count tree panel
+                        var keyCountPanel = CreateExpandableStatsPanel(
+                            keyStats.OrderByDescending(k => k.SubKeyCount).ToList(),
+                            "Subkey Count",
+                            k => k.SubKeyCount,
+                            ModernTheme.Accent);
+                        keyCountPanel.Dock = DockStyle.Fill;
+                        keyCountTab.Controls.Add(keyCountPanel);
+
+                        // Create expandable Key Size tree panel
+                        var keySizePanel = CreateExpandableStatsPanel(
+                            keyStats.OrderByDescending(k => k.TotalSize).ToList(),
+                            "Size (bytes)",
+                            k => k.TotalSize,
+                            ModernTheme.Success);
+                        keySizePanel.Dock = DockStyle.Fill;
+                        keySizeTab.Controls.Add(keySizePanel);
+                    });
+                }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+            });
+        }
+
+        private Panel CreateExpandableStatsPanel(List<KeyStatistics> data, string valueLabel, Func<KeyStatistics, long> valueSelector, Color barColor)
+        {
+            var panel = new Panel
+            {
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(5)
+            };
+
+            if (data.Count == 0)
+            {
+                var emptyLabel = new Label
+                {
+                    Text = "No data to display",
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    ForeColor = ModernTheme.TextSecondary,
+                    Font = ModernTheme.RegularFont
+                };
+                panel.Controls.Add(emptyLabel);
+                return panel;
+            }
+
+            long maxValue = data.Max(d => valueSelector(d));
+            if (maxValue == 0) maxValue = 1;
+
+            // Create TreeView for expandable display
+            var tree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.DataFont,
+                BorderStyle = BorderStyle.None,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                FullRowSelect = true,
+                ItemHeight = 26,
+                DrawMode = TreeViewDrawMode.OwnerDrawAll
+            };
+
+            // Store value info for custom drawing
+            var nodeValues = new Dictionary<TreeNode, (long value, long maxVal, Color color)>();
+
+            // Add top-level nodes
+            foreach (var item in data)
+            {
+                var valueText = FormatSize(valueSelector(item));
+                var node = new TreeNode(item.KeyPath)
+                {
+                    Tag = item.KeyPath // Store path for lazy loading
+                };
+                nodeValues[node] = (valueSelector(item), maxValue, barColor);
+                
+                // Add dummy child to show expand button (will be replaced on expand)
+                // SubKeyCount includes the key itself, so > 1 means it has actual children
+                if (item.SubKeyCount > 1)
+                {
+                    node.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                }
+                
+                tree.Nodes.Add(node);
+            }
+
+            // Custom draw for bar chart effect
+            tree.DrawNode += (s, e) =>
+            {
+                if (e.Node == null || e.Bounds.IsEmpty) return;
+
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                
+                // Background
+                var bgColor = e.Node.IsSelected ? ModernTheme.Selection : 
+                             (e.Node.Index % 2 == 0 ? ModernTheme.Background : ModernTheme.ListViewAltRow);
+                using var bgBrush = new SolidBrush(bgColor);
+                g.FillRectangle(bgBrush, e.Bounds);
+
+                // Expand/collapse button area
+                int indent = e.Node.Level * 20 + 5;
+                
+                // Draw +/- button if has children
+                if (e.Node.Nodes.Count > 0 || (e.Node.Tag as string) != "dummy")
+                {
+                    var btnRect = new Rectangle(indent, e.Bounds.Y + 5, 14, 14);
+                    using var btnPen = new Pen(ModernTheme.TextSecondary, 1);
+                    g.DrawRectangle(btnPen, btnRect);
+                    
+                    // Horizontal line
+                    g.DrawLine(btnPen, btnRect.X + 3, btnRect.Y + 7, btnRect.X + 11, btnRect.Y + 7);
+                    
+                    // Vertical line (if collapsed)
+                    if (!e.Node.IsExpanded && e.Node.Nodes.Count > 0 && 
+                        !(e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy"))
+                    {
+                        g.DrawLine(btnPen, btnRect.X + 7, btnRect.Y + 3, btnRect.X + 7, btnRect.Y + 11);
+                    }
+                    else if (!e.Node.IsExpanded && e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy")
+                    {
+                        g.DrawLine(btnPen, btnRect.X + 7, btnRect.Y + 3, btnRect.X + 7, btnRect.Y + 11);
+                    }
+                }
+
+                // Key path text
+                int textX = indent + 22;
+                int maxTextWidth = Math.Min(400, e.Bounds.Width / 2);
+                var displayText = e.Node.Text;
+                if (displayText.Length > 50)
+                    displayText = "..." + displayText.Substring(displayText.Length - 47);
+                
+                using var textBrush = new SolidBrush(e.Node.IsSelected ? ModernTheme.Accent : ModernTheme.TextPrimary);
+                var textRect = new RectangleF(textX, e.Bounds.Y + 4, maxTextWidth, e.Bounds.Height - 8);
+                using var sf = new StringFormat { Trimming = StringTrimming.EllipsisPath };
+                g.DrawString(displayText, ModernTheme.DataFont, textBrush, textRect, sf);
+
+                // Draw bar and value if this node has stats
+                if (nodeValues.TryGetValue(e.Node, out var valInfo))
+                {
+                    int barStartX = textX + maxTextWidth + 20;
+                    int barMaxWidth = Math.Max(100, e.Bounds.Width - barStartX - 100);
+                    int barWidth = (int)((double)valInfo.value / valInfo.maxVal * barMaxWidth);
+                    if (barWidth < 3) barWidth = 3;
+
+                    // Bar
+                    var barRect = new Rectangle(barStartX, e.Bounds.Y + 5, barWidth, 14);
+                    using var barBrush = new SolidBrush(valInfo.color);
+                    g.FillRectangle(barBrush, barRect);
+
+                    // Value text
+                    var valueText = FormatSize(valInfo.value);
+                    using var valueBrush = new SolidBrush(ModernTheme.TextSecondary);
+                    g.DrawString(valueText, ModernTheme.DataFont, valueBrush, barStartX + barMaxWidth + 10, e.Bounds.Y + 5);
+                }
+            };
+
+            // Lazy load children on expand
+            tree.BeforeExpand += (s, e) =>
+            {
+                if (e.Node == null) return;
+                
+                // Check if this is a "more items" node
+                if (e.Node.Tag is List<KeyStatistics> moreItems)
+                {
+                    var oldCursor = tree.Cursor;
+                    tree.Cursor = Cursors.WaitCursor;
+                    
+                    try
+                    {
+                        e.Node.Nodes.Clear();
+                        
+                        long childMax = moreItems.Max(c => valueLabel == "Size (bytes)" ? c.TotalSize : c.SubKeyCount);
+                        if (childMax == 0) childMax = 1;
+                        
+                        // Show next 100 items
+                        var batch = moreItems.Take(100).ToList();
+                        var remaining = moreItems.Skip(100).ToList();
+                        
+                        foreach (var child in batch)
+                        {
+                            var childValue = valueLabel == "Size (bytes)" ? child.TotalSize : (long)child.SubKeyCount;
+                            var childNode = new TreeNode(child.KeyPath.Contains('\\') 
+                                ? child.KeyPath.Substring(child.KeyPath.LastIndexOf('\\') + 1)
+                                : child.KeyPath)
+                            {
+                                Tag = child.KeyPath
+                            };
+                            nodeValues[childNode] = (childValue, childMax, barColor);
+                            
+                            // SubKeyCount includes the key itself, so > 1 means it has actual children
+                            if (child.SubKeyCount > 1)
+                            {
+                                childNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                            }
+                            
+                            e.Node.Nodes.Add(childNode);
+                        }
+                        
+                        // Add another "more" node if there are still remaining items
+                        if (remaining.Count > 0)
+                        {
+                            var moreNode = new TreeNode($"... and {remaining.Count} more")
+                            {
+                                ForeColor = ModernTheme.Accent,
+                                Tag = remaining // Store remaining items for next expansion
+                            };
+                            moreNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                            e.Node.Nodes.Add(moreNode);
+                        }
+                        
+                        // Update parent node text to show it's been expanded
+                        e.Node.Text = $"(showing {batch.Count} items)";
+                    }
+                    finally
+                    {
+                        tree.Cursor = oldCursor;
+                    }
+                    return;
+                }
+                
+                // Check if we need to load children (has dummy node)
+                if (e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy")
+                {
+                    var keyPath = e.Node.Tag as string;
+                    if (string.IsNullOrEmpty(keyPath)) return;
+
+                    // Show wait cursor during load
+                    var oldCursor = tree.Cursor;
+                    tree.Cursor = Cursors.WaitCursor;
+                    
+                    try
+                    {
+                        // Load children synchronously (faster perceived performance than async)
+                        var childStats = GetChildKeyStats(keyPath, valueLabel == "Size (bytes)");
+                        
+                        e.Node.Nodes.Clear();
+                        
+                        if (childStats.Count == 0)
+                        {
+                            e.Node.Nodes.Add(new TreeNode("(No subkeys)") { ForeColor = ModernTheme.TextDisabled });
+                            return;
+                        }
+
+                        var sortedChildren = valueLabel == "Size (bytes)" 
+                            ? childStats.OrderByDescending(c => c.TotalSize).ToList()
+                            : childStats.OrderByDescending(c => c.SubKeyCount).ToList();
+
+                        long childMax = sortedChildren.Max(c => valueLabel == "Size (bytes)" ? c.TotalSize : c.SubKeyCount);
+                        if (childMax == 0) childMax = 1;
+
+                        foreach (var child in sortedChildren.Take(50)) // Show first 50
+                        {
+                            var childValue = valueLabel == "Size (bytes)" ? child.TotalSize : (long)child.SubKeyCount;
+                            var childNode = new TreeNode(child.KeyPath.Contains('\\') 
+                                ? child.KeyPath.Substring(child.KeyPath.LastIndexOf('\\') + 1)
+                                : child.KeyPath)
+                            {
+                                Tag = child.KeyPath
+                            };
+                            nodeValues[childNode] = (childValue, childMax, barColor);
+                            
+                            // Add dummy for further expansion if has subkeys
+                            // SubKeyCount includes the key itself, so > 1 means it has actual children
+                            if (child.SubKeyCount > 1)
+                            {
+                                childNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                            }
+                            
+                            e.Node.Nodes.Add(childNode);
+                        }
+                        
+                        // Add expandable "more" node if there are remaining items
+                        if (sortedChildren.Count > 50)
+                        {
+                            var remaining = sortedChildren.Skip(50).ToList();
+                            var moreNode = new TreeNode($"... and {remaining.Count} more")
+                            {
+                                ForeColor = ModernTheme.Accent,
+                                Tag = remaining // Store remaining items for lazy loading
+                            };
+                            moreNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                            e.Node.Nodes.Add(moreNode);
+                        }
+                    }
+                    finally
+                    {
+                        tree.Cursor = oldCursor;
+                    }
+                }
+            };
+
+            // Single ToolTip for the tree - created once, reused
+            var treeToolTip = new ToolTip();
+            
+            // Tooltip for full path
+            tree.NodeMouseHover += (s, e) =>
+            {
+                if (e.Node?.Tag is string path)
+                {
+                    if (nodeValues.TryGetValue(e.Node, out var valInfo))
+                    {
+                        treeToolTip.SetToolTip(tree, $"{path}\n{valueLabel}: {valInfo.value:N0}");
+                    }
+                    else
+                    {
+                        treeToolTip.SetToolTip(tree, path);
+                    }
+                }
+            };
+            
+            // Dispose tooltip when panel is disposed
+            panel.Disposed += (s, e) => treeToolTip.Dispose();
+
+            panel.Controls.Add(tree);
+            return panel;
+        }
+
+        private List<KeyStatistics> AnalyzeTopLevelKeys(OfflineRegistryParser parser)
+        {
+            var results = new List<KeyStatistics>();
+            var rootKey = parser.GetRootKey();
+            if (rootKey?.SubKeys == null) return results;
+
+            foreach (var topKey in rootKey.SubKeys)
+            {
+                // Combined single-pass traversal for all three metrics
+                var (subKeyCount, valueCount, totalSize) = CalculateKeyStatisticsRecursive(topKey);
+                var stat = new KeyStatistics
+                {
+                    KeyPath = topKey.KeyName,
+                    SubKeyCount = subKeyCount,
+                    ValueCount = valueCount,
+                    TotalSize = totalSize
+                };
+                results.Add(stat);
+            }
+
+            return results;
+        }
+
+        private List<KeyStatistics> GetChildKeyStats(string parentPath, bool calculateSize)
+        {
+            var results = new List<KeyStatistics>();
+            if (_parser == null) return results;
+            
+            var parentKey = _parser.GetKey(parentPath);
+            if (parentKey?.SubKeys == null) return results;
+
+            foreach (var subKey in parentKey.SubKeys)
+            {
+                var childPath = $"{parentPath}\\{subKey.KeyName}";
+                // Get the fully loaded key to ensure SubKeys are populated
+                var fullChildKey = _parser.GetKey(childPath);
+                
+                var stat = new KeyStatistics
+                {
+                    KeyPath = childPath,
+                    SubKeyCount = fullChildKey != null ? CountSubKeysRecursive(fullChildKey) : 0,
+                    ValueCount = fullChildKey != null ? CountValuesRecursive(fullChildKey) : 0,
+                    TotalSize = (calculateSize && fullChildKey != null) ? CalculateKeySizeRecursive(fullChildKey) : 0
+                };
+                results.Add(stat);
+            }
+
+            return results;
+        }
+
+        private string FormatSize(long bytes)
+        {
+            if (bytes >= 1_000_000_000) return $"{bytes / 1_000_000_000.0:F1}G";
+            if (bytes >= 1_000_000) return $"{bytes / 1_000_000.0:F1}M";
+            if (bytes >= 1_000) return $"{bytes / 1_000.0:F1}K";
+            return bytes.ToString("N0");
+        }
+
+        private Panel CreateStatCard(string label, string value, Color accentColor)
+        {
+            var panel = new Panel
+            {
+                Size = new Size(180, 35),
+                Margin = new Padding(0, 0, 15, 0),
+                BackColor = Color.Transparent
+            };
+            
+            panel.Paint += (s, e) =>
+            {
+                // Draw accent line
+                using var accentBrush = new SolidBrush(accentColor);
+                e.Graphics.FillRectangle(accentBrush, 0, 0, 3, panel.Height);
+                
+                // Draw label
+                using var labelBrush = new SolidBrush(ModernTheme.TextSecondary);
+                e.Graphics.DrawString(label, ModernTheme.SmallFont, labelBrush, 10, 2);
+                
+                // Draw value
+                using var valueBrush = new SolidBrush(ModernTheme.TextPrimary);
+                e.Graphics.DrawString(value, ModernTheme.BoldFont, valueBrush, 10, 16);
+            };
+            
+            return panel;
+        }
+
+        private class KeyStatistics
+        {
+            public string KeyPath { get; set; } = "";
+            public int SubKeyCount { get; set; }
+            public int ValueCount { get; set; }
+            public long TotalSize { get; set; }
+        }
+
+        private int CountSubKeysRecursive(Registry.Abstractions.RegistryKey? key)
+        {
+            if (key == null) return 0;
+            
+            // Leaf key (no children) counts as 1 (itself)
+            if (key.SubKeys == null || key.SubKeys.Count == 0)
+                return 1;
+            
+            // Non-leaf: sum up all children's counts (not including self)
+            int count = 0;
+            foreach (var subKey in key.SubKeys)
+            {
+                count += CountSubKeysRecursive(subKey);
+            }
+            return count;
+        }
+
+        private int CountValuesRecursive(Registry.Abstractions.RegistryKey key)
+        {
+            int count = key.Values?.Count ?? 0;
+            if (key.SubKeys != null)
+            {
+                foreach (var subKey in key.SubKeys)
+                {
+                    count += CountValuesRecursive(subKey);
+                }
+            }
+            return count;
+        }
+
+        private long CalculateKeySizeRecursive(Registry.Abstractions.RegistryKey key)
+        {
+            long size = 0;
+            
+            // Only count actual data content, not structure overhead
+            // Key name (stored as UTF-16 in registry)
+            size += ((long)(key.KeyName?.Length ?? 0)) * 2;
+            
+            // Add size of values directly in this key
+            if (key.Values != null)
+            {
+                foreach (var val in key.Values)
+                {
+                    // Value name + data only (no overhead estimate)
+                    size += ((long)(val.ValueName?.Length ?? 0)) * 2;
+                    size += GetValueDataSize(val);
+                }
+            }
+            
+            // Recurse into subkeys
+            if (key.SubKeys != null)
+            {
+                foreach (var subKey in key.SubKeys)
+                {
+                    size += CalculateKeySizeRecursive(subKey);
+                }
+            }
+            
+            return size;
+        }
+
+        /// <summary>
+        /// Combined single-pass traversal that calculates all three statistics at once.
+        /// This is more efficient than calling CountSubKeysRecursive, CountValuesRecursive, 
+        /// and CalculateKeySizeRecursive separately, as it only traverses the tree once.
+        /// </summary>
+        private (int subKeyCount, int valueCount, long totalSize) CalculateKeyStatisticsRecursive(Registry.Abstractions.RegistryKey? key)
+        {
+            if (key == null) return (0, 0, 0);
+            
+            // Calculate size for this key - only actual data, no overhead
+            long size = ((long)(key.KeyName?.Length ?? 0)) * 2;  // Key name only
+            int valueCount = key.Values?.Count ?? 0;
+            
+            // Add size of values
+            if (key.Values != null)
+            {
+                foreach (var val in key.Values)
+                {
+                    size += ((long)(val.ValueName?.Length ?? 0)) * 2;
+                    size += GetValueDataSize(val);
+                }
+            }
+            
+            // Leaf key (no children)
+            if (key.SubKeys == null || key.SubKeys.Count == 0)
+            {
+                return (1, valueCount, size);
+            }
+            
+            // Non-leaf: recursively accumulate from children
+            int subKeyCount = 0;
+            foreach (var subKey in key.SubKeys)
+            {
+                var (childSubKeys, childValues, childSize) = CalculateKeyStatisticsRecursive(subKey);
+                subKeyCount += childSubKeys;
+                valueCount += childValues;
+                size += childSize;
+            }
+            
+            return (subKeyCount, valueCount, size);
+        }
+
+        private long GetValueDataSize(KeyValue val)
+        {
+            if (val.ValueData == null) return 0;
+            
+            // Try to get actual data size based on type
+            var dataStr = val.ValueData.ToString() ?? "";
+            
+            // Check for binary data (hex string format from Registry library)
+            if (val.ValueType == "RegBinary" || dataStr.Contains(" ") && IsHexString(dataStr))
+            {
+                // Binary data is typically shown as hex bytes separated by spaces
+                var parts = dataStr.Split(new[] { ' ', '-' }, StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length;
+            }
+            
+            // REG_DWORD
+            if (val.ValueType == "RegDword")
+                return 4;
+            
+            // REG_QWORD
+            if (val.ValueType == "RegQword")
+                return 8;
+            
+            // REG_SZ, REG_EXPAND_SZ - Unicode string
+            if (val.ValueType == "RegSz" || val.ValueType == "RegExpandSz")
+                return (dataStr.Length + 1) * 2; // Unicode + null terminator
+            
+            // REG_MULTI_SZ - Multiple strings
+            if (val.ValueType == "RegMultiSz")
+                return (dataStr.Length + 2) * 2; // Unicode + double null terminator
+            
+            // Default: estimate based on string representation
+            return dataStr.Length;
+        }
+
+        private bool IsHexString(string str)
+        {
+            if (string.IsNullOrEmpty(str)) return false;
+            var trimmed = str.Replace(" ", "").Replace("-", "");
+            return trimmed.Length > 0 && trimmed.All(c => 
+                (c >= '0' && c <= '9') || 
+                (c >= 'A' && c <= 'F') || 
+                (c >= 'a' && c <= 'f'));
+        }
+
+        private void Search_Click(object? sender, EventArgs e)
+        {
+            if (_parser == null || !_parser.IsLoaded)
+            {
+                ShowInfo("Please load a registry hive first.");
+                return;
+            }
+
+            // Close existing search window if open
+            if (_searchForm != null && !_searchForm.IsDisposed)
+            {
+                _searchForm.Close();
+            }
+
+            _searchForm = new SearchForm(_parser, this);
+            _searchForm.FormClosed += (s, ev) => { _searchForm = null; };
+            _searchForm.Show();
+        }
+
+        private void ShowAnalyzeDialog_Click(object? sender, EventArgs e)
+        {
+            if (_infoExtractor == null || _parser == null || !_parser.IsLoaded)
+            {
+                ShowInfo("Please load a registry hive first.");
+                return;
+            }
+
+            // If existing analyze window is open, bring it to front instead of recreating
+            if (_analyzeForm != null && !_analyzeForm.IsDisposed)
+            {
+                _analyzeForm.BringToFront();
+                _analyzeForm.Activate();
+                if (_analyzeForm.WindowState == FormWindowState.Minimized)
+                    _analyzeForm.WindowState = FormWindowState.Normal;
+                return;
+            }
+
+            var form = new Form
+            {
+                Text = $"Analyze Registry - {_parser.CurrentHiveType}",
+                Size = new Size(1100, 700),
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimumSize = new Size(900, 500),
+                ShowInTaskbar = true
+            };
+            _analyzeForm = form; // Track the form
+            ModernTheme.ApplyTo(form);
+
+            // Create theme data to track controls
+            var themeData = new AnalyzeFormThemeData();
+            form.Tag = themeData;
+
+            // Main split container
+            var splitContainer = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 50,
+                Panel2MinSize = 50
+            };
+            splitContainer.Panel1.BackColor = ModernTheme.Background;
+            splitContainer.Panel2.BackColor = ModernTheme.Background;
+            themeData.MainSplit = splitContainer;
+
+            // Set splitter distance after form loads
+            form.Load += (s, ev) =>
+            {
+                if (splitContainer.Width > 300)
+                    splitContainer.SplitterDistance = 250;
+            };
+
+            // Left panel - Categories
+            var leftPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(0)
+            };
+            themeData.LeftPanel = leftPanel;
+
+            var categoryHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 50,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(15, 0, 15, 0)
+            };
+            themeData.CategoryHeader = categoryHeader;
+
+            var categoryTitle = new Label
+            {
+                Text = "Categories",
+                Font = ModernTheme.HeaderFont,
+                ForeColor = ModernTheme.TextPrimary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            categoryHeader.Controls.Add(categoryTitle);
+            themeData.CategoryTitle = categoryTitle;
+
+            var categoryList = new ListBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                BorderStyle = BorderStyle.None,
+                ItemHeight = 48,
+                DrawMode = DrawMode.OwnerDrawFixed
+            };
+            themeData.CategoryList = categoryList;
+
+            // Add categories with icons (using Segoe UI Symbol characters)
+            var categories = new (string icon, string text, string key)[]
+            {
+                ("\uE770", "System", "System"),           // PC icon
+                ("\uE77B", "Profiles", "Profiles"),       // Contact icon
+                ("\uE15E", "Services", "Services"),       // Services icon
+                ("\uE74C", "Software", "Software"),       // Apps icon
+                ("\uEDA2", "Storage", "Storage"),         // Hard disk icon
+                ("\uE774", "Network", "Network"),         // Globe icon
+                ("\uE8AF", "RDP", "RDP"),                 // Remote Desktop icon
+                ("\uE895", "Update", "Update")            // Download/Update icon
+            };
+
+            // Determine which categories are available based on hive type
+            var currentHiveType = _parser.CurrentHiveType;
+            var enabledCategories = new HashSet<string>();
+            
+            if (currentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                enabledCategories.Add("System");
+                enabledCategories.Add("Services");
+                enabledCategories.Add("Storage");
+                enabledCategories.Add("Network");
+                enabledCategories.Add("RDP");
+            }
+            else if (currentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
+            {
+                enabledCategories.Add("Profiles");
+                enabledCategories.Add("System"); // Activation subcategory is available in SOFTWARE hive
+                enabledCategories.Add("Software"); // Installed Programs and Appx
+                enabledCategories.Add("Update"); // Windows Update settings
+            }
+            else if (currentHiveType == OfflineRegistryParser.HiveType.COMPONENTS)
+            {
+                // COMPONENTS hive only enables Update category (for CBS Components)
+                enabledCategories.Add("Update");
+            }
+            else
+            {
+                // For other hive types, enable all
+                foreach (var cat in categories)
+                    enabledCategories.Add(cat.key);
+            }
+
+            // Add categories with enabled ones first, then disabled ones
+            var availableCats = new List<(string icon, string text, string key)>();
+            var unavailableCats = new List<(string icon, string text, string key)>();
+            foreach (var cat in categories)
+            {
+                if (enabledCategories.Contains(cat.key))
+                    availableCats.Add(cat);
+                else
+                    unavailableCats.Add(cat);
+            }
+            foreach (var cat in availableCats)
+                categoryList.Items.Add(cat);
+            foreach (var cat in unavailableCats)
+                categoryList.Items.Add(cat);
+
+            var iconFont = new Font("Segoe MDL2 Assets", 16F);
+            var textFont = new Font("Segoe UI Semibold", 10.5F);
+            themeData.CategoryIconFont = iconFont;
+            themeData.CategoryTextFont = textFont;
+
+            // Custom draw for category items - modern card-like style
+            categoryList.DrawItem += (s, ev) =>
+            {
+                if (ev.Index < 0) return;
+                var item = ((string icon, string text, string key))categoryList.Items[ev.Index];
+                bool isEnabled = enabledCategories.Contains(item.key);
+                
+                bool isSelected = (ev.State & DrawItemState.Selected) == DrawItemState.Selected;
+                
+                // Background with subtle selection indicator
+                Color backColor = isSelected && isEnabled 
+                    ? ModernTheme.Selection 
+                    : ModernTheme.TreeViewBack;
+                
+                using var brush = new SolidBrush(backColor);
+                ev.Graphics.FillRectangle(brush, ev.Bounds);
+                
+                // Draw accent bar on left for selected item
+                if (isSelected && isEnabled)
+                {
+                    using var accentBrush = new SolidBrush(ModernTheme.Accent);
+                    ev.Graphics.FillRectangle(accentBrush, ev.Bounds.X, ev.Bounds.Y + 8, 3, ev.Bounds.Height - 16);
+                }
+                
+                Color textColor = isEnabled 
+                    ? (isSelected ? ModernTheme.Accent : ModernTheme.TextPrimary) 
+                    : ModernTheme.TextDisabled;
+                Color iconColor = isEnabled 
+                    ? ModernTheme.Accent 
+                    : ModernTheme.TextDisabled;
+
+                // Draw icon in a subtle circle background
+                var iconCenterX = ev.Bounds.X + 32;
+                var iconCenterY = ev.Bounds.Y + ev.Bounds.Height / 2;
+                
+                if (isEnabled)
+                {
+                    using var circleBrush = new SolidBrush(Color.FromArgb(25, ModernTheme.Accent));
+                    ev.Graphics.FillEllipse(circleBrush, iconCenterX - 16, iconCenterY - 16, 32, 32);
+                }
+
+                // Draw icon
+                using var iconBrush = new SolidBrush(iconColor);
+                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                var iconRect = new RectangleF(iconCenterX - 16, iconCenterY - 10, 32, 20);
+                ev.Graphics.DrawString(item.icon, iconFont, iconBrush, iconRect, sf);
+
+                // Draw text
+                using var textBrush = new SolidBrush(textColor);
+                var textRect = new Rectangle(ev.Bounds.X + 60, ev.Bounds.Y, ev.Bounds.Width - 65, ev.Bounds.Height);
+                ev.Graphics.DrawString(item.text, textFont, textBrush, textRect, sf);
+            };
+
+            // Prevent selection of disabled categories
+            categoryList.SelectedIndexChanged += (s, ev) =>
+            {
+                if (categoryList.SelectedIndex >= 0 && categoryList.SelectedItem != null)
+                {
+                    var selected = ((string icon, string text, string key))categoryList.SelectedItem;
+                    if (!enabledCategories.Contains(selected.key))
+                    {
+                        // Find first enabled category
+                        for (int i = 0; i < categoryList.Items.Count; i++)
+                        {
+                            var item = ((string icon, string text, string key))categoryList.Items[i];
+                            if (enabledCategories.Contains(item.key))
+                            {
+                                categoryList.SelectedIndex = i;
+                                return;
+                            }
+                        }
+                        categoryList.SelectedIndex = -1;
+                    }
+                }
+            };
+
+
+            // Add tooltip for disabled categories to show required hive
+            var categoryToolTip = new ToolTip
+            {
+                InitialDelay = 300,
+                ReshowDelay = 100,
+                AutoPopDelay = 5000,
+                BackColor = ModernTheme.Surface,
+                ForeColor = ModernTheme.TextPrimary
+            };
+            themeData.CategoryToolTip = categoryToolTip;
+            int lastHoveredIndex = -1;
+            
+            // Map categories to their required hive types
+            var categoryHiveRequirements = new Dictionary<string, string>
+            {
+                { "System", "SYSTEM" },
+                { "Services", "SYSTEM" },
+                { "Storage", "SYSTEM" },
+                { "Network", "SYSTEM" },
+                { "RDP", "SYSTEM" },
+                { "Profiles", "SOFTWARE" },
+                { "Software", "SOFTWARE" },
+                { "Update", "SOFTWARE" }
+            };
+            
+            categoryList.MouseMove += (s, ev) =>
+            {
+                int index = categoryList.IndexFromPoint(ev.Location);
+                if (index != lastHoveredIndex)
+                {
+                    lastHoveredIndex = index;
+                    if (index >= 0 && index < categoryList.Items.Count)
+                    {
+                        var item = ((string icon, string text, string key))categoryList.Items[index];
+                        if (!enabledCategories.Contains(item.key) && categoryHiveRequirements.TryGetValue(item.key, out var requiredHive))
+                        {
+                            categoryToolTip.SetToolTip(categoryList, $"This feature requires the {requiredHive} hive to be loaded");
+                        }
+                        else
+                        {
+                            categoryToolTip.SetToolTip(categoryList, "");
+                        }
+                    }
+                    else
+                    {
+                        categoryToolTip.SetToolTip(categoryList, "");
+                    }
+                }
+            };
+            
+            categoryList.MouseLeave += (s, ev) =>
+            {
+                lastHoveredIndex = -1;
+                categoryToolTip.SetToolTip(categoryList, "");
+            };
+
+            // Show notice when clicking a disabled (greyed-out) category
+            categoryList.MouseDown += (s, ev) =>
+            {
+                int index = categoryList.IndexFromPoint(ev.Location);
+                if (index >= 0 && index < categoryList.Items.Count)
+                {
+                    var item = ((string icon, string text, string key))categoryList.Items[index];
+                    if (!enabledCategories.Contains(item.key) && categoryHiveRequirements.TryGetValue(item.key, out var requiredHive))
+                    {
+                        MessageBox.Show(
+                            $"This feature requires {requiredHive} hive to be loaded.\n\n" +
+                            $"Common location: C:\\Windows\\System32\\config\\{requiredHive}",
+                            $"{requiredHive} Hive Required",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
+                }
+            };
+
+            leftPanel.Controls.Add(categoryList);
+            leftPanel.Controls.Add(categoryHeader);
+
+            // Right panel - Content
+            var rightPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                Padding = new Padding(0)
+            };
+            themeData.RightPanel = rightPanel;
+
+            // Forward declaration for contentDetailSplit (created later, but captured by lambdas)
+            SplitContainer? contentDetailSplit = null;
+
+            var contentHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 50,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(15, 0, 15, 0)
+            };
+            themeData.ContentHeader = contentHeader;
+
+            var contentTitle = new Label
+            {
+                Text = "Select a category",
+                Font = ModernTheme.HeaderFont,
+                ForeColor = ModernTheme.TextPrimary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            contentHeader.Controls.Add(contentTitle);
+            themeData.ContentTitle = contentTitle;
+
+            // Subcategory tabs panel
+            var subCategoryPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(0, 48),
+                MaximumSize = new Size(0, 140), // Allow up to 3 rows
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(5, 10, 5, 10),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true
+            };
+            themeData.SubCategoryPanel = subCategoryPanel;
+
+            // Appx filter panel (secondary filter row, shown when Appx Packages is selected)
+            var appxFilterPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(0, 0),
+                MaximumSize = new Size(0, 48),
+                BackColor = ModernTheme.TreeViewBack,
+                Padding = new Padding(10, 5, 5, 5),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+                Visible = false // Hidden by default
+            };
+            themeData.AppxFilterPanel = appxFilterPanel;
+
+            // Main content area - DataGridView for better display
+            var contentGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(contentGrid);
+            contentGrid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;  // Override
+            contentGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+            contentGrid.ColumnHeadersDefaultCellStyle.Padding = new Padding(5, 0, 5, 0);
+            themeData.ContentGrid = contentGrid;
+
+            // Network Interfaces master-detail panel
+            var networkSplitContainer = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            networkSplitContainer.Panel1.BackColor = ModernTheme.Background;
+            networkSplitContainer.Panel2.BackColor = ModernTheme.Background;
+            themeData.NetworkSplit = networkSplitContainer;
+            
+            // Set splitter distance when visible
+            networkSplitContainer.VisibleChanged += (s, ev) =>
+            {
+                if (networkSplitContainer.Visible && networkSplitContainer.Width > 300)
+                {
+                    try { networkSplitContainer.SplitterDistance = 250; } catch { }
+                }
+            };
+
+            // Network adapters list (left)
+            var networkAdaptersList = new ListBox
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                BorderStyle = BorderStyle.None,
+                ItemHeight = 32,
+                DrawMode = DrawMode.OwnerDrawFixed
+            };
+            themeData.NetworkAdaptersList = networkAdaptersList;
+
+            // Custom draw for adapter items
+            networkAdaptersList.DrawItem += (s, ev) =>
+            {
+                if (ev.Index < 0) return;
+                var item = networkAdaptersList.Items[ev.Index] as NetworkAdapterItem;
+                if (item == null) return;
+
+                bool isSelected = (ev.State & DrawItemState.Selected) == DrawItemState.Selected;
+                Color backColor = isSelected ? ModernTheme.Accent : (ev.Index % 2 == 0 ? ModernTheme.TreeViewBack : ModernTheme.ListViewAltRow);
+                Color textColor = isSelected ? Color.White : ModernTheme.TextPrimary;
+
+                using var brush = new SolidBrush(backColor);
+                ev.Graphics.FillRectangle(brush, ev.Bounds);
+
+                using var textBrush = new SolidBrush(textColor);
+                using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
+                var textRect = new Rectangle(ev.Bounds.X + 10, ev.Bounds.Y, ev.Bounds.Width - 10, ev.Bounds.Height);
+                ev.Graphics.DrawString(item.DisplayName, ev.Font ?? networkAdaptersList.Font, textBrush, textRect, sf);
+            };
+
+            var networkAdaptersHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(10, 0, 10, 0)
+            };
+            themeData.NetworkAdaptersHeader = networkAdaptersHeader;
+            var networkAdaptersLabel = new Label
+            {
+                Text = "Adapters",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            networkAdaptersHeader.Controls.Add(networkAdaptersLabel);
+            themeData.NetworkAdaptersLabel = networkAdaptersLabel;
+
+            networkSplitContainer.Panel1.Controls.Add(networkAdaptersList);
+            networkSplitContainer.Panel1.Controls.Add(networkAdaptersHeader);
+
+            // Network details panel (right) - contains grid and registry info
+            var networkDetailsPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+
+            var networkDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(10, 0, 10, 0)
+            };
+            themeData.NetworkDetailsHeader = networkDetailsHeader;
+            var networkDetailsLabel = new Label
+            {
+                Text = "Adapter Details",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            networkDetailsHeader.Controls.Add(networkDetailsLabel);
+            themeData.NetworkDetailsLabel = networkDetailsLabel;
+
+            var networkDetailsGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(networkDetailsGrid);
+            themeData.NetworkDetailsGrid = networkDetailsGrid;
+
+            networkDetailsPanel.Controls.Add(networkDetailsGrid);
+            networkDetailsPanel.Controls.Add(networkDetailsHeader);
+
+            networkSplitContainer.Panel2.Controls.Add(networkDetailsPanel);
+
+            // ==================== Firewall Rules Panel ====================
+            var firewallPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background,
+                Visible = false
+            };
+
+            // Top panel - Profile buttons (fixed height)
+            var firewallProfileButtonsPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 44,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(10, 8, 10, 8),
+                FlowDirection = FlowDirection.LeftToRight
+            };
+
+            var firewallProfileLabel = new Label
+            {
+                Text = "Select Profile:",
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.BoldFont,
+                AutoSize = true,
+                Margin = new Padding(0, 5, 10, 0)
+            };
+            firewallProfileButtonsPanel.Controls.Add(firewallProfileLabel);
+
+            // Rules grid panel (fills remaining space)
+            var firewallRulesPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+
+            var firewallRulesHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = 32,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(10, 0, 10, 0)
+            };
+
+            var firewallRulesLabel = new Label
+            {
+                Text = "Firewall Rules",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            firewallRulesHeader.Controls.Add(firewallRulesLabel);
+
+            var firewallRulesGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(firewallRulesGrid);
+            firewallRulesGrid.RowTemplate.Height = 26;  // Override default
+            firewallRulesGrid.ColumnHeadersHeight = 30;  // Override default
+
+            firewallRulesPanel.Controls.Add(firewallRulesGrid);
+            firewallRulesPanel.Controls.Add(firewallRulesHeader);
+
+            // Add controls to main firewall panel (order matters: Fill must be added first)
+            firewallPanel.Controls.Add(firewallRulesPanel);
+            firewallPanel.Controls.Add(firewallProfileButtonsPanel);
+
+            // Register firewall controls for theme updates
+            themeData.FirewallPanel = firewallPanel;
+            themeData.FirewallProfileButtonsPanel = firewallProfileButtonsPanel;
+            themeData.FirewallProfileLabel = firewallProfileLabel;
+            themeData.FirewallRulesPanel = firewallRulesPanel;
+            themeData.FirewallRulesHeader = firewallRulesHeader;
+            themeData.FirewallRulesLabel = firewallRulesLabel;
+            themeData.FirewallRulesGrid = firewallRulesGrid;
+
+            // Firewall state
+            var firewallProfileButtons = new List<Button>();
+            themeData.FirewallProfileButtons = firewallProfileButtons;
+            string currentFirewallProfile = "";
+            List<FirewallRuleInfo> currentFirewallRules = new();
+
+            // Function to display firewall rules for a profile
+            Action<string, string> displayFirewallRules = (profileKey, profileDisplayName) =>
+            {
+                currentFirewallProfile = profileKey;
+                firewallRulesLabel.Text = $"Firewall Rules - {profileDisplayName}";
+
+                // Get rules for this profile
+                currentFirewallRules = _infoExtractor.GetFirewallRulesForProfile(profileKey);
+
+                // Sort: Active Block rules first, then Active Allow, then Inactive
+                var sortedRules = currentFirewallRules
+                    .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(r => r.IsActive)
+                    .ThenBy(r => r.Name)
+                    .ToList();
+
+                // Populate grid
+                firewallRulesGrid.Columns.Clear();
+                firewallRulesGrid.Rows.Clear();
+
+                firewallRulesGrid.Columns.Add("status", "Status");
+                firewallRulesGrid.Columns.Add("action", "Action");
+                firewallRulesGrid.Columns.Add("direction", "Dir");
+                firewallRulesGrid.Columns.Add("name", "Name");
+                firewallRulesGrid.Columns.Add("protocol", "Protocol");
+                firewallRulesGrid.Columns.Add("ports", "Ports");
+                firewallRulesGrid.Columns.Add("application", "Application");
+
+                firewallRulesGrid.Columns["status"].FillWeight = 8;
+                firewallRulesGrid.Columns["action"].FillWeight = 8;
+                firewallRulesGrid.Columns["direction"].FillWeight = 8;
+                firewallRulesGrid.Columns["name"].FillWeight = 30;
+                firewallRulesGrid.Columns["protocol"].FillWeight = 10;
+                firewallRulesGrid.Columns["ports"].FillWeight = 12;
+                firewallRulesGrid.Columns["application"].FillWeight = 24;
+
+                foreach (var rule in sortedRules)
+                {
+                    var statusIcon = rule.IsActive ? "✅" : "⬜";
+                    var actionDisplay = rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? "🚫 Block" : "✓ Allow";
+                    var dirDisplay = rule.Direction.Equals("Inbound", StringComparison.OrdinalIgnoreCase) ? "⬇ In" : "⬆ Out";
+                    var ports = !string.IsNullOrEmpty(rule.LocalPorts) ? rule.LocalPorts : 
+                               (!string.IsNullOrEmpty(rule.RemotePorts) ? $"R:{rule.RemotePorts}" : "Any");
+                    var app = !string.IsNullOrEmpty(rule.Application) ? Path.GetFileName(rule.Application) : 
+                             (!string.IsNullOrEmpty(rule.Service) ? $"[{rule.Service}]" : "");
+
+                    var rowIndex = firewallRulesGrid.Rows.Add(statusIcon, actionDisplay, dirDisplay, rule.Name, rule.Protocol, ports, app);
+
+                    // Color coding for block rules
+                    if (rule.IsActive && rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                    {
+                        firewallRulesGrid.Rows[rowIndex].DefaultCellStyle.BackColor = ModernTheme.BlockRowBackground;
+                        firewallRulesGrid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.BlockRowForeground;
+                    }
+                    else if (!rule.IsActive)
+                    {
+                        firewallRulesGrid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.TextDisabled;
+                    }
+                }
+
+                // Update button states
+                foreach (var btn in firewallProfileButtons)
+                {
+                    var btnProfile = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnProfile == profileKey ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnProfile == profileKey ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Store refresh action for theme changes
+            themeData.RefreshFirewallDisplay = () =>
+            {
+                if (!string.IsNullOrEmpty(currentFirewallProfile) && firewallPanel.Visible)
+                {
+                    // Re-apply colors to existing rows
+                    var sortedRules = currentFirewallRules
+                        .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                        .ThenByDescending(r => r.IsActive)
+                        .ThenBy(r => r.Name)
+                        .ToList();
+
+                    for (int i = 0; i < firewallRulesGrid.Rows.Count && i < sortedRules.Count; i++)
+                    {
+                        var rule = sortedRules[i];
+                        if (rule.IsActive && rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                        {
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.BackColor = ModernTheme.BlockRowBackground;
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.ForeColor = ModernTheme.BlockRowForeground;
+                        }
+                        else if (!rule.IsActive)
+                        {
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.BackColor = ModernTheme.Surface;
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.ForeColor = ModernTheme.TextDisabled;
+                        }
+                        else
+                        {
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.BackColor = ModernTheme.Surface;
+                            firewallRulesGrid.Rows[i].DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                        }
+                    }
+                }
+            };
+
+            // Cache for network adapters
+            List<NetworkAdapterItem> networkAdaptersCache = new();
+            NetworkAdapterItem? selectedNetworkAdapter = null;
+
+            // Network adapter and details selection handlers will be set up after registryPathLabel/registryValueBox are created
+
+            // Track current state
+            List<AnalysisSection> currentSections = new();
+            AnalysisSection? currentSection = null;
+            var subCategoryButtons = new List<Button>();
+            themeData.SubCategoryButtons = subCategoryButtons;
+
+            // Appx display state (declared before displaySection which uses these)
+            var appxFilterButtons = new List<Button>();
+            themeData.AppxFilterButtons = appxFilterButtons;
+            string currentAppxFilter = "InBox";
+
+            // Function to display Appx packages with filter
+            Action<string> displayAppxWithFilter = null!;
+            displayAppxWithFilter = (filter) =>
+            {
+                currentAppxFilter = filter;
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                contentGrid.Columns.Add("name", "Package Name");
+                contentGrid.Columns.Add("version", "Version");
+                contentGrid.Columns.Add("arch", "Architecture");
+                contentGrid.Columns["name"].FillWeight = 55;
+                contentGrid.Columns["version"].FillWeight = 25;
+                contentGrid.Columns["arch"].FillWeight = 20;
+
+                var packages = _infoExtractor.GetAppxPackages(filter);
+
+                foreach (var pkg in packages)
+                {
+                    var rowIdx = contentGrid.Rows.Add(pkg.PackageName, pkg.Version, pkg.Architecture);
+                    contentGrid.Rows[rowIdx].Tag = pkg;  // Store package info for SelectionChanged
+                }
+
+                // Update filter button states
+                foreach (var btn in appxFilterButtons)
+                {
+                    var btnFilter = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnFilter == filter ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnFilter == filter ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Function to create Appx filter buttons
+            Action createAppxFilterButtons = null!;
+            createAppxFilterButtons = () =>
+            {
+                appxFilterPanel.Controls.Clear();
+                appxFilterButtons.Clear();
+
+                var inboxPackages = _infoExtractor.GetAppxPackages("InBox");
+                var userPackages = _infoExtractor.GetAppxPackages("UserInstalled");
+
+                var filters = new[]
+                {
+                    ($"📦 InBox Preinstalled ({inboxPackages.Count})", "InBox"),
+                    ($"📲 User Installed ({userPackages.Count})", "UserInstalled")
+                };
+
+                foreach (var (text, filterKey) in filters)
+                {
+                    var btn = new Button
+                    {
+                        Text = text,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = filterKey == "InBox" ? ModernTheme.Accent : ModernTheme.Surface,
+                        ForeColor = filterKey == "InBox" ? Color.White : ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Height = 28,
+                        AutoSize = true,
+                        Padding = new Padding(8, 0, 8, 0),
+                        Margin = new Padding(2),
+                        Cursor = Cursors.Hand,
+                        Tag = filterKey
+                    };
+                    btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                    btn.Click += (sender, args) => displayAppxWithFilter(filterKey);
+
+                    appxFilterButtons.Add(btn);
+                    appxFilterPanel.Controls.Add(btn);
+                }
+
+                // Show the filter panel
+                appxFilterPanel.Visible = true;
+            };
+
+            // Storage filter state (for Disk/Volume filters)
+            var storageFilterButtons = new List<Button>();
+            themeData.StorageFilterButtons = storageFilterButtons;
+            string currentStorageFilter = "Disk";
+
+            // Function to display storage filters with filter type
+            Action<string> displayStorageWithFilter = null!;
+            displayStorageWithFilter = (filter) =>
+            {
+                currentStorageFilter = filter;
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                contentGrid.Columns.Add("name", "Property");
+                contentGrid.Columns.Add("value", "Value");
+                contentGrid.Columns["name"].FillWeight = 30;
+                contentGrid.Columns["value"].FillWeight = 70;
+
+                var items = filter == "Disk" 
+                    ? _infoExtractor.GetDiskFilters() 
+                    : _infoExtractor.GetVolumeFilters();
+
+                foreach (var item in items)
+                {
+                    var rowIndex = contentGrid.Rows.Add(item.Name, item.Value);
+                    contentGrid.Rows[rowIndex].Tag = item;
+                }
+
+                // Update filter button states
+                foreach (var btn in storageFilterButtons)
+                {
+                    var btnFilter = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnFilter == filter ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnFilter == filter ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Function to create storage filter buttons
+            Action createStorageFilterButtons = null!;
+            createStorageFilterButtons = () =>
+            {
+                appxFilterPanel.Controls.Clear();
+                storageFilterButtons.Clear();
+
+                var filters = new[]
+                {
+                    ("💾 Disk Filters", "Disk"),
+                    ("📀 Volume Filters", "Volume")
+                };
+
+                foreach (var (text, filterKey) in filters)
+                {
+                    var btn = new Button
+                    {
+                        Text = text,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = filterKey == "Disk" ? ModernTheme.Accent : ModernTheme.Surface,
+                        ForeColor = filterKey == "Disk" ? Color.White : ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Height = 28,
+                        AutoSize = true,
+                        Padding = new Padding(8, 0, 8, 0),
+                        Margin = new Padding(2),
+                        Cursor = Cursors.Hand,
+                        Tag = filterKey
+                    };
+                    btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                    btn.Click += (sender, args) => displayStorageWithFilter(filterKey);
+
+                    storageFilterButtons.Add(btn);
+                    appxFilterPanel.Controls.Add(btn);
+                }
+
+                // Show the filter panel
+                appxFilterPanel.Visible = true;
+            };
+
+            // CBS Packages display state
+            List<AnalysisSection>? cbsPackagesSections = null;
+            string currentCbsSubView = "AllPackages"; // Track current CBS sub-view
+            List<(string group, string package, string state, string installed, string user, AnalysisItem item)> allPackagesData = new();
+            TextBox? cbsSearchBox = null;
+            Label? cbsSearchLabel = null;
+
+            // Function to display CBS sub-buttons and content
+            Action<string> displayCbsSubView = null!;
+            
+            // Function to filter All Packages view (declared early, assigned later)
+            Action<string> filterAllPackages = null!;
+            
+            // Function to create CBS sub-buttons
+            Action createCbsSubButtons = null!;
+            createCbsSubButtons = () =>
+            {
+                appxFilterPanel.Controls.Clear();
+                appxFilterPanel.Visible = true;
+
+                var subButtons = new[]
+                {
+                    ("AllPackages", "All Packages"),
+                    ("PendingSessions", "Pending Sessions"),
+                    ("PendingPackages", "Pending Packages"),
+                    ("RebootStatus", "Reboot Status")
+                };
+
+                foreach (var (viewKey, viewLabel) in subButtons)
+                {
+                    var btn = new Button
+                    {
+                        Text = viewLabel,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = viewKey == currentCbsSubView ? ModernTheme.Accent : ModernTheme.Surface,
+                        ForeColor = viewKey == currentCbsSubView ? Color.White : ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Height = 26,
+                        AutoSize = true,
+                        Padding = new Padding(8, 0, 8, 0),
+                        Margin = new Padding(2),
+                        Cursor = Cursors.Hand,
+                        Tag = viewKey
+                    };
+                    btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                    var capturedKey = viewKey;
+                    btn.Click += (s, e) => displayCbsSubView(capturedKey);
+
+                    appxFilterPanel.Controls.Add(btn);
+                }
+
+                // Add search label and textbox for All Packages view
+                cbsSearchLabel = new Label
+                {
+                    Text = "Search:",
+                    AutoSize = true,
+                    ForeColor = ModernTheme.TextPrimary,
+                    Font = ModernTheme.RegularFont,
+                    Margin = new Padding(15, 6, 5, 0),
+                    Visible = currentCbsSubView == "AllPackages"
+                };
+                appxFilterPanel.Controls.Add(cbsSearchLabel);
+
+                cbsSearchBox = new TextBox
+                {
+                    Width = 200,
+                    Height = 26,
+                    Font = ModernTheme.RegularFont,
+                    BackColor = ModernTheme.Surface,
+                    ForeColor = ModernTheme.TextPrimary,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Margin = new Padding(2),
+                    Visible = currentCbsSubView == "AllPackages"
+                };
+                ModernTheme.ApplyTo(cbsSearchBox);
+                cbsSearchBox.TextChanged += (s, e) => filterAllPackages(cbsSearchBox.Text);
+                appxFilterPanel.Controls.Add(cbsSearchBox);
+            };
+
+            // Function to update CBS sub-button states
+            Action updateCbsSubButtonStates = () =>
+            {
+                foreach (Control ctrl in appxFilterPanel.Controls)
+                {
+                    if (ctrl is Button btn && btn.Tag is string viewKey)
+                    {
+                        btn.BackColor = viewKey == currentCbsSubView ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = viewKey == currentCbsSubView ? Color.White : ModernTheme.TextPrimary;
+                    }
+                }
+                // Update search box visibility based on current view
+                if (cbsSearchBox != null) cbsSearchBox.Visible = currentCbsSubView == "AllPackages";
+                if (cbsSearchLabel != null) cbsSearchLabel.Visible = currentCbsSubView == "AllPackages";
+            };
+
+            // Assign function to filter All Packages view
+            filterAllPackages = (searchText) =>
+            {
+                if (currentCbsSubView != "AllPackages") return;
+                
+                contentGrid.Rows.Clear();
+                var search = searchText.Trim().ToLowerInvariant();
+                
+                foreach (var (group, package, state, installed, user, item) in allPackagesData)
+                {
+                    if (string.IsNullOrEmpty(search) || 
+                        group.ToLowerInvariant().Contains(search) || 
+                        package.ToLowerInvariant().Contains(search))
+                    {
+                        var rowIndex = contentGrid.Rows.Add(group, package, state, installed, user);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Function to display All Packages view
+            Action displayAllPackages = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+                allPackagesData.Clear();
+
+                // Clear search box when refreshing
+                if (cbsSearchBox != null) cbsSearchBox.Text = "";
+
+                // Load packages data if not cached
+                if (cbsPackagesSections == null)
+                {
+                    cbsPackagesSections = _infoExtractor!.GetPackagesAnalysis();
+                }
+
+                if (cbsPackagesSections.Count == 0)
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No packages found");
+                    return;
+                }
+
+                // Show all packages directly (skip summary section)
+                contentGrid.Columns.Add("group", "Package Group");
+                contentGrid.Columns.Add("package", "Package Version");
+                contentGrid.Columns.Add("state", "State");
+                contentGrid.Columns.Add("installed", "Installed");
+                contentGrid.Columns.Add("user", "User");
+                contentGrid.Columns["group"].FillWeight = 25;
+                contentGrid.Columns["package"].FillWeight = 30;
+                contentGrid.Columns["state"].FillWeight = 15;
+                contentGrid.Columns["installed"].FillWeight = 18;
+                contentGrid.Columns["user"].FillWeight = 12;
+
+                foreach (var section in cbsPackagesSections.Where(s => !s.Title.Contains("Summary")))
+                {
+                    // Extract group name from title (remove count and emoji)
+                    var groupName = section.Title;
+                    if (groupName.StartsWith("📦 "))
+                        groupName = groupName.Substring(3);
+                    var parenIndex = groupName.LastIndexOf(" (");
+                    if (parenIndex > 0)
+                        groupName = groupName.Substring(0, parenIndex);
+
+                    foreach (var item in section.Items)
+                    {
+                        // Parse value to extract parts: "State: X | Installed: Y | User: Z"
+                        var valueParts = item.Value?.Split('|') ?? Array.Empty<string>();
+                        var state = "";
+                        var installed = "";
+                        var user = "";
+
+                        foreach (var part in valueParts)
+                        {
+                            var trimmed = part.Trim();
+                            if (trimmed.StartsWith("State:"))
+                                state = trimmed.Substring(6).Trim();
+                            else if (trimmed.StartsWith("Installed:"))
+                                installed = trimmed.Substring(10).Trim();
+                            else if (trimmed.StartsWith("User:"))
+                                user = trimmed.Substring(5).Trim();
+                        }
+
+                        // Store in allPackagesData for filtering
+                        allPackagesData.Add((groupName, item.Name, state, installed, user, item));
+
+                        var rowIndex = contentGrid.Rows.Add(groupName, item.Name, state, installed, user);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Function to display Pending Sessions view
+            Action displayPendingSessions = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                var sessions = _infoExtractor!.GetCbsPendingSessionsAnalysis();
+
+                if (sessions.Count == 0 || sessions.All(s => s.Items.Count == 0))
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No pending sessions found");
+                    return;
+                }
+
+                contentGrid.Columns.Add("session", "Session");
+                contentGrid.Columns.Add("status", "Status");
+                contentGrid.Columns.Add("details", "Details");
+                contentGrid.Columns["session"].FillWeight = 30;
+                contentGrid.Columns["status"].FillWeight = 20;
+                contentGrid.Columns["details"].FillWeight = 50;
+
+                foreach (var section in sessions)
+                {
+                    foreach (var item in section.Items)
+                    {
+                        var rowIndex = contentGrid.Rows.Add(item.Name, item.Value, section.Title);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Function to display Pending Packages view
+            Action displayPendingPackages = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                var packages = _infoExtractor!.GetCbsPendingPackagesAnalysis();
+
+                if (packages.Count == 0 || packages.All(s => s.Items.Count == 0))
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No pending packages found");
+                    return;
+                }
+
+                contentGrid.Columns.Add("package", "Package Name");
+                contentGrid.Columns.Add("status", "Status");
+                contentGrid.Columns.Add("details", "Details");
+                contentGrid.Columns["package"].FillWeight = 40;
+                contentGrid.Columns["status"].FillWeight = 20;
+                contentGrid.Columns["details"].FillWeight = 40;
+
+                foreach (var section in packages)
+                {
+                    foreach (var item in section.Items)
+                    {
+                        var rowIndex = contentGrid.Rows.Add(item.Name, item.Value, section.Title);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Function to display Reboot Status view
+            Action displayRebootStatus = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                var status = _infoExtractor!.GetCbsRebootStatusAnalysis();
+
+                if (status.Count == 0 || status.All(s => s.Items.Count == 0))
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No reboot status information found");
+                    return;
+                }
+
+                contentGrid.Columns.Add("property", "Property");
+                contentGrid.Columns.Add("value", "Value");
+                contentGrid.Columns.Add("details", "Details");
+                contentGrid.Columns["property"].FillWeight = 25;
+                contentGrid.Columns["value"].FillWeight = 20;
+                contentGrid.Columns["details"].FillWeight = 55;
+
+                foreach (var section in status)
+                {
+                    foreach (var item in section.Items)
+                    {
+                        // Extract a meaningful summary for the Details column
+                        // Use the first line of RegistryValue or a cleaned up version
+                        var details = item.RegistryValue ?? "";
+                        
+                        // For multi-line values, get a summary
+                        if (details.Contains('\n'))
+                        {
+                            // For items with "value = X" followed by description, extract the description
+                            var lines = details.Split('\n');
+                            if (lines.Length > 1)
+                            {
+                                // Skip lines that just show the raw value, get the descriptive part
+                                details = string.Join(" ", lines.Where(l => 
+                                    !l.Trim().StartsWith("ServicingInProgress =") &&
+                                    !l.Trim().StartsWith("RebootPending =") &&
+                                    !l.Trim().StartsWith("RebootInProgress =") &&
+                                    !l.Trim().StartsWith("SessionsPendingExclusive =") &&
+                                    !l.Trim().StartsWith("LastTrustTime =") &&
+                                    !string.IsNullOrWhiteSpace(l)
+                                ).Take(2)).Trim();
+                            }
+                        }
+                        
+                        // Truncate if too long for display
+                        if (details.Length > 150)
+                            details = details.Substring(0, 147) + "...";
+
+                        var rowIndex = contentGrid.Rows.Add(item.Name, item.Value, details);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Main function to display CBS sub-view
+            displayCbsSubView = (viewKey) =>
+            {
+                currentCbsSubView = viewKey;
+                updateCbsSubButtonStates();
+
+                contentGrid.Visible = true;
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+
+                switch (viewKey)
+                {
+                    case "AllPackages":
+                        displayAllPackages();
+                        break;
+                    case "PendingSessions":
+                        displayPendingSessions();
+                        break;
+                    case "PendingPackages":
+                        displayPendingPackages();
+                        break;
+                    case "RebootStatus":
+                        displayRebootStatus();
+                        break;
+                }
+            };
+
+            // Function to display CBS packages sections (entry point - shows sub-buttons)
+            Action displayCbsPackages = null!;
+            displayCbsPackages = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                contentGrid.Visible = true;
+
+                // Create CBS sub-buttons
+                createCbsSubButtons();
+
+                // Display default view (All Packages)
+                currentCbsSubView = "AllPackages";
+                displayAllPackages();
+            };
+
+            // Guest Agent sub-view state (for Extensions sub-tab)
+            string currentGuestAgentSubView = ""; // Empty = overview shown, "Extensions" = extensions shown
+            
+            // Forward declarations for Guest Agent display functions
+            Action createGuestAgentSubButtons = null!;
+            Action<string> displayGuestAgentSubView = null!;
+            Action updateGuestAgentSubButtonStates = null!;
+            
+            // Function to create Guest Agent sub-buttons (Extensions tab)
+            createGuestAgentSubButtons = () =>
+            {
+                var isSoftware = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+                
+                appxFilterPanel.Controls.Clear();
+                appxFilterPanel.Visible = true;
+                
+                var extensionsBtn = new Button
+                {
+                    Text = "Extensions",
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = isSoftware ? 
+                        (currentGuestAgentSubView == "Extensions" ? ModernTheme.Accent : ModernTheme.Surface) : 
+                        ModernTheme.TreeViewBack,
+                    ForeColor = isSoftware ? 
+                        (currentGuestAgentSubView == "Extensions" ? Color.White : ModernTheme.TextPrimary) : 
+                        ModernTheme.TextDisabled,
+                    Font = ModernTheme.RegularFont,
+                    Height = 26,
+                    AutoSize = true,
+                    Padding = new Padding(8, 0, 8, 0),
+                    Margin = new Padding(2),
+                    Cursor = isSoftware ? Cursors.Hand : Cursors.Default,
+                    Tag = "Extensions"
+                };
+                extensionsBtn.FlatAppearance.BorderColor = isSoftware ? ModernTheme.Border : ModernTheme.TextDisabled;
+                extensionsBtn.FlatAppearance.BorderSize = 1;
+                extensionsBtn.FlatAppearance.MouseOverBackColor = isSoftware ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+                
+                // Use shared tooltip from themeData
+                themeData.SubCategoryToolTip ??= new ToolTip { InitialDelay = 200, ReshowDelay = 100, AutoPopDelay = 5000 };
+                if (!isSoftware)
+                    themeData.SubCategoryToolTip.SetToolTip(extensionsBtn, "This feature requires SOFTWARE hive to be loaded");
+                else
+                    themeData.SubCategoryToolTip.SetToolTip(extensionsBtn, "View Azure VM Extensions installed on this system");
+                
+                var capturedIsSoftware = isSoftware; // Capture for closure
+                extensionsBtn.Click += (s, e) =>
+                {
+                    if (capturedIsSoftware)
+                        displayGuestAgentSubView("Extensions");
+                    else
+                        MessageBox.Show(
+                            "This feature requires SOFTWARE hive to be loaded.\n\n" +
+                            "Azure VM Extensions are stored in the SOFTWARE hive.\n\n" +
+                            "Common location: C:\\Windows\\System32\\config\\SOFTWARE",
+                            "SOFTWARE Hive Required",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                };
+                
+                appxFilterPanel.Controls.Add(extensionsBtn);
+            };
+            
+            // Function to update Guest Agent sub-button states
+            updateGuestAgentSubButtonStates = () =>
+            {
+                var isSoftware = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+                
+                foreach (Control ctrl in appxFilterPanel.Controls)
+                {
+                    if (ctrl is Button btn && btn.Tag is string viewKey)
+                    {
+                        if (isSoftware)
+                        {
+                            btn.BackColor = viewKey == currentGuestAgentSubView ? ModernTheme.Accent : ModernTheme.Surface;
+                            btn.ForeColor = viewKey == currentGuestAgentSubView ? Color.White : ModernTheme.TextPrimary;
+                        }
+                    }
+                }
+            };
+            
+            // Function to display Guest Agent sub-view (Extensions)
+            displayGuestAgentSubView = (viewKey) =>
+            {
+                currentGuestAgentSubView = viewKey;
+                updateGuestAgentSubButtonStates();
+                
+                if (viewKey == "Extensions")
+                {
+                    // Display Extensions in the grid
+                    var extensionsSection = _infoExtractor.GetAzureExtensionsAnalysis();
+                    
+                    currentSection = extensionsSection;
+                    contentGrid.Columns.Clear();
+                    contentGrid.Rows.Clear();
+                    contentGrid.Visible = true;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+                    
+                    // Keep appxFilterPanel visible for sub-tabs
+                    // appxFilterPanel.Visible = true; // Already visible from createGuestAgentSubButtons
+                    
+                    // Setup grid columns for Extensions
+                    contentGrid.Columns.Add("name", "Extension");
+                    contentGrid.Columns.Add("value", "Status");
+                    contentGrid.Columns["name"]!.Width = 350;
+                    contentGrid.Columns["value"]!.Width = 150;
+                    
+                    // Populate grid with extensions
+                    foreach (var item in extensionsSection.Items)
+                    {
+                        var rowIndex = contentGrid.Rows.Add(item.Name, item.Value);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // CBS Components display state (for COMPONENTS hive)
+            List<AnalysisItem>? cbsComponentsFullList = null; // Full list for search filtering
+            TextBox? cbsComponentsSearchBox = null;
+            Label? cbsComponentsSearchLabel = null;
+            Panel? cbsComponentsSearchPanel = null;
+            
+            // CBS Identities display state
+            List<AnalysisItem>? cbsIdentitiesFullList = null;
+            Panel? cbsIdentitiesInfoPanel = null;
+            
+            // Components overview panel (landing page for COMPONENTS hive)
+            Panel? componentsOverviewPanel = null;
+
+            // Forward declarations for CBS display functions (defined later, but referenced in displayComponentsOverview)
+            Action displayCbsComponents = null!;
+            Action displayCbsIdentities = null!;
+
+            // Function to display Components overview (landing page with sub-options)
+            Action displayComponentsOverview = null!;
+            displayComponentsOverview = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+                contentGrid.Visible = false;
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                appxFilterPanel.Visible = false;
+                currentSection = null;
+                
+                // Hide CBS search/info panels
+                if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
+                if (cbsIdentitiesInfoPanel != null) cbsIdentitiesInfoPanel.Visible = false;
+                
+                // Create overview panel if not exists
+                if (componentsOverviewPanel == null)
+                {
+                    componentsOverviewPanel = new Panel
+                    {
+                        Dock = DockStyle.Fill,
+                        BackColor = ModernTheme.Background,
+                        Padding = new Padding(40)
+                    };
+                    
+                    var titleLabel = new Label
+                    {
+                        Text = "Component Store Analysis",
+                        Font = new Font("Segoe UI", 18F, FontStyle.Bold),
+                        ForeColor = ModernTheme.TextPrimary,
+                        AutoSize = true,
+                        Location = new Point(40, 30)
+                    };
+                    componentsOverviewPanel.Controls.Add(titleLabel);
+                    
+                    var descLabel = new Label
+                    {
+                        Text = "Select an analysis option below:",
+                        Font = ModernTheme.RegularFont,
+                        ForeColor = ModernTheme.TextSecondary,
+                        AutoSize = true,
+                        Location = new Point(40, 70)
+                    };
+                    componentsOverviewPanel.Controls.Add(descLabel);
+                    
+                    // CBS Packages button card
+                    var packagesCard = new Panel
+                    {
+                        Size = new Size(350, 100),
+                        Location = new Point(40, 110),
+                        BackColor = ModernTheme.Surface,
+                        Cursor = Cursors.Hand
+                    };
+                    packagesCard.Paint += (s, ev) =>
+                    {
+                        using var pen = new Pen(ModernTheme.Border);
+                        ev.Graphics.DrawRectangle(pen, 0, 0, packagesCard.Width - 1, packagesCard.Height - 1);
+                    };
+                    
+                    var packagesIcon = new Label
+                    {
+                        Text = "\uE8F1", // Package icon
+                        Font = new Font("Segoe MDL2 Assets", 24F),
+                        ForeColor = ModernTheme.Accent,
+                        AutoSize = true,
+                        Location = new Point(15, 30)
+                    };
+                    packagesCard.Controls.Add(packagesIcon);
+                    
+                    var packagesTitle = new Label
+                    {
+                        Text = "CBS Packages",
+                        Font = new Font("Segoe UI Semibold", 12F),
+                        ForeColor = ModernTheme.TextPrimary,
+                        AutoSize = true,
+                        Location = new Point(60, 20)
+                    };
+                    packagesCard.Controls.Add(packagesTitle);
+                    
+                    var packagesDesc = new Label
+                    {
+                        Text = "View all components in DerivedData\\Components.\nBrowse and search through installed packages.",
+                        Font = ModernTheme.RegularFont,
+                        ForeColor = ModernTheme.TextSecondary,
+                        AutoSize = true,
+                        Location = new Point(60, 45)
+                    };
+                    packagesCard.Controls.Add(packagesDesc);
+                    
+                    packagesCard.Click += (s, e) => displayCbsComponents();
+                    foreach (Control c in packagesCard.Controls)
+                        c.Click += (s, e) => displayCbsComponents();
+                    
+                    packagesCard.MouseEnter += (s, e) => packagesCard.BackColor = ModernTheme.Selection;
+                    packagesCard.MouseLeave += (s, e) => packagesCard.BackColor = ModernTheme.Surface;
+                    foreach (Control c in packagesCard.Controls)
+                    {
+                        c.MouseEnter += (s, e) => packagesCard.BackColor = ModernTheme.Selection;
+                        c.MouseLeave += (s, e) => packagesCard.BackColor = ModernTheme.Surface;
+                    }
+                    
+                    componentsOverviewPanel.Controls.Add(packagesCard);
+                    
+                    // CBS Identities button card
+                    var identitiesCard = new Panel
+                    {
+                        Size = new Size(350, 100),
+                        Location = new Point(40, 220),
+                        BackColor = ModernTheme.Surface,
+                        Cursor = Cursors.Hand
+                    };
+                    identitiesCard.Paint += (s, ev) =>
+                    {
+                        using var pen = new Pen(ModernTheme.Border);
+                        ev.Graphics.DrawRectangle(pen, 0, 0, identitiesCard.Width - 1, identitiesCard.Height - 1);
+                    };
+                    
+                    var identitiesIcon = new Label
+                    {
+                        Text = "\uE9D9", // Scan/search icon
+                        Font = new Font("Segoe MDL2 Assets", 24F),
+                        ForeColor = ModernTheme.Accent,
+                        AutoSize = true,
+                        Location = new Point(15, 30)
+                    };
+                    identitiesCard.Controls.Add(identitiesIcon);
+                    
+                    var identitiesTitle = new Label
+                    {
+                        Text = "CBS Identities Scan",
+                        Font = new Font("Segoe UI Semibold", 12F),
+                        ForeColor = ModernTheme.TextPrimary,
+                        AutoSize = true,
+                        Location = new Point(60, 20)
+                    };
+                    identitiesCard.Controls.Add(identitiesTitle);
+                    
+                    var identitiesDesc = new Label
+                    {
+                        Text = "Scan component identities for invalid characters.\nDetects non-ASCII bytes that may cause issues.",
+                        Font = ModernTheme.RegularFont,
+                        ForeColor = ModernTheme.TextSecondary,
+                        AutoSize = true,
+                        Location = new Point(60, 45)
+                    };
+                    identitiesCard.Controls.Add(identitiesDesc);
+                    
+                    identitiesCard.Click += (s, e) => displayCbsIdentities();
+                    foreach (Control c in identitiesCard.Controls)
+                        c.Click += (s, e) => displayCbsIdentities();
+                    
+                    identitiesCard.MouseEnter += (s, e) => identitiesCard.BackColor = ModernTheme.Selection;
+                    identitiesCard.MouseLeave += (s, e) => identitiesCard.BackColor = ModernTheme.Surface;
+                    foreach (Control c in identitiesCard.Controls)
+                    {
+                        c.MouseEnter += (s, e) => identitiesCard.BackColor = ModernTheme.Selection;
+                        c.MouseLeave += (s, e) => identitiesCard.BackColor = ModernTheme.Surface;
+                    }
+                    
+                    componentsOverviewPanel.Controls.Add(identitiesCard);
+                    
+                    rightPanel.Controls.Add(componentsOverviewPanel);
+                }
+                
+                componentsOverviewPanel.Visible = true;
+                componentsOverviewPanel.BringToFront();
+            };
+
+            // Function to filter CBS Components
+            Action<string> filterCbsComponents = null!;
+            filterCbsComponents = (searchText) =>
+            {
+                if (cbsComponentsFullList == null) return;
+                
+                contentGrid.Rows.Clear();
+                var search = searchText.Trim().ToLowerInvariant();
+                
+                foreach (var item in cbsComponentsFullList)
+                {
+                    if (string.IsNullOrEmpty(search) || 
+                        item.Name.ToLowerInvariant().Contains(search))
+                    {
+                        var rowIndex = contentGrid.Rows.Add(item.Name);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
+                }
+            };
+
+            // Function to display CBS Components (from COMPONENTS hive)
+            displayCbsComponents = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                contentGrid.Visible = true;
+                appxFilterPanel.Visible = false;
+                currentSection = null; // Clear current section since this is a custom view
+                
+                // Hide overview panel
+                if (componentsOverviewPanel != null) componentsOverviewPanel.Visible = false;
+                // Hide CBS Identities info panel
+                if (cbsIdentitiesInfoPanel != null) cbsIdentitiesInfoPanel.Visible = false;
+
+                // Load components data if not cached
+                if (cbsComponentsFullList == null)
+                {
+                    cbsComponentsFullList = _infoExtractor!.GetAllComponentsList();
+                }
+
+                if (cbsComponentsFullList.Count == 0)
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No component data found in DerivedData\\Components");
+                    return;
+                }
+
+                // Create search panel if not exists
+                if (cbsComponentsSearchPanel == null)
+                {
+                    cbsComponentsSearchPanel = new FlowLayoutPanel
+                    {
+                        Dock = DockStyle.Top,
+                        Height = 35,
+                        BackColor = ModernTheme.TreeViewBack,
+                        Padding = new Padding(5),
+                        AutoSize = false,
+                        FlowDirection = FlowDirection.LeftToRight
+                    };
+
+                    cbsComponentsSearchLabel = new Label
+                    {
+                        Text = "Search:",
+                        AutoSize = true,
+                        ForeColor = ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Margin = new Padding(5, 6, 5, 0)
+                    };
+                    cbsComponentsSearchPanel.Controls.Add(cbsComponentsSearchLabel);
+
+                    cbsComponentsSearchBox = new TextBox
+                    {
+                        Width = 300,
+                        Height = 26,
+                        Font = ModernTheme.RegularFont,
+                        BackColor = ModernTheme.Surface,
+                        ForeColor = ModernTheme.TextPrimary,
+                        BorderStyle = BorderStyle.FixedSingle,
+                        Margin = new Padding(2)
+                    };
+                    ModernTheme.ApplyTo(cbsComponentsSearchBox);
+                    cbsComponentsSearchBox.TextChanged += (s, e) => filterCbsComponents(cbsComponentsSearchBox.Text);
+                    cbsComponentsSearchPanel.Controls.Add(cbsComponentsSearchBox);
+
+                    // Add total count label
+                    var totalLabel = new Label
+                    {
+                        Text = $"Total: {cbsComponentsFullList.Count:N0} components",
+                        AutoSize = true,
+                        ForeColor = ModernTheme.TextSecondary,
+                        Font = ModernTheme.RegularFont,
+                        Margin = new Padding(15, 6, 5, 0)
+                    };
+                    cbsComponentsSearchPanel.Controls.Add(totalLabel);
+
+                    // Insert search panel above content grid (in contentDetailSplit.Panel1)
+                    var contentPanel = contentDetailSplit?.Panel1 ?? rightPanel;
+                    contentPanel.Controls.Add(cbsComponentsSearchPanel);
+                }
+
+                // Show search panel and clear search box
+                cbsComponentsSearchPanel.Visible = true;
+                // Ensure proper docking order: contentGrid (Fill) must be at index 0 (processed first)
+                // Search panel (Top) must be after contentGrid so it docks above it
+                var containerPanel = contentDetailSplit?.Panel1 ?? rightPanel;
+                containerPanel.Controls.SetChildIndex(contentGrid, 0);
+                containerPanel.Controls.SetChildIndex(cbsComponentsSearchPanel, 1);
+                if (cbsComponentsSearchBox != null) cbsComponentsSearchBox.Text = "";
+
+                // Show all components in a single column grid
+                contentGrid.Columns.Add("component", "Component Name");
+                contentGrid.Columns["component"].FillWeight = 100;
+
+                foreach (var item in cbsComponentsFullList)
+                {
+                    var rowIndex = contentGrid.Rows.Add(item.Name);
+                    contentGrid.Rows[rowIndex].Tag = item;
+                }
+
+                // Update subcategory button states - Components button stays highlighted
+                foreach (var btn in subCategoryButtons)
+                {
+                    if (btn.Tag is string s && s == "Components")
+                    {
+                        btn.BackColor = ModernTheme.Accent;
+                        btn.Invalidate();
+                    }
+                }
+            };
+
+            // Function to display CBS Identities scan results (from COMPONENTS hive)
+            displayCbsIdentities = () =>
+            {
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                contentGrid.Visible = true;
+                appxFilterPanel.Visible = false;
+                currentSection = null; // Clear current section since this is a custom view
+
+                // Hide overview panel and CBS Components search panel
+                if (componentsOverviewPanel != null) componentsOverviewPanel.Visible = false;
+                if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
+
+                // Load identities scan data if not cached
+                if (cbsIdentitiesFullList == null)
+                {
+                    // Show loading cursor during potentially long scan
+                    var previousCursor = Cursor.Current;
+                    Cursor.Current = Cursors.WaitCursor;
+                    try
+                    {
+                        cbsIdentitiesFullList = _infoExtractor!.GetComponentIdentitiesAnalysis();
+                    }
+                    finally
+                    {
+                        Cursor.Current = previousCursor;
+                    }
+                }
+
+                if (cbsIdentitiesFullList.Count == 0)
+                {
+                    contentGrid.Columns.Add("info", "Information");
+                    contentGrid.Rows.Add("No component identity data found in DerivedData\\Components");
+                    return;
+                }
+
+                // Create info panel if not exists
+                if (cbsIdentitiesInfoPanel == null)
+                {
+                    cbsIdentitiesInfoPanel = new FlowLayoutPanel
+                    {
+                        Dock = DockStyle.Top,
+                        Height = 35,
+                        BackColor = ModernTheme.TreeViewBack,
+                        Padding = new Padding(5),
+                        AutoSize = false,
+                        FlowDirection = FlowDirection.LeftToRight
+                    };
+
+                    var infoLabel = new Label
+                    {
+                        Text = "Identity Scan: Checking for invalid (non-ASCII) characters in component identities",
+                        AutoSize = true,
+                        ForeColor = ModernTheme.TextSecondary,
+                        Font = ModernTheme.RegularFont,
+                        Margin = new Padding(5, 6, 5, 0)
+                    };
+                    cbsIdentitiesInfoPanel.Controls.Add(infoLabel);
+
+                    // Insert info panel above content grid
+                    var gridIndex = rightPanel.Controls.IndexOf(contentGrid);
+                    rightPanel.Controls.Add(cbsIdentitiesInfoPanel);
+                    rightPanel.Controls.SetChildIndex(cbsIdentitiesInfoPanel, gridIndex);
+                }
+
+                // Show info panel with proper docking order
+                cbsIdentitiesInfoPanel.Visible = true;
+                // Ensure proper docking order: contentGrid (Fill) must be at index 0 (processed first)
+                // Info panel (Top) must be after contentGrid so it docks above it
+                rightPanel.Controls.SetChildIndex(contentGrid, 0);
+                rightPanel.Controls.SetChildIndex(cbsIdentitiesInfoPanel, 1);
+
+                // Show identities in a two-column grid (Name, Status)
+                contentGrid.Columns.Add("component", "Component / Summary");
+                contentGrid.Columns.Add("status", "Status");
+                contentGrid.Columns["component"].FillWeight = 80;
+                contentGrid.Columns["status"].FillWeight = 20;
+
+                foreach (var item in cbsIdentitiesFullList)
+                {
+                    var rowIndex = contentGrid.Rows.Add(item.Name, item.Value);
+                    contentGrid.Rows[rowIndex].Tag = item;
+                    
+                    // Highlight rows with issues
+                    if (item.Value.Contains("invalid") || item.Value.Contains("issue"))
+                    {
+                        contentGrid.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.FromArgb(255, 100, 100); // Red-ish
+                    }
+                    else if (item.Name == "Scan Summary" && item.Value.Contains("No issues"))
+                    {
+                        contentGrid.Rows[rowIndex].DefaultCellStyle.ForeColor = Color.FromArgb(100, 200, 100); // Green-ish
+                    }
+                }
+
+                // Update subcategory button states - Components button stays highlighted
+                foreach (var btn in subCategoryButtons)
+                {
+                    if (btn.Tag is string s && s == "Components")
+                    {
+                        btn.BackColor = ModernTheme.Accent;
+                        btn.Invalidate();
+                    }
+                }
+            };
+
+            // Function to display a section in the grid
+            Action<AnalysisSection> displaySection = (section) =>
+            {
+                currentSection = section;
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                // Hide special panels when showing other sections
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                appxFilterPanel.Visible = false;
+                contentGrid.Visible = true;
+                
+                // Hide CBS Components search panel
+                if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
+                
+                // Hide CBS Identities info panel
+                if (cbsIdentitiesInfoPanel != null) cbsIdentitiesInfoPanel.Visible = false;
+                
+                // Special handling for Guest Agent - show Extensions sub-tab
+                if (section.Title == "☁️ Guest Agent")
+                {
+                    currentGuestAgentSubView = ""; // Reset - showing overview, not Extensions
+                    createGuestAgentSubButtons();
+                    // Continue to display the Guest Agent overview content below
+                }
+
+                // Special handling for Network Interfaces - use master-detail view
+                if (section.Title.Contains("Network Interfaces"))
+                {
+                    contentGrid.Visible = false;
+                    networkSplitContainer.Visible = true;
+
+                    // Populate adapters list (fresh state)
+                    networkAdaptersList.Items.Clear();
+                    networkAdaptersCache.Clear();
+
+                    foreach (var item in section.Items)
+                    {
+                        var adapter = new NetworkAdapterItem
+                        {
+                            DisplayName = item.Name,
+                            RegistryPath = item.RegistryPath ?? "",
+                            FullGuid = item.RegistryValue ?? ""
+                        };
+
+                        if (item.SubItems != null)
+                        {
+                            foreach (var sub in item.SubItems)
+                            {
+                                adapter.Properties.Add(new NetworkPropertyItem
+                                {
+                                    Name = sub.Name,
+                                    Value = sub.Value ?? "",
+                                    RegistryValueName = sub.RegistryValue ?? (sub.Name switch
+                                    {
+                                        "DHCP" => "EnableDHCP",
+                                        "IP Address" => "DhcpIPAddress / IPAddress",
+                                        "Subnet" => "DhcpSubnetMask / SubnetMask",
+                                        "Gateway" => "DhcpDefaultGateway / DefaultGateway",
+                                        "DNS" => "DhcpNameServer / NameServer",
+                                        "DHCP Server" => "DhcpServer",
+                                        "Domain" => "DhcpDomain / Domain",
+                                        _ => sub.Name
+                                    }),
+                                    RegistryPath = sub.RegistryPath ?? item.RegistryPath ?? ""
+                                });
+                            }
+                        }
+
+                        networkAdaptersCache.Add(adapter);
+                        networkAdaptersList.Items.Add(adapter);
+                    }
+
+                    // Select first adapter if available
+                    if (networkAdaptersList.Items.Count > 0)
+                    {
+                        networkAdaptersList.SelectedIndex = 0;
+                        networkDetailsGrid.ClearSelection();
+                    }
+                    else
+                    {
+                        // Nothing to select, ensure grid is empty
+                        networkDetailsGrid.Rows.Clear();
+                        networkDetailsGrid.Columns.Clear();
+                    }
+
+                    // Update subcategory button states to reflect active tab
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Windows Firewall - use profile-based view
+                if (section.Title.Contains("Windows Firewall"))
+                {
+                    contentGrid.Visible = false;
+                    firewallPanel.Visible = true;
+
+                    // Clear existing profile buttons
+                    var buttonsToRemove = firewallProfileButtonsPanel.Controls.OfType<Button>().ToList();
+                    foreach (var btn in buttonsToRemove)
+                    {
+                        firewallProfileButtonsPanel.Controls.Remove(btn);
+                        btn.Dispose();
+                    }
+                    firewallProfileButtons.Clear();
+
+                    // Define profiles (registry key name, display name for rules, display name for button)
+                    var profiles = new[]
+                    {
+                        ("DomainProfile", "Domain", "Domain"),
+                        ("StandardProfile", "Private", "Private"),
+                        ("PublicProfile", "Public", "Public")
+                    };
+
+                    // Create profile buttons with enabled/disabled status
+                    foreach (var (registryKey, profileKey, displayName) in profiles)
+                    {
+                        var isEnabled = _infoExtractor.IsFirewallProfileEnabled(registryKey);
+                        var statusIcon = isEnabled ? "✅" : "❌";
+                        var statusText = isEnabled ? "Enabled" : "Disabled";
+                        
+                        var profileBtn = new Button
+                        {
+                            Text = $"{statusIcon} {displayName}: {statusText}",
+                            BackColor = ModernTheme.Surface,
+                            ForeColor = ModernTheme.TextPrimary,
+                            FlatStyle = FlatStyle.Flat,
+                            Height = 28,
+                            AutoSize = true,
+                            MinimumSize = new Size(140, 28),
+                            Font = ModernTheme.RegularFont,
+                            Cursor = Cursors.Hand,
+                            Margin = new Padding(0, 0, 8, 0),
+                            Tag = profileKey
+                        };
+                        profileBtn.FlatAppearance.BorderColor = ModernTheme.Border;
+                        profileBtn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                        var capturedKey = profileKey;
+                        var capturedDisplay = displayName;
+                        profileBtn.Click += (s, ev) => displayFirewallRules(capturedKey, capturedDisplay);
+
+                        firewallProfileButtons.Add(profileBtn);
+                        firewallProfileButtonsPanel.Controls.Add(profileBtn);
+                    }
+
+                    // Auto-select first profile
+                    if (profiles.Length > 0)
+                    {
+                        displayFirewallRules(profiles[0].Item2, profiles[0].Item3);
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Appx Packages - use filter buttons like Services
+                if (section.Title.Contains("Appx Packages"))
+                {
+                    contentGrid.Visible = true;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+
+                    // Create filter buttons in the subcategory panel
+                    createAppxFilterButtons();
+                    
+                    // Display InBox packages by default
+                    displayAppxWithFilter("InBox");
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for CBS Packages - show package groups with filtering
+                if (section.Title.Contains("CBS Packages"))
+                {
+                    contentGrid.Visible = true;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+
+                    // Reset cache to reload fresh data
+                    cbsPackagesSections = null;
+
+                    // Display CBS packages with summary view
+                    displayCbsPackages();
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Storage Filters - use filter buttons for Disk/Volume
+                if (section.Title == "🔧 Filters")
+                {
+                    contentGrid.Visible = true;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+
+                    // Create filter buttons
+                    createStorageFilterButtons();
+                    
+                    // Display Disk filters by default
+                    displayStorageWithFilter("Disk");
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Determine columns based on content
+                bool hasSubItems = section.Items.Any(i => i.IsSubSection && i.SubItems?.Count > 0);
+                bool hasValues = section.Items.Any(i => !string.IsNullOrEmpty(i.Value));
+                bool isTlsSection = section.Title.Contains("TLS") || section.Title.Contains("SSL");
+                bool isUserProfiles = section.Title.Contains("User Profiles");
+
+                if (hasSubItems)
+                {
+                    // For items with subitems (e.g., Installed Programs with version/publisher)
+                    contentGrid.Columns.Add("name", "Name");
+                    
+                    if (isTlsSection)
+                    {
+                        contentGrid.Columns.Add("client", "Client");
+                        contentGrid.Columns.Add("server", "Server");
+                    }
+                    else if (section.Title.Contains("Installed Programs"))
+                    {
+                        contentGrid.Columns.Add("version", "Version");
+                        contentGrid.Columns.Add("publisher", "Publisher");
+                        contentGrid.Columns.Add("installed", "Installed");
+                        contentGrid.Columns[0].FillWeight = 35;
+                        contentGrid.Columns[1].FillWeight = 20;
+                        contentGrid.Columns[2].FillWeight = 30;
+                        contentGrid.Columns[3].FillWeight = 15;
+                    }
+                    else if (isUserProfiles)
+                    {
+                        contentGrid.Columns.Add("sid", "SID");
+                        contentGrid.Columns.Add("path", "Path");
+                        contentGrid.Columns.Add("lastLogon", "Last Logon");
+                        contentGrid.Columns.Add("lastLogoff", "Last Logoff");
+                        contentGrid.Columns[0].FillWeight = 20;
+                        contentGrid.Columns[1].FillWeight = 25;
+                        contentGrid.Columns[2].FillWeight = 25;
+                        contentGrid.Columns[3].FillWeight = 15;
+                        contentGrid.Columns[4].FillWeight = 15;
+                    }
+                    else
+                    {
+                        contentGrid.Columns.Add("detail1", "Detail 1");
+                        contentGrid.Columns.Add("detail2", "Detail 2");
+                    }
+                    
+                    if (!isUserProfiles && !section.Title.Contains("Installed Programs"))
+                    {
+                        contentGrid.Columns[0].FillWeight = 40;
+                        contentGrid.Columns[1].FillWeight = 30;
+                        contentGrid.Columns[2].FillWeight = 30;
+                    }
+
+                    foreach (var item in section.Items)
+                    {
+                        int rowIdx;
+                        if (item.IsSubSection && item.SubItems != null && item.SubItems.Count > 0)
+                        {
+                            if (isUserProfiles)
+                            {
+                                // User Profiles: SID, Path, Last Logon, Last Logoff
+                                var sid = item.SubItems.Count > 0 ? item.SubItems[0].Value : "";
+                                var path = item.SubItems.Count > 1 ? item.SubItems[1].Value : "";
+                                var lastLogon = item.SubItems.Count > 2 ? item.SubItems[2].Value : "";
+                                var lastLogoff = item.SubItems.Count > 3 ? item.SubItems[3].Value : "";
+                                rowIdx = contentGrid.Rows.Add(item.Name, sid, path, lastLogon, lastLogoff);
+                            }
+                            else if (section.Title.Contains("Installed Programs"))
+                            {
+                                // Installed Programs: Version, Publisher, Install Date
+                                var version = item.SubItems.Count > 0 ? item.SubItems[0].Value : "";
+                                var publisher = item.SubItems.Count > 1 ? item.SubItems[1].Value : "";
+                                var installDate = item.SubItems.Count > 2 ? item.SubItems[2].Value : "";
+                                rowIdx = contentGrid.Rows.Add(item.Name, version, publisher, installDate);
+                            }
+                            else if (isTlsSection)
+                            {
+                                // For TLS, just show the value without the name prefix
+                                var detail1 = item.SubItems.Count > 0 ? item.SubItems[0].Value : "";
+                                var detail2 = item.SubItems.Count > 1 ? item.SubItems[1].Value : "";
+                                rowIdx = contentGrid.Rows.Add(item.Name, detail1, detail2);
+                            }
+                            else
+                            {
+                                var detail1 = item.SubItems.Count > 0 ? $"{item.SubItems[0].Name}: {item.SubItems[0].Value}" : "";
+                                var detail2 = item.SubItems.Count > 1 ? $"{item.SubItems[1].Name}: {item.SubItems[1].Value}" : "";
+                                rowIdx = contentGrid.Rows.Add(item.Name, detail1, detail2);
+                            }
+                        }
+                        else
+                        {
+                            if (isUserProfiles)
+                                rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "", "", "");
+                            else if (section.Title.Contains("Installed Programs"))
+                                rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "", "");
+                            else
+                                rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "");
+                        }
+                        contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+                    }
+                }
+                else if (hasValues)
+                {
+                    // Simple name-value pairs
+                    contentGrid.Columns.Add("name", "Property");
+                    contentGrid.Columns.Add("value", "Value");
+                    contentGrid.Columns["name"].FillWeight = 35;
+                    contentGrid.Columns["value"].FillWeight = 65;
+
+                    foreach (var item in section.Items)
+                    {
+                        var rowIdx = contentGrid.Rows.Add(item.Name, item.Value);
+                        contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+                    }
+                }
+                else
+                {
+                    // Just names (list of items)
+                    contentGrid.Columns.Add("name", "Name");
+
+                    foreach (var item in section.Items)
+                    {
+                        var rowIdx = contentGrid.Rows.Add(item.Name);
+                        contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+                    }
+                }
+
+                // Update button states
+                foreach (var btn in subCategoryButtons)
+                {
+                    btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Services display state
+            List<ServiceInfo> allServicesCache = new();
+            var serviceFilterButtons = new List<Button>();
+            themeData.ServiceFilterButtons = serviceFilterButtons;
+            string currentServiceFilter = "All";
+
+            // Function to display services with filter
+            Action<string> displayServicesWithFilter = (filter) =>
+            {
+                currentServiceFilter = filter;
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                contentGrid.Columns.Add("name", "Service Name");
+                contentGrid.Columns.Add("startType", "Start Type");
+                contentGrid.Columns.Add("imagePath", "Image Path");
+                contentGrid.Columns["name"].FillWeight = 25;
+                contentGrid.Columns["startType"].FillWeight = 15;
+                contentGrid.Columns["imagePath"].FillWeight = 60;
+
+                var filtered = filter switch
+                {
+                    "Disabled" => allServicesCache.Where(s => s.IsDisabled),
+                    "Auto" => allServicesCache.Where(s => s.IsAutoStart),
+                    "Boot/System" => allServicesCache.Where(s => s.IsBoot || s.IsSystem),
+                    "Manual" => allServicesCache.Where(s => s.IsManual),
+                    _ => allServicesCache.AsEnumerable()
+                };
+
+                // Sort alphabetically by service name
+                var sorted = filtered
+                    .OrderBy(s => s.ServiceName)
+                    .ToList();
+
+                foreach (var svc in sorted)
+                {
+                    var rowIdx = contentGrid.Rows.Add(svc.ServiceName, svc.StartTypeName, svc.ImagePath);
+                    contentGrid.Rows[rowIdx].Tag = svc;  // Store service info for SelectionChanged
+                }
+
+                // Update filter button states
+                foreach (var btn in serviceFilterButtons)
+                {
+                    var btnFilter = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnFilter == filter ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnFilter == filter ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Function to create service filter buttons
+            Action createServiceFilterButtons = () =>
+            {
+                subCategoryPanel.Controls.Clear();
+                serviceFilterButtons.Clear();
+
+                var disabledCount = allServicesCache.Count(s => s.IsDisabled);
+                var autoCount = allServicesCache.Count(s => s.IsAutoStart);
+                var bootCount = allServicesCache.Count(s => s.IsBoot || s.IsSystem);
+                var manualCount = allServicesCache.Count(s => s.IsManual);
+
+                var filters = new[]
+                {
+                    ($"All ({allServicesCache.Count})", "All"),
+                    ($"⛔ Disabled ({disabledCount})", "Disabled"),
+                    ($"🚀 Auto-Start ({autoCount})", "Auto"),
+                    ($"⚡ Boot/System ({bootCount})", "Boot/System"),
+                    ($"✋ Manual ({manualCount})", "Manual")
+                };
+
+                foreach (var (text, filterKey) in filters)
+                {
+                    var btn = new Button
+                    {
+                        Text = text,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = filterKey == "All" ? ModernTheme.Accent : ModernTheme.Surface,
+                        ForeColor = filterKey == "All" ? Color.White : ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Height = 28,
+                        AutoSize = true,
+                        Padding = new Padding(8, 0, 8, 0),
+                        Margin = new Padding(2),
+                        Cursor = Cursors.Hand,
+                        Tag = filterKey
+                    };
+                    btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                    btn.Click += (sender, args) => displayServicesWithFilter(filterKey);
+
+                    serviceFilterButtons.Add(btn);
+                    subCategoryPanel.Controls.Add(btn);
+                }
+            };
+
+            // Load settings for detail panel height
+            var analyzeSettings = AppSettings.Load();
+
+            // Registry detail panel - now using SplitContainer for resizable pane
+            // Assign to forward-declared variable (captured by lambdas above)
+            contentDetailSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,   // Minimum content area
+                Panel2MinSize = 80,    // Minimum detail pane
+                SplitterWidth = 4,     // Slightly thicker for easier grabbing
+                FixedPanel = FixedPanel.Panel2  // Keep detail panel size fixed when resizing window
+            };
+            contentDetailSplit.Panel1.BackColor = ModernTheme.Background;
+            contentDetailSplit.Panel2.BackColor = ModernTheme.TreeViewBack;
+            themeData.ContentDetailSplit = contentDetailSplit;
+
+            // Detail panel in Panel2
+            var detailPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                Padding = new Padding(10, 5, 10, 5)
+            };
+            themeData.DetailPanel = detailPanel;
+
+            var registryPathLabel = new TextBox
+            {
+                Text = "Registry Path:",
+                ForeColor = ModernTheme.TextSecondary,
+                BackColor = ModernTheme.TreeViewBack,
+                Font = ModernTheme.SmallFont,
+                Dock = DockStyle.Top,
+                Height = 20,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None
+            };
+            themeData.RegistryPathLabel = registryPathLabel;
+
+            var registryValueBox = new RichTextBox
+            {
+                Text = "Select an item to view registry details",
+                ForeColor = ModernTheme.TextPrimary,
+                BackColor = ModernTheme.TreeViewBack,
+                Font = new Font("Consolas", 9.5F),
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                BorderStyle = BorderStyle.None,
+                WordWrap = false,
+                ScrollBars = RichTextBoxScrollBars.Both
+            };
+            themeData.RegistryValueBox = registryValueBox;
+
+            detailPanel.Controls.Add(registryValueBox);
+            detailPanel.Controls.Add(registryPathLabel);
+            contentDetailSplit.Panel2.Controls.Add(detailPanel);
+
+            // Set splitter distance after form loads (calculated from total height)
+            form.Load += (s, ev) =>
+            {
+                try
+                {
+                    // Calculate splitter distance (distance from top to splitter)
+                    // Panel2 (detail) should be at the bottom with saved height
+                    int totalHeight = contentDetailSplit.Height;
+                    int detailHeight = Math.Min(Math.Max(analyzeSettings.DetailPanelHeight, 80), totalHeight - 100);
+                    contentDetailSplit.SplitterDistance = totalHeight - detailHeight;
+                }
+                catch { }
+            };
+
+            // Save splitter position when changed
+            contentDetailSplit.SplitterMoved += (s, ev) =>
+            {
+                try
+                {
+                    // Save the Panel2 height (detail panel)
+                    int detailHeight = contentDetailSplit.Height - contentDetailSplit.SplitterDistance;
+                    analyzeSettings.DetailPanelHeight = detailHeight;
+                    analyzeSettings.Save();
+                }
+                catch { }
+            };
+
+            // Handle network adapter selection - using main registry labels
+            networkAdaptersList.SelectedIndexChanged += (s, ev) =>
+            {
+                if (networkAdaptersList.SelectedIndex < 0) return;
+                selectedNetworkAdapter = networkAdaptersList.SelectedItem as NetworkAdapterItem;
+                if (selectedNetworkAdapter == null) return;
+
+                networkDetailsLabel.Text = $"Details - {selectedNetworkAdapter.DisplayName}";
+                networkDetailsGrid.Columns.Clear();
+                networkDetailsGrid.Rows.Clear();
+
+                networkDetailsGrid.Columns.Add("property", "Property");
+                networkDetailsGrid.Columns.Add("value", "Value");
+                networkDetailsGrid.Columns["property"].FillWeight = 30;
+                networkDetailsGrid.Columns["value"].FillWeight = 70;
+
+                foreach (var prop in selectedNetworkAdapter.Properties)
+                {
+                    networkDetailsGrid.Rows.Add(prop.Name, prop.Value);
+                }
+
+                registryPathLabel.Text = $"Registry Path: {selectedNetworkAdapter.RegistryPath}";
+                registryValueBox.Text = "Select a property to view registry details";
+            };
+
+            // Handle network details grid selection
+            networkDetailsGrid.SelectionChanged += (s, ev) =>
+            {
+                if (networkDetailsGrid.SelectedRows.Count > 0 && selectedNetworkAdapter != null)
+                {
+                    var rowIndex = networkDetailsGrid.SelectedRows[0].Index;
+                    if (rowIndex >= 0 && rowIndex < selectedNetworkAdapter.Properties.Count)
+                    {
+                        var prop = selectedNetworkAdapter.Properties[rowIndex];
+                        // Use property's own RegistryPath if available, otherwise fall back to adapter's path
+                        var pathToShow = !string.IsNullOrEmpty(prop.RegistryPath) 
+                            ? prop.RegistryPath 
+                            : selectedNetworkAdapter.RegistryPath;
+                        registryPathLabel.Text = $"Registry Path: {pathToShow}";
+                        registryValueBox.Text = $"{prop.Name} = {prop.Value} | Registry Value: {prop.RegistryValueName}";
+                    }
+                }
+            };
+
+            // Track current category
+            string currentCategory = "";
+
+            // Handle firewall rules grid selection for registry info
+            firewallRulesGrid.SelectionChanged += (s, ev) =>
+            {
+                if (firewallRulesGrid.SelectedRows.Count > 0)
+                {
+                    var rowIndex = firewallRulesGrid.SelectedRows[0].Index;
+                    // Need to map back to sorted rules
+                    var sortedRules = currentFirewallRules
+                        .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
+                        .ThenByDescending(r => r.IsActive)
+                        .ThenBy(r => r.Name)
+                        .ToList();
+
+                    if (rowIndex >= 0 && rowIndex < sortedRules.Count)
+                    {
+                        var rule = sortedRules[rowIndex];
+                        registryPathLabel.Text = $"Registry Path: {rule.RegistryPath}";
+                        registryValueBox.Text = $"Value: {rule.RegistryValueName}";
+                    }
+                }
+            };
+
+            // Handle grid selection to show registry path
+            contentGrid.SelectionChanged += (s, ev) =>
+            {
+                if (contentGrid.SelectedRows.Count > 0)
+                {
+                    var rowIndex = contentGrid.SelectedRows[0].Index;
+                    var selectedRow = contentGrid.SelectedRows[0];
+                    
+                    // Handle Services category specially - use Tag to get correct service after sort
+                    if (currentCategory == "Services")
+                    {
+                        if (selectedRow.Tag is ServiceInfo service)
+                        {
+                            registryPathLabel.Text = $"Registry Path: {service.RegistryPath}";
+                            var details = new List<string>();
+                            if (!string.IsNullOrEmpty(service.DisplayName) && service.DisplayName != service.ServiceName)
+                                details.Add($"Display Name: {service.DisplayName}");
+                            if (!string.IsNullOrEmpty(service.Description))
+                                details.Add($"Description: {service.Description}");
+                            if (!string.IsNullOrEmpty(service.ImagePath))
+                                details.Add($"Image Path: {service.ImagePath}");
+                            registryValueBox.Text = details.Count > 0 ? string.Join(" | ", details) : service.ServiceName;
+                        }
+                        return;
+                    }
+                    
+                    // Handle Appx Packages specially - use Tag to get correct package tuple after sort
+                    if (currentSection?.Title.Contains("Appx Packages") == true)
+                    {
+                        if (selectedRow.Tag is ValueTuple<string, string, string, string> pkg)
+                        {
+                            registryPathLabel.Text = $"Registry Path: {pkg.Item4}";
+                            registryValueBox.Text = $"Package: {pkg.Item1} | Version: {pkg.Item2} | Arch: {pkg.Item3}";
+                        }
+                        return;
+                    }
+                    
+                    // Handle Storage Filters specially - use Tag to get AnalysisItem
+                    if (currentCategory == "Storage" && contentGrid.Columns.Count == 2 && 
+                        contentGrid.Columns.Contains("name") && contentGrid.Columns.Contains("value"))
+                    {
+                        if (selectedRow.Tag is AnalysisItem storageItem)
+                        {
+                            registryPathLabel.Text = $"Registry Path: {storageItem.RegistryPath ?? "N/A"}";
+                            registryValueBox.Text = storageItem.RegistryValue ?? storageItem.Value ?? "No details available";
+                            return;
+                        }
+                    }
+                    
+                    // Handle CBS Packages specially - get item from row Tag
+                    // Check for any CBS sub-view columns (group for All Packages, session for Pending Sessions, etc.)
+                    if (currentCbsSubView != null && (
+                        contentGrid.Columns.Contains("group") ||     // All Packages view
+                        contentGrid.Columns.Contains("session") ||   // Pending Sessions view
+                        contentGrid.Columns.Contains("package") ||   // Pending Packages view
+                        contentGrid.Columns.Contains("property")))   // Reboot Status view
+                    {
+                        if (selectedRow.Tag is AnalysisItem cbsItem)
+                        {
+                            registryPathLabel.Text = $"Registry Path: {cbsItem.RegistryPath ?? "N/A"}";
+                            registryValueBox.Text = cbsItem.RegistryValue ?? cbsItem.Value ?? "No details available";
+                            return;
+                        }
+                    }
+                    
+                    // Handle regular categories - try Tag first, then fall back to index
+                    if (selectedRow.Tag is AnalysisItem tagItem)
+                    {
+                        if (!string.IsNullOrEmpty(tagItem.RegistryPath))
+                        {
+                            registryPathLabel.Text = $"Registry Path: {tagItem.RegistryPath}";
+                            registryValueBox.Text = tagItem.RegistryValue ?? tagItem.Value ?? "No details available";
+                        }
+                        else
+                        {
+                            registryPathLabel.Text = "Registry Path:";
+                            registryValueBox.Text = tagItem.Value ?? "No registry information available for this item";
+                        }
+                    }
+                    else if (currentSection != null && rowIndex >= 0 && rowIndex < currentSection.Items.Count)
+                    {
+                        var item = currentSection.Items[rowIndex];
+                        if (!string.IsNullOrEmpty(item.RegistryPath))
+                        {
+                            registryPathLabel.Text = $"Registry Path: {item.RegistryPath}";
+                            registryValueBox.Text = item.RegistryValue;
+                        }
+                        else
+                        {
+                            registryPathLabel.Text = "Registry Path:";
+                            registryValueBox.Text = "No registry information available for this item";
+                        }
+                    }
+                }
+            };
+
+            // Add content controls to Panel1 of the split container
+            contentDetailSplit.Panel1.Controls.Add(firewallPanel);
+            contentDetailSplit.Panel1.Controls.Add(networkSplitContainer);
+            contentDetailSplit.Panel1.Controls.Add(contentGrid);
+
+            // Add the split container and other controls to rightPanel
+            rightPanel.Controls.Add(contentDetailSplit);
+            rightPanel.Controls.Add(appxFilterPanel);
+            rightPanel.Controls.Add(subCategoryPanel);
+            rightPanel.Controls.Add(contentHeader);
+
+            // Cache for loaded content
+            var contentCache = new Dictionary<string, List<AnalysisSection>>();
+
+            // Handle category selection
+            categoryList.SelectedIndexChanged += (s, ev) =>
+            {
+                if (categoryList.SelectedIndex < 0 || categoryList.SelectedItem == null) return;
+                var selected = ((string icon, string text, string key))categoryList.SelectedItem;
+                var key = selected.key;
+
+                // Skip if category is disabled (MouseDown handler shows the message)
+                if (!enabledCategories.Contains(key)) return;
+
+                contentTitle.Text = selected.text;
+                currentCategory = key;
+
+                // Reset registry info panel
+                registryPathLabel.Text = "Registry Path:";
+                registryValueBox.Text = "Select an item to view registry details";
+
+                // Hide appx filter panel when changing categories
+                appxFilterPanel.Visible = false;
+                
+                // Hide CBS Components search panel when changing categories
+                if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
+
+                // Special handling for Services
+                if (key == "Services")
+                {
+                    currentSection = null;
+                    
+                    // Hide network panel and show content grid
+                    networkSplitContainer.Visible = false;
+                    contentGrid.Visible = true;
+                    
+                    if (allServicesCache.Count == 0)
+                    {
+                        allServicesCache = _infoExtractor.GetAllServices();
+                    }
+
+                    createServiceFilterButtons();
+                    displayServicesWithFilter("All");
+                    return;
+                }
+
+                // Regular category handling
+                if (!contentCache.ContainsKey(key))
+                {
+                    List<AnalysisSection> sections = key switch
+                    {
+                        "System" => _infoExtractor.GetSystemAnalysis(),
+                        "Profiles" => _infoExtractor.GetUserAnalysis(),
+                        "Network" => _infoExtractor.GetNetworkAnalysis(),
+                        "RDP" => _infoExtractor.GetRdpAnalysis(),
+                        "Update" => _infoExtractor.GetUpdateAnalysis(),
+                        "Storage" => _infoExtractor.GetStorageAnalysis(),
+                        "Software" => _infoExtractor.GetSoftwareAnalysis(),
+                        _ => new List<AnalysisSection>()
+                    };
+                    contentCache[key] = sections;
+                }
+
+                currentSections = contentCache[key];
+
+                // Create subcategory buttons
+                subCategoryPanel.Controls.Clear();
+                subCategoryButtons.Clear();
+
+                // Reuse single shared ToolTip for all subcategory buttons (more efficient, prevents leaks)
+                themeData.SubCategoryToolTip ??= new ToolTip { InitialDelay = 200, ReshowDelay = 100, AutoPopDelay = 5000 };
+                var subCategoryToolTip = themeData.SubCategoryToolTip;
+                subCategoryToolTip.RemoveAll();  // Clear old associations
+
+                // Define which subcategories require which hive type (for System category)
+                // Hive Information is available for both
+                var softwareHiveSubcategories = new HashSet<string> { "🪟 Build Information" };
+                var systemHiveSubcategories = new HashSet<string> { 
+                    "💻 Computer Information", "🔄 CPU Hyper-Threading", 
+                    "💥 Crash Dump Configuration", "🕐 System Time Config"
+                };
+                var bothHiveSubcategories = new HashSet<string> { "📁 Hive Information", "☁️ Guest Agent" };
+                
+                // Define SOFTWARE-based Update subcategories (shown as grayed when COMPONENTS hive loaded)
+                var updateSoftwareSubcategories = new List<string> {
+                    "📋 Update Policy",
+                    "🏢 Windows Update for Business",
+                    "📦 Delivery Optimization",
+                    "📜 Update Configuration",
+                    "🔧 Servicing Stack Update (SSU)",
+                    "📦 CBS Packages"
+                };
+                
+                var isSoftwareHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+                var isSystemHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM;
+                var isComponentsHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.COMPONENTS;
+                // Use theme-aware color for grayed out buttons
+                var grayedOutColor = ModernTheme.TextDisabled;
+
+                // Create list of buttons with availability info for sorting
+                var availableButtons = new List<Button>();
+                var unavailableButtons = new List<Button>();
+
+                // Helper function to determine availability
+                bool IsSubcategoryAvailable(string title, out string reqHive)
+                {
+                    reqHive = "";
+                    
+                    // For Update category: all subcategories require SOFTWARE hive (except CBS Components for COMPONENTS hive)
+                    if (key == "Update")
+                    {
+                        if (isComponentsHive)
+                        {
+                            // COMPONENTS hive: all SOFTWARE-based subcategories are unavailable
+                            reqHive = "SOFTWARE";
+                            return false;
+                        }
+                        return isSoftwareHive;
+                    }
+                    
+                    if (key != "System") return true;
+                    
+                    if (bothHiveSubcategories.Contains(title))
+                        return true;
+                    if (softwareHiveSubcategories.Contains(title))
+                    {
+                        reqHive = "SOFTWARE";
+                        return isSoftwareHive;
+                    }
+                    if (systemHiveSubcategories.Contains(title))
+                    {
+                        reqHive = "SYSTEM";
+                        return isSystemHive;
+                    }
+                    return true;
+                }
+
+                foreach (var section in currentSections)
+                {
+                    // Skip "Notice" sections for Update category when COMPONENTS hive is loaded
+                    // These are placeholder sections that don't provide useful functionality
+                    if (key == "Update" && isComponentsHive && section.Title.Contains("Notice"))
+                    {
+                        continue;
+                    }
+
+                    string requiredHive;
+                    bool isAvailable = IsSubcategoryAvailable(section.Title, out requiredHive);
+
+                    // Use owner-draw for proper gray color rendering
+                    var btn = new Button
+                    {
+                        Text = "",  // We'll draw text ourselves
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = isAvailable ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Height = 28,
+                        AutoSize = false,
+                        Margin = new Padding(2),
+                        Cursor = isAvailable ? Cursors.Hand : Cursors.Default,
+                        Tag = section
+                    };
+                    
+                    // Measure text to set button width
+                    using (var g = btn.CreateGraphics())
+                    {
+                        var textSize = g.MeasureString(section.Title, ModernTheme.RegularFont);
+                        btn.Width = (int)textSize.Width + 20;
+                    }
+                    
+                    btn.FlatAppearance.BorderColor = isAvailable ? ModernTheme.Border : grayedOutColor;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = isAvailable ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+
+                    // Custom paint for proper gray text
+                    var sectionTitle = section.Title;
+                    var sectionAvailable = isAvailable;
+                    btn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = sectionAvailable ? ModernTheme.TextPrimary : grayedOutColor;
+                        // Use TextRenderer for better Unicode/emoji support
+                        TextRenderer.DrawText(
+                            ev.Graphics,
+                            sectionTitle,
+                            ModernTheme.RegularFont,
+                            btn.ClientRectangle,
+                            textColor,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
+                        );
+                    };
+
+                    // Tooltip for unavailable subcategories
+                    if (!isAvailable && !string.IsNullOrEmpty(requiredHive))
+                    {
+                        subCategoryToolTip.SetToolTip(btn, $"This feature requires {requiredHive} hive to be loaded");
+                    }
+
+                    var capturedRequiredHive = requiredHive;
+                    btn.Click += (sender, args) =>
+                    {
+                        if (!sectionAvailable)
+                        {
+                            MessageBox.Show(
+                                $"This feature requires {capturedRequiredHive} hive to be loaded.\n\n" +
+                                $"Common location: C:\\Windows\\System32\\config\\{capturedRequiredHive}",
+                                $"{capturedRequiredHive} Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            displaySection((AnalysisSection)btn.Tag);
+                        }
+                    };
+
+                    subCategoryButtons.Add(btn);
+                    
+                    if (isAvailable)
+                        availableButtons.Add(btn);
+                    else
+                        unavailableButtons.Add(btn);
+                }
+
+                // Add grayed-out SOFTWARE-based Update subcategory buttons when COMPONENTS hive is loaded
+                if (key == "Update" && isComponentsHive)
+                {
+                    foreach (var subcatTitle in updateSoftwareSubcategories)
+                    {
+                        var softwareBtn = new Button
+                        {
+                            Text = "",  // We'll draw text ourselves
+                            FlatStyle = FlatStyle.Flat,
+                            BackColor = ModernTheme.TreeViewBack,
+                            Font = ModernTheme.RegularFont,
+                            Height = 28,
+                            AutoSize = false,
+                            Margin = new Padding(2),
+                            Cursor = Cursors.Default,
+                            Tag = "SoftwareUpdateFeature"
+                        };
+                        
+                        // Measure text to set button width
+                        using (var g = softwareBtn.CreateGraphics())
+                        {
+                            var textSize = g.MeasureString(subcatTitle, ModernTheme.RegularFont);
+                            softwareBtn.Width = (int)textSize.Width + 20;
+                        }
+                        
+                        softwareBtn.FlatAppearance.BorderColor = grayedOutColor;
+                        softwareBtn.FlatAppearance.BorderSize = 1;
+                        softwareBtn.FlatAppearance.MouseOverBackColor = ModernTheme.TreeViewBack;
+
+                        // Custom paint for gray text
+                        var capturedTitle = subcatTitle;
+                        softwareBtn.Paint += (s, ev) =>
+                        {
+                            ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                            TextRenderer.DrawText(
+                                ev.Graphics,
+                                capturedTitle,
+                                ModernTheme.RegularFont,
+                                softwareBtn.ClientRectangle,
+                                grayedOutColor,
+                                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine
+                            );
+                        };
+
+                        // Tooltip explaining the requirement
+                        subCategoryToolTip.SetToolTip(softwareBtn, "This feature requires SOFTWARE hive to be loaded");
+
+                        // Click handler showing message
+                        softwareBtn.Click += (sender, args) =>
+                        {
+                            MessageBox.Show(
+                                "This feature requires SOFTWARE hive to be loaded.\n\n" +
+                                "Common location: C:\\Windows\\System32\\config\\SOFTWARE",
+                                "SOFTWARE Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        };
+
+                        subCategoryButtons.Add(softwareBtn);
+                        unavailableButtons.Add(softwareBtn);
+                    }
+                }
+
+                // Add Activation button to System category (requires SOFTWARE hive)
+                // Create it BEFORE adding to panel so it can be sorted properly
+                Button? activationBtn = null;
+                if (key == "System")
+                {
+                    // Use owner-draw button to ensure proper color rendering
+                    activationBtn = new Button
+                    {
+                        Text = "",  // We'll draw the text ourselves
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = isSoftwareHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Size = new Size(110, 28),
+                        Margin = new Padding(2),
+                        Cursor = isSoftwareHive ? Cursors.Hand : Cursors.Default,
+                        Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null
+                    };
+                    activationBtn.FlatAppearance.BorderColor = isSoftwareHive ? ModernTheme.Border : grayedOutColor;
+                    activationBtn.FlatAppearance.BorderSize = 1;
+                    activationBtn.FlatAppearance.MouseOverBackColor = isSoftwareHive ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+
+                    // Custom paint to draw icon and text with proper colors
+                    var isSoftware = isSoftwareHive; // Capture for closure
+                    activationBtn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = isSoftware ? ModernTheme.TextPrimary : grayedOutColor;
+                        
+                        // Draw icon using Segoe MDL2 Assets (key icon)
+                        using var iconFont = new Font("Segoe MDL2 Assets", 10F);
+                        TextRenderer.DrawText(ev.Graphics, "\uE8D7", iconFont, new Point(8, 6), textColor);
+                        
+                        // Draw text
+                        TextRenderer.DrawText(ev.Graphics, "Activation", ModernTheme.RegularFont, new Point(28, 5), textColor);
+                    };
+
+                    // Use shared ToolTip for activation button
+                    if (!isSoftwareHive)
+                    {
+                        subCategoryToolTip.SetToolTip(activationBtn, "This feature requires SOFTWARE hive to be loaded");
+                    }
+                    else
+                    {
+                        subCategoryToolTip.SetToolTip(activationBtn, "View Windows activation and KMS settings");
+                    }
+
+                    activationBtn.Click += (sender, args) =>
+                    {
+                        if (!isSoftware)
+                        {
+                            MessageBox.Show(
+                                "This feature requires SOFTWARE hive to be loaded.\n\n" +
+                                "Windows activation and KMS settings are stored in the SOFTWARE hive.\n\n" +
+                                "Common location: C:\\Windows\\System32\\config\\SOFTWARE",
+                                "SOFTWARE Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else if (activationBtn.Tag is AnalysisSection activationSection)
+                        {
+                            displaySection(activationSection);
+                        }
+                    };
+
+                    subCategoryButtons.Add(activationBtn);
+                    
+                    // Add to correct list for sorting
+                    if (isSoftwareHive)
+                        availableButtons.Add(activationBtn);
+                    else
+                        unavailableButtons.Add(activationBtn);
+                }
+
+                // Add Components button to Update category (requires COMPONENTS hive)
+                // Single button that shows an overview with CBS Packages and CBS Identities options
+                Button? componentsBtn = null;
+                
+                if (key == "Update")
+                {
+                    var isComponents = isComponentsHive; // Capture for closure
+                    
+                    // Create Components button
+                    componentsBtn = new Button
+                    {
+                        Text = "",
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = isComponentsHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Size = new Size(120, 28),
+                        Margin = new Padding(2),
+                        Cursor = isComponentsHive ? Cursors.Hand : Cursors.Default,
+                        Tag = "Components"
+                    };
+                    componentsBtn.FlatAppearance.BorderColor = isComponentsHive ? ModernTheme.Border : grayedOutColor;
+                    componentsBtn.FlatAppearance.BorderSize = 1;
+                    componentsBtn.FlatAppearance.MouseOverBackColor = isComponentsHive ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+                    
+                    componentsBtn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = isComponents ? ModernTheme.TextPrimary : grayedOutColor;
+                        TextRenderer.DrawText(ev.Graphics, "Components", ModernTheme.RegularFont, 
+                            componentsBtn.ClientRectangle, textColor,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                    };
+                    
+                    componentsBtn.Click += (sender, args) =>
+                    {
+                        if (!isComponents)
+                        {
+                            MessageBox.Show(
+                                "This feature requires COMPONENTS hive to be loaded.\n\n" +
+                                "The COMPONENTS hive contains the Windows Component Store data.\n\n" +
+                                "Common location: C:\\Windows\\System32\\config\\COMPONENTS",
+                                "COMPONENTS Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            // Display Components overview (landing page with options)
+                            displayComponentsOverview();
+                            
+                            // Update button state
+                            componentsBtn.BackColor = ModernTheme.Accent;
+                            componentsBtn.Invalidate();
+                        }
+                    };
+                    
+                    if (!isComponentsHive)
+                        subCategoryToolTip.SetToolTip(componentsBtn, "This feature requires COMPONENTS hive to be loaded");
+                    else
+                        subCategoryToolTip.SetToolTip(componentsBtn, "Analyze Component Store (CBS Packages and Identities)");
+                    
+                    subCategoryButtons.Add(componentsBtn);
+                    if (isComponentsHive)
+                        availableButtons.Add(componentsBtn);
+                    else
+                        unavailableButtons.Add(componentsBtn);
+                }
+
+                // Add available buttons first, then unavailable (greyed out) buttons
+                foreach (var btn in availableButtons)
+                    subCategoryPanel.Controls.Add(btn);
+                foreach (var btn in unavailableButtons)
+                    subCategoryPanel.Controls.Add(btn);
+
+                // Select first available section by default
+                AnalysisSection? firstAvailable = null;
+                
+                // For COMPONENTS hive + Update category, show Components overview (no auto-load)
+                if (key == "Update" && isComponentsHive)
+                {
+                    // Show Components overview when clicking Update category with COMPONENTS hive
+                    displayComponentsOverview();
+                    
+                    // Highlight the Components button as selected
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        if (btn.Tag is string tag && tag == "Components")
+                        {
+                            btn.BackColor = ModernTheme.Accent;
+                            btn.Invalidate();
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var section in currentSections)
+                    {
+                        bool isAvail = true;
+                        if (key == "System")
+                        {
+                            if (bothHiveSubcategories.Contains(section.Title))
+                                isAvail = true;
+                            else if (softwareHiveSubcategories.Contains(section.Title))
+                                isAvail = isSoftwareHive;
+                            else if (systemHiveSubcategories.Contains(section.Title))
+                                isAvail = isSystemHive;
+                        }
+                        if (isAvail)
+                        {
+                            firstAvailable = section;
+                            break;
+                        }
+                    }
+                    
+                    if (firstAvailable != null)
+                    {
+                        displaySection(firstAvailable);
+                    }
+                    else if (key == "System" && isSoftwareHive)
+                    {
+                        // For SOFTWARE hive, show Activation by default
+                        var activationSection = _infoExtractor.GetActivationAnalysis();
+                        displaySection(activationSection);
+                    }
+                }
+            };
+
+            splitContainer.Panel1.Controls.Add(leftPanel);
+            splitContainer.Panel2.Controls.Add(rightPanel);
+            form.Controls.Add(splitContainer);
+
+            // Select first enabled item by default (if any)
+            int firstEnabledIndex = -1;
+            for (int i = 0; i < categoryList.Items.Count; i++)
+            {
+                var item = ((string icon, string text, string key))categoryList.Items[i];
+                if (enabledCategories.Contains(item.key))
+                {
+                    firstEnabledIndex = i;
+                    break;
+                }
+            }
+
+            form.FormClosed += (s, ev) => { 
+                themeData.Dispose();  // Dispose fonts and tooltips tracked by themeData
+                _analyzeForm = null; // Clear the reference
+                form.Dispose(); 
+            };
+            
+            // Show form immediately, then load data after it's visible
+            form.Show();
+            form.BringToFront();
+            form.Activate();
+            
+            // Defer initial category selection to after form is shown
+            // This allows the form to appear instantly
+            form.BeginInvoke((Action)(() => {
+                categoryList.SelectedIndex = firstEnabledIndex;
+            }));
+        }
+
+        private void ShowInfoReport(string title, string content)
+        {
+            var form = new Form
+            {
+                Text = $"Registry Expert - {title}",
+                Size = new Size(900, 700),
+                StartPosition = FormStartPosition.CenterParent,
+                ShowInTaskbar = false
+            };
+            ModernTheme.ApplyTo(form);
+
+            var toolbar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = 44,
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(8),
+                FlowDirection = FlowDirection.LeftToRight
+            };
+            
+            var copyBtn = ModernTheme.CreateButton("Copy All", (s, e) =>
+            {
+                try
+                {
+                    Clipboard.SetText(content);
+                    ShowInfo("Copied to clipboard!");
+                }
+                catch (System.Runtime.InteropServices.ExternalException)
+                {
+                    ShowError("Failed to copy - clipboard may be in use by another application");
+                }
+            });
+            copyBtn.Width = 100;
+            
+            var saveBtn = ModernTheme.CreateButton("💾 Save...", (s, e) =>
+            {
+                using var dialog = new SaveFileDialog
+                {
+                    Filter = "Text Files|*.txt|All Files|*.*",
+                    FileName = $"{title.Replace(" ", "_")}.txt"
+                };
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    File.WriteAllText(dialog.FileName, content);
+                    ShowInfo("File saved successfully!");
+                }
+            });
+            saveBtn.Width = 100;
+            
+            toolbar.Controls.Add(copyBtn);
+            toolbar.Controls.Add(saveBtn);
+
+            var textBox = new RichTextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                Text = content,
+                WordWrap = false
+            };
+            ModernTheme.ApplyTo(textBox);
+
+            form.Controls.Add(textBox);
+            form.Controls.Add(toolbar);
+            form.FormClosed += (s, ev) => form.Dispose();
+            form.Show(this);
+        }
+
+        public void NavigateToKey(string keyPath)
+        {
+            NavigateToKey(keyPath, null);
+        }
+
+        public void NavigateToKey(string keyPath, string? valueName)
+        {
+            if (_treeView.Nodes.Count == 0) return;
+
+            var parts = keyPath.Split('\\');
+            TreeNode? currentNode = _treeView.Nodes[0];
+            
+            foreach (var part in parts.Skip(1))
+            {
+                if (currentNode.Nodes.Count == 1 && currentNode.Nodes[0].Tag?.ToString() == "placeholder")
+                {
+                    currentNode.Expand();
+                }
+
+                TreeNode? found = null;
+                foreach (TreeNode child in currentNode.Nodes)
+                {
+                    if (child.Text.Equals(part, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = child;
+                        break;
+                    }
+                }
+
+                if (found == null) break;
+                currentNode = found;
+            }
+
+            _treeView.SelectedNode = currentNode;
+            currentNode?.EnsureVisible();
+            _treeView.Focus();
+
+            // If a value name was specified, select it in the ListView
+            if (!string.IsNullOrEmpty(valueName))
+            {
+                SelectValueInListView(valueName);
+            }
+        }
+
+        private void SelectValueInListView(string valueName)
+        {
+            // Handle "(Default)" which represents empty value name
+            var searchName = valueName == "(Default)" ? "" : valueName;
+            
+            foreach (ListViewItem item in _listView.Items)
+            {
+                var itemName = item.Text == "(Default)" ? "" : item.Text;
+                if (itemName.Equals(searchName, StringComparison.OrdinalIgnoreCase))
+                {
+                    item.Selected = true;
+                    item.Focused = true;
+                    item.EnsureVisible();
+                    _listView.Focus();
+                    break;
+                }
+            }
+        }
+
+        private void SwitchTheme(ThemeType theme)
+        {
+            ModernTheme.SetTheme(theme);
+            ApplyThemeToAll();
+            
+            // Recreate drop panel with new theme colors
+            RefreshDropPanel();
+            
+            // Refresh analyze window theme without reloading data
+            if (_analyzeForm != null && !_analyzeForm.IsDisposed)
+            {
+                RefreshAnalyzeFormTheme(_analyzeForm);
+            }
+            
+            // Refresh search window theme without reloading data
+            if (_searchForm != null && !_searchForm.IsDisposed)
+            {
+                _searchForm.RefreshTheme();
+            }
+            
+            // Refresh statistics window theme
+            if (_statisticsForm != null && !_statisticsForm.IsDisposed)
+            {
+                RefreshStatisticsFormTheme(_statisticsForm);
+            }
+            
+            // Refresh timeline window theme
+            if (_timelineForm != null && !_timelineForm.IsDisposed && _timelineForm is TimelineForm tf)
+            {
+                tf.RefreshTheme();
+            }
+            
+            // Update menu checkmarks
+            foreach (ToolStripMenuItem item in _menuStrip.Items)
+            {
+                if (item.Text == "View")
+                {
+                    foreach (var dropItem in item.DropDownItems)
+                    {
+                        if (dropItem is ToolStripMenuItem menuItem)
+                        {
+                            if (menuItem.Text == "Dark Theme")
+                                menuItem.Checked = theme == ThemeType.Dark;
+                            else if (menuItem.Text == "Light Theme")
+                                menuItem.Checked = theme == ThemeType.Light;
+                        }
+                    }
+                }
+            }
+        }
+
+        private void RefreshAnalyzeFormTheme(Form form)
+        {
+            // Apply base form theme
+            ModernTheme.ApplyTo(form);
+            
+            // Get theme data from form tag
+            if (form.Tag is not AnalyzeFormThemeData themeData) return;
+
+            // Update split containers
+            if (themeData.MainSplit != null)
+            {
+                themeData.MainSplit.BackColor = ModernTheme.Border;
+                themeData.MainSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.MainSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+            if (themeData.NetworkSplit != null)
+            {
+                themeData.NetworkSplit.BackColor = ModernTheme.Border;
+                themeData.NetworkSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.NetworkSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+
+            // Update left panel
+            if (themeData.LeftPanel != null) themeData.LeftPanel.BackColor = ModernTheme.Background;
+            if (themeData.CategoryHeader != null) themeData.CategoryHeader.BackColor = ModernTheme.Surface;
+            if (themeData.CategoryTitle != null) themeData.CategoryTitle.ForeColor = ModernTheme.TextPrimary;
+            if (themeData.CategoryList != null)
+            {
+                themeData.CategoryList.BackColor = ModernTheme.TreeViewBack;
+                themeData.CategoryList.ForeColor = ModernTheme.TextPrimary;
+                themeData.CategoryList.Invalidate(); // Force redraw for custom drawing
+            }
+
+            // Update right panel
+            if (themeData.RightPanel != null) themeData.RightPanel.BackColor = ModernTheme.Background;
+            if (themeData.ContentHeader != null) themeData.ContentHeader.BackColor = ModernTheme.Surface;
+            if (themeData.ContentTitle != null) themeData.ContentTitle.ForeColor = ModernTheme.TextPrimary;
+            if (themeData.SubCategoryPanel != null) themeData.SubCategoryPanel.BackColor = ModernTheme.Surface;
+
+            // Update content grid
+            if (themeData.ContentGrid != null)
+            {
+                var grid = themeData.ContentGrid;
+                grid.BackgroundColor = ModernTheme.Surface;
+                grid.ForeColor = ModernTheme.TextPrimary;
+                grid.GridColor = ModernTheme.Border;
+                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            }
+
+            // Update registry info panel (now using ContentDetailSplit and DetailPanel)
+            if (themeData.ContentDetailSplit != null)
+            {
+                themeData.ContentDetailSplit.BackColor = ModernTheme.Border;
+                themeData.ContentDetailSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.ContentDetailSplit.Panel2.BackColor = ModernTheme.TreeViewBack;
+            }
+            if (themeData.DetailPanel != null) themeData.DetailPanel.BackColor = ModernTheme.TreeViewBack;
+            if (themeData.RegistryPathLabel != null)
+            {
+                themeData.RegistryPathLabel.ForeColor = ModernTheme.TextSecondary;
+                themeData.RegistryPathLabel.BackColor = ModernTheme.TreeViewBack;
+            }
+            if (themeData.RegistryValueBox != null)
+            {
+                themeData.RegistryValueBox.ForeColor = ModernTheme.TextPrimary;
+                themeData.RegistryValueBox.BackColor = ModernTheme.TreeViewBack;
+            }
+
+            // Update network adapter controls
+            if (themeData.NetworkAdaptersList != null)
+            {
+                themeData.NetworkAdaptersList.BackColor = ModernTheme.TreeViewBack;
+                themeData.NetworkAdaptersList.ForeColor = ModernTheme.TextPrimary;
+                themeData.NetworkAdaptersList.Invalidate();
+            }
+            if (themeData.NetworkAdaptersHeader != null) themeData.NetworkAdaptersHeader.BackColor = ModernTheme.Surface;
+            if (themeData.NetworkAdaptersLabel != null) themeData.NetworkAdaptersLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.NetworkDetailsHeader != null) themeData.NetworkDetailsHeader.BackColor = ModernTheme.Surface;
+            if (themeData.NetworkDetailsLabel != null) themeData.NetworkDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+
+            // Update network details grid
+            if (themeData.NetworkDetailsGrid != null)
+            {
+                var grid = themeData.NetworkDetailsGrid;
+                grid.BackgroundColor = ModernTheme.Surface;
+                grid.ForeColor = ModernTheme.TextPrimary;
+                grid.GridColor = ModernTheme.Border;
+                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            }
+
+            // Update subcategory buttons
+            foreach (var btn in themeData.SubCategoryButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update service filter buttons
+            foreach (var btn in themeData.ServiceFilterButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update Appx filter panel
+            if (themeData.AppxFilterPanel != null) themeData.AppxFilterPanel.BackColor = ModernTheme.TreeViewBack;
+
+            // Update Appx filter buttons
+            foreach (var btn in themeData.AppxFilterButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update Storage filter buttons
+            foreach (var btn in themeData.StorageFilterButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update firewall panel controls
+            if (themeData.FirewallPanel != null) themeData.FirewallPanel.BackColor = ModernTheme.Background;
+            if (themeData.FirewallProfileButtonsPanel != null) themeData.FirewallProfileButtonsPanel.BackColor = ModernTheme.Surface;
+            if (themeData.FirewallProfileLabel != null) themeData.FirewallProfileLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.FirewallRulesPanel != null) themeData.FirewallRulesPanel.BackColor = ModernTheme.Background;
+            if (themeData.FirewallRulesHeader != null) themeData.FirewallRulesHeader.BackColor = ModernTheme.Surface;
+            if (themeData.FirewallRulesLabel != null) themeData.FirewallRulesLabel.ForeColor = ModernTheme.TextSecondary;
+
+            // Update firewall rules grid
+            if (themeData.FirewallRulesGrid != null)
+            {
+                var grid = themeData.FirewallRulesGrid;
+                grid.BackgroundColor = ModernTheme.Surface;
+                grid.ForeColor = ModernTheme.TextPrimary;
+                grid.GridColor = ModernTheme.Border;
+                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            }
+
+            // Update firewall profile buttons
+            foreach (var btn in themeData.FirewallProfileButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Refresh firewall display to re-apply row colors
+            themeData.RefreshFirewallDisplay?.Invoke();
+
+            form.Invalidate(true);
+        }
+
+        private void RefreshStatisticsFormTheme(Form form)
+        {
+            // Apply base form theme
+            ModernTheme.ApplyTo(form);
+            
+            // Recursively update all controls
+            RefreshStatisticsControls(form);
+            
+            form.Invalidate(true);
+        }
+
+        private void RefreshStatisticsControls(Control parent)
+        {
+            foreach (Control ctrl in parent.Controls)
+            {
+                switch (ctrl)
+                {
+                    case TabControl tabControl:
+                        ModernTheme.ApplyTo(tabControl);
+                        foreach (TabPage page in tabControl.TabPages)
+                        {
+                            page.BackColor = ModernTheme.Background;
+                        }
+                        break;
+                        
+                    case TabPage tabPage:
+                        tabPage.BackColor = ModernTheme.Background;
+                        break;
+                        
+                    case TreeView tree:
+                        tree.BackColor = ModernTheme.Background;
+                        tree.ForeColor = ModernTheme.TextPrimary;
+                        tree.Invalidate();
+                        break;
+                        
+                    case Label label:
+                        if (label.ForeColor != ModernTheme.Accent && 
+                            label.ForeColor != ModernTheme.Success &&
+                            label.ForeColor != ModernTheme.Warning &&
+                            label.ForeColor != ModernTheme.Info)
+                        {
+                            label.ForeColor = label.ForeColor == ModernTheme.TextSecondary 
+                                ? ModernTheme.TextSecondary 
+                                : ModernTheme.TextPrimary;
+                        }
+                        break;
+                        
+                    case FlowLayoutPanel flow:
+                        if (flow.BackColor != Color.Transparent)
+                            flow.BackColor = ModernTheme.Background;
+                        break;
+                        
+                    case Panel panel:
+                        if (panel.BackColor != Color.Transparent)
+                            panel.BackColor = ModernTheme.Background;
+                        // Update header panel (Surface color, with border paint)
+                        if (panel.Height == 100)
+                        {
+                            panel.BackColor = ModernTheme.Surface;
+                        }
+                        break;
+                }
+                
+                // Recurse into children
+                if (ctrl.HasChildren)
+                {
+                    RefreshStatisticsControls(ctrl);
+                }
+            }
+        }
+
+        private void ApplyThemeToAll()
+        {
+            // Apply to main form
+            this.BackColor = ModernTheme.Background;
+            this.ForeColor = ModernTheme.TextPrimary;
+
+            // Apply to menu
+            _menuStrip.BackColor = ModernTheme.Surface;
+            _menuStrip.ForeColor = ModernTheme.TextPrimary;
+            _menuStrip.Renderer = new ModernMenuRenderer();
+
+            // Apply to toolbar panel and buttons
+            _toolbarPanel.BackColor = ModernTheme.Surface;
+            foreach (Control ctrl in _toolbarPanel.Controls)
+            {
+                if (ctrl is FlowLayoutPanel flow)
+                {
+                    foreach (Control c in flow.Controls)
+                    {
+                        if (c is Button btn)
+                        {
+                            btn.ForeColor = ModernTheme.TextPrimary;
+                            btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+                        }
+                        else if (c is Panel separator)
+                        {
+                            separator.BackColor = ModernTheme.Border;
+                        }
+                    }
+                }
+            }
+
+            // Apply to tree view
+            _treeView.BackColor = ModernTheme.TreeViewBack;
+            _treeView.ForeColor = ModernTheme.TextPrimary;
+            _treeView.LineColor = ModernTheme.Border;
+            _treeView.Invalidate();
+
+            // Apply to list view - need to re-apply theme for owner-draw
+            ModernTheme.ApplyTo(_listView);
+            _listView.Refresh();
+
+            // Apply to details box
+            _detailsBox.BackColor = ModernTheme.Surface;
+            _detailsBox.ForeColor = ModernTheme.TextPrimary;
+
+            // Apply to status panel
+            _statusPanel.BackColor = ModernTheme.Surface;
+            _statusLabel.ForeColor = ModernTheme.TextSecondary;
+            _hiveTypeLabel.BackColor = ModernTheme.Surface;
+
+            // Apply to splitters
+            _mainSplitContainer.BackColor = ModernTheme.Border;
+            _mainSplitContainer.Panel1.BackColor = ModernTheme.Background;
+            _mainSplitContainer.Panel2.BackColor = ModernTheme.Background;
+            _rightSplitContainer.BackColor = ModernTheme.Border;
+            _rightSplitContainer.Panel1.BackColor = ModernTheme.Background;
+            _rightSplitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Apply to all panels recursively (section headers, etc.)
+            ApplyThemeToPanels(this);
+
+            // Refresh all controls
+            this.Refresh();
+        }
+
+        private void ApplyThemeToPanels(Control parent)
+        {
+            foreach (Control ctrl in parent.Controls)
+            {
+                if (ctrl is Panel panel)
+                {
+                    // Check if it's a section header (height 36 with label)
+                    if (panel.Height == 36 && panel.Controls.Count >= 1)
+                    {
+                        foreach (Control c in panel.Controls)
+                        {
+                            if (c is Label lbl && lbl.Dock == DockStyle.Fill)
+                            {
+                                panel.BackColor = ModernTheme.Surface;
+                                lbl.ForeColor = ModernTheme.TextPrimary;
+                            }
+                            else if (c is Panel border && border.Dock == DockStyle.Bottom && border.Height == 1)
+                            {
+                                border.BackColor = ModernTheme.Border;
+                            }
+                        }
+                    }
+                    else if (panel.BackColor != Color.Transparent)
+                    {
+                        // Regular panel - apply background
+                        if (panel != _toolbarPanel && panel != _statusPanel)
+                        {
+                            panel.BackColor = ModernTheme.Background;
+                        }
+                    }
+                }
+                
+                // Recurse into child controls
+                if (ctrl.HasChildren)
+                {
+                    ApplyThemeToPanels(ctrl);
+                }
+            }
+        }
+
+        private void About_Click(object? sender, EventArgs e)
+        {
+            var form = new Form
+            {
+                Text = "About Registry Expert",
+                Size = new Size(480, 450),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false
+            };
+            ModernTheme.ApplyTo(form);
+
+            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(30) };
+            panel.BackColor = ModernTheme.Background;
+            
+            // App icon - use the application's icon
+            var iconBox = new PictureBox
+            {
+                Size = new Size(64, 64),
+                Location = new Point(30, 25),
+                BackColor = Color.Transparent,
+                SizeMode = PictureBoxSizeMode.Zoom
+            };
+            
+            // Get icon from the form's icon (which is set from registry_fixed.ico)
+            if (this.Icon != null)
+            {
+                iconBox.Image = this.Icon.ToBitmap();
+            }
+            
+            var titleLabel = new Label
+            {
+                Text = "Registry Expert",
+                Font = new Font("Segoe UI Semibold", 22F),
+                ForeColor = ModernTheme.Accent,
+                AutoSize = true,
+                Location = new Point(105, 30)
+            };
+            
+            var version = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            var versionLabel = new Label
+            {
+                Text = $"Version {version?.Major ?? 1}.{version?.Minor ?? 0}.{version?.Build ?? 0}",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextSecondary,
+                AutoSize = true,
+                Location = new Point(105, 68)
+            };
+            
+            var descLabel = new Label
+            {
+                Text = "A lightweight tool for viewing and analyzing\noffline Windows registry hive files.",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextPrimary,
+                AutoSize = true,
+                Location = new Point(30, 110)
+            };
+            
+            // Author section
+            var authorTitleLabel = new Label
+            {
+                Text = "Author",
+                Font = new Font("Segoe UI Semibold", 10F),
+                ForeColor = ModernTheme.TextSecondary,
+                AutoSize = true,
+                Location = new Point(30, 165)
+            };
+            
+            var authorLabel = new Label
+            {
+                Text = "Bowen Zhang",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextPrimary,
+                AutoSize = true,
+                Location = new Point(30, 185)
+            };
+            
+            // Feedback section
+            var feedbackTitleLabel = new Label
+            {
+                Text = "Feedback",
+                Font = new Font("Segoe UI Semibold", 10F),
+                ForeColor = ModernTheme.TextSecondary,
+                AutoSize = true,
+                Location = new Point(30, 220)
+            };
+            
+            var emailLink = new LinkLabel
+            {
+                Text = "bowenzhang@microsoft.com",
+                Font = ModernTheme.RegularFont,
+                AutoSize = true,
+                Location = new Point(30, 240),
+                LinkColor = ModernTheme.Accent,
+                ActiveLinkColor = ModernTheme.AccentDark,
+                VisitedLinkColor = ModernTheme.Accent
+            };
+            emailLink.Click += (s, ev) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "mailto:bowenzhang@microsoft.com?subject=Registry Expert Feedback",
+                        UseShellExecute = true
+                    });
+                }
+                catch { }
+            };
+            
+            // Data Protection Notice link
+            var privacyLink = new LinkLabel
+            {
+                Text = "Data Protection Notice",
+                Font = ModernTheme.RegularFont,
+                AutoSize = true,
+                Location = new Point(30, 270),
+                LinkColor = ModernTheme.Accent,
+                ActiveLinkColor = ModernTheme.AccentDark,
+                VisitedLinkColor = ModernTheme.Accent
+            };
+            privacyLink.Click += (s, ev) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "https://www.microsoft.com/en-us/privacy/data-privacy-notice",
+                        UseShellExecute = true
+                    });
+                }
+                catch { }
+            };
+            
+            // Supported hives
+            var hivesLabel = new Label
+            {
+                Text = "Supported Hives: NTUSER.DAT, SAM, SECURITY, SOFTWARE,\nSYSTEM, USRCLASS.DAT, Amcache.hve",
+                Font = new Font("Segoe UI", 8F),
+                ForeColor = ModernTheme.TextDisabled,
+                AutoSize = true,
+                Location = new Point(30, 300)
+            };
+            
+            var closeBtn = ModernTheme.CreateButton("Close", (s, e) => form.Close());
+            closeBtn.Location = new Point(185, 350);
+            closeBtn.Width = 100;
+            
+            panel.Controls.AddRange(new Control[] { iconBox, titleLabel, versionLabel, descLabel, 
+                authorTitleLabel, authorLabel, feedbackTitleLabel, emailLink, privacyLink, hivesLabel, closeBtn });
+            form.Controls.Add(panel);
+            form.ShowDialog(this);
+        }
+
+        private void ShowError(string message)
+        {
+            MessageBox.Show(message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        private void ShowInfo(string message, string title = "Information")
+        {
+            MessageBox.Show(message, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            // Hide form immediately so user sees instant close
+            this.Visible = false;
+            
+            // CRITICAL: Dispose MenuStrip FIRST to unsubscribe from SystemEvents.UserPreferenceChanged
+            // and SystemEvents.SessionSwitch static events. These events hold strong references that
+            // prevent the process from terminating even after Environment.Exit() is called.
+            try
+            {
+                if (_menuStrip != null)
+                {
+                    this.Controls.Remove(_menuStrip);
+                    _menuStrip.Dispose();
+                    _menuStrip = null!;
+                }
+            }
+            catch { }
+            
+            // Disable drag-drop to revoke shell registration (prevents explorer.exe dependency)
+            try
+            {
+                this.AllowDrop = false;
+            }
+            catch { }
+            
+            // Close and dispose child forms first (they have their own cleanup handlers)
+            try
+            {
+                _searchForm?.Close();
+                _searchForm = null;
+                
+                _analyzeForm?.Close();
+                _analyzeForm = null;
+                
+                _statisticsForm?.Close();
+                _statisticsForm = null;
+                
+                _compareForm?.Close();  // CompareForm has its own cleanup in FormClosing
+                _compareForm = null;
+                
+                _timelineForm?.Close();
+                _timelineForm = null;
+            }
+            catch { }
+            
+            // Clear TreeView/ListView to release RegistryKey references held in Tag properties
+            try
+            {
+                _treeView?.Nodes.Clear();
+                _listView?.Items.Clear();
+                _detailsBox?.Clear();
+            }
+            catch { }
+            
+            // Dispose RichTextBox to release OLE/COM objects that can keep process alive
+            try
+            {
+                if (_detailsBox != null)
+                {
+                    _detailsBox.Parent?.Controls.Remove(_detailsBox);
+                    _detailsBox.Dispose();
+                    _detailsBox = null!;
+                }
+            }
+            catch { }
+            
+            // Dispose the parser to release memory
+            try
+            {
+                _parser?.Dispose();
+                _parser = null;
+            }
+            catch { }
+            
+            _infoExtractor = null;
+            _previousSelectedNode = null;
+            
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            base.OnFormClosed(e);
+            
+            // Explicitly exit the application to ensure all threads and SystemEvents are cleaned up.
+            // SystemEvents.UserPreferenceChanged (subscribed by WinForms controls internally) can keep
+            // the process alive if not explicitly terminated.
+            Application.Exit();
+            
+            // Force terminate the process. SystemEvents maintains static event subscriptions
+            // with references to WindowsFormsSynchronizationContext that can keep the process alive
+            // even after Application.Exit(). Environment.Exit ensures clean termination.
+            Environment.Exit(0);
+        }
+
+        private const int WM_CLOSE = 0x0010;
+        private const int WM_QUERYENDSESSION = 0x0011;
+        private const int WM_ENDSESSION = 0x0016;
+        
+        protected override void WndProc(ref Message m)
+        {
+            // IMMEDIATELY exit on WM_CLOSE - don't let anything else keep the process alive
+            if (m.Msg == WM_CLOSE)
+            {
+                // Hide form first for instant visual feedback
+                this.Visible = false;
+                
+                // Use multiple termination methods - one of them WILL work
+                try { Application.Exit(); } catch { }
+                try { Environment.Exit(0); } catch { }
+                try { Process.GetCurrentProcess().Kill(); } catch { }
+                
+                return; // Never reached, but for clarity
+            }
+            
+            base.WndProc(ref m);
+        }
+
+        private void PopulateFlowPanel(FlowLayoutPanel flow, List<AnalysisSection> sections)
+        {
+            flow.SuspendLayout();
+            flow.Controls.Clear();
+
+            // Calculate optimal column width based on available space
+            int columnWidth = 350;
+            int columnHeight = 280;
+
+            foreach (var section in sections)
+            {
+                // Create a panel for each section
+                var sectionPanel = new Panel
+                {
+                    Width = columnWidth,
+                    Height = columnHeight,
+                    Margin = new Padding(5),
+                    BackColor = ModernTheme.Surface,
+                    Padding = new Padding(1)
+                };
+
+                // Section header
+                var header = new Panel
+                {
+                    Dock = DockStyle.Top,
+                    Height = 35,
+                    BackColor = ModernTheme.TreeViewBack,
+                    Padding = new Padding(10, 0, 10, 0)
+                };
+
+                var headerLabel = new Label
+                {
+                    Text = section.Title,
+                    Font = new Font("Segoe UI Semibold", 10F),
+                    ForeColor = ModernTheme.Accent,
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                header.Controls.Add(headerLabel);
+
+                // Content ListView for this section
+                var listView = new ListView
+                {
+                    Dock = DockStyle.Fill,
+                    View = View.Details,
+                    FullRowSelect = true,
+                    GridLines = false,
+                    HeaderStyle = ColumnHeaderStyle.Nonclickable,
+                    BackColor = ModernTheme.Surface,
+                    ForeColor = ModernTheme.TextPrimary,
+                    Font = ModernTheme.RegularFont,
+                    BorderStyle = BorderStyle.None,
+                    OwnerDraw = true
+                };
+
+                // Determine if this section has values or just names
+                bool hasValues = section.Items.Any(i => !string.IsNullOrEmpty(i.Value) || i.IsSubSection);
+
+                if (hasValues)
+                {
+                    listView.Columns.Add("Name", 140);
+                    listView.Columns.Add("Value", 190);
+                }
+                else
+                {
+                    listView.Columns.Add("Name", columnWidth - 25);
+                }
+
+                // Custom draw for alternating rows and better styling
+                listView.DrawColumnHeader += (s, e) =>
+                {
+                    using var bgBrush = new SolidBrush(ModernTheme.TreeViewBack);
+                    e.Graphics.FillRectangle(bgBrush, e.Bounds);
+                    using var brush = new SolidBrush(ModernTheme.TextSecondary);
+                    e.Graphics.DrawString(e.Header?.Text ?? "", ModernTheme.SmallFont, brush,
+                        new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width, e.Bounds.Height),
+                        new StringFormat { LineAlignment = StringAlignment.Center });
+                };
+
+                listView.DrawItem += (s, e) => { };
+
+                listView.DrawSubItem += (s, e) =>
+                {
+                    if (e.Item == null) return;
+                    Color backColor = e.ItemIndex % 2 == 0 ? ModernTheme.Surface : ModernTheme.ListViewAltRow;
+                    if (e.Item.Selected)
+                        backColor = ModernTheme.Selection;
+
+                    using var brush = new SolidBrush(backColor);
+                    e.Graphics.FillRectangle(brush, e.Bounds);
+
+                    var textColor = e.ColumnIndex == 0 && e.Item.Tag != null && (bool)e.Item.Tag
+                        ? ModernTheme.TextSecondary
+                        : ModernTheme.TextPrimary;
+
+                    using var textBrush = new SolidBrush(textColor);
+                    var text = e.SubItem?.Text ?? "";
+                    var rect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width - 4, e.Bounds.Height);
+                    e.Graphics.DrawString(text, listView.Font, textBrush, rect,
+                        new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter });
+                };
+
+                // Populate items
+                foreach (var item in section.Items)
+                {
+                    if (item.IsSubSection && item.SubItems != null)
+                    {
+                        // Add subsection header
+                        var headerItem = new ListViewItem(item.Name);
+                        headerItem.Tag = true; // Mark as subsection header
+                        headerItem.Font = new Font("Segoe UI Semibold", 9F);
+                        if (hasValues)
+                            headerItem.SubItems.Add("");
+                        listView.Items.Add(headerItem);
+
+                        // Add subitems
+                        foreach (var subItem in item.SubItems)
+                        {
+                            var subListItem = new ListViewItem("  " + subItem.Name);
+                            subListItem.Tag = false;
+                            if (hasValues)
+                                subListItem.SubItems.Add(subItem.Value);
+                            listView.Items.Add(subListItem);
+                        }
+                    }
+                    else
+                    {
+                        var listItem = new ListViewItem(item.Name);
+                        listItem.Tag = false;
+                        if (hasValues)
+                            listItem.SubItems.Add(item.Value);
+                        listView.Items.Add(listItem);
+                    }
+                }
+
+                sectionPanel.Controls.Add(listView);
+                sectionPanel.Controls.Add(header);
+                flow.Controls.Add(sectionPanel);
+            }
+
+            flow.ResumeLayout();
+        }
+
+        private void ExportSectionsToText(List<AnalysisSection> sections, StringBuilder sb)
+        {
+            foreach (var section in sections)
+            {
+                ExportSingleSectionToText(section, sb);
+            }
+        }
+
+        private void ExportSingleSectionToText(AnalysisSection section, StringBuilder sb)
+        {
+            sb.AppendLine("═══════════════════════════════════════════════════════════════");
+            sb.AppendLine(section.Title);
+            sb.AppendLine("═══════════════════════════════════════════════════════════════");
+
+            foreach (var item in section.Items)
+            {
+                if (item.IsSubSection && item.SubItems != null)
+                {
+                    sb.AppendLine($"\n{item.Name}");
+                    foreach (var subItem in item.SubItems)
+                    {
+                        if (string.IsNullOrEmpty(subItem.Value))
+                            sb.AppendLine($"  {subItem.Name}");
+                        else
+                            sb.AppendLine($"  {subItem.Name}: {subItem.Value}");
+                    }
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(item.Value))
+                        sb.AppendLine($"  {item.Name}");
+                    else
+                        sb.AppendLine($"  {item.Name}: {item.Value}");
+                }
+            }
+            sb.AppendLine();
+        }
+
+        private string FormatAnalysisItem(AnalysisItem item)
+        {
+            if (string.IsNullOrEmpty(item.Value))
+                return item.Name;
+            return $"{item.Name}: {item.Value}";
+        }
+
+        private void ExportTreeToText(TreeNodeCollection nodes, StringBuilder sb, int indent)
+        {
+            foreach (TreeNode node in nodes)
+            {
+                sb.AppendLine(new string(' ', indent * 2) + node.Text);
+                if (node.Nodes.Count > 0)
+                {
+                    ExportTreeToText(node.Nodes, sb, indent + 1);
+                }
+            }
+        }
+    }
+
+    // Data models for structured analysis
+    public class AnalysisSection
+    {
+        public string Title { get; set; } = "";
+        public List<AnalysisItem> Items { get; set; } = new();
+    }
+
+    public class AnalysisItem
+    {
+        public string Name { get; set; } = "";
+        public string Value { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public string RegistryValue { get; set; } = "";
+        public bool IsSubSection { get; set; } = false;
+        public List<AnalysisItem>? SubItems { get; set; }
+    }
+
+    // Network adapter helper classes for master-detail view
+    public class NetworkAdapterItem
+    {
+        public string DisplayName { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public string FullGuid { get; set; } = "";
+        public List<NetworkPropertyItem> Properties { get; set; } = new();
+        
+        public override string ToString() => DisplayName;
+    }
+
+    public class NetworkPropertyItem
+    {
+        public string Name { get; set; } = "";
+        public string Value { get; set; } = "";
+        public string RegistryValueName { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+    }
+}
