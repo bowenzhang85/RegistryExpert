@@ -116,10 +116,4 @@ Use the **Tools** menu to extract various information:
 | DEFAULT | Default user profile template |
 | BCD | Boot Configuration Data |
 
-## License
 
-This project uses the [Registry](https://github.com/EricZimmerman/Registry) library by Eric Zimmerman for parsing registry hive files.
-
-## Disclaimer
-
-This tool is intended for legitimate forensic analysis, system administration, and educational purposes only. Always ensure you have proper authorization before analyzing registry hives from systems you do not own.
