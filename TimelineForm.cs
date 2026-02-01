@@ -20,7 +20,7 @@ namespace RegistryExpert
         private ComboBox _limitCombo = null!;
         private DateTimePicker _fromDatePicker = null!;
         private DateTimePicker _toDatePicker = null!;
-        private Panel _customDatePanel = null!;
+        private FlowLayoutPanel _customDatePanel = null!;
         private Button _refreshButton = null!;
         private Button _exportButton = null!;
         private Label _statusLabel = null!;
@@ -55,39 +55,66 @@ namespace RegistryExpert
             base.Dispose(disposing);
         }
 
+        /// <summary>
+        /// Handle DPI changes when moving between monitors with different DPI settings.
+        /// </summary>
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            // Reset the cached DPI scale factor so it gets recalculated
+            DpiHelper.ResetScaleFactor();
+            
+            base.OnDpiChanged(e);
+            
+            // Update DataGridView row height
+            _timelineGrid.RowTemplate.Height = DpiHelper.Scale(28);
+            _timelineGrid.ColumnHeadersHeight = DpiHelper.Scale(32);
+        }
+
         private void InitializeComponent()
         {
             this.Text = "Timeline View - Registry Keys by Last Modified";
             this.Size = new Size(1000, 700);
             this.StartPosition = FormStartPosition.CenterParent;
             this.MinimumSize = new Size(800, 500);
+            this.AutoScaleMode = AutoScaleMode.Dpi;
             ModernTheme.ApplyTo(this);
 
             // Top filter panel
             var filterPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 100,
+                Height = DpiHelper.Scale(100),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(16)
             };
 
-            // First row - Filter and Limit
+            // First row - use FlowLayoutPanel for proper DPI scaling
+            var filterFlow = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(40),
+                BackColor = ModernTheme.Surface,
+                WrapContents = false,
+                AutoSize = false,
+                Padding = new Padding(0),
+                Margin = new Padding(0)
+            };
+
             var filterLabel = new Label
             {
                 Text = "Time Filter:",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(16, 18),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 5, 0)
             };
 
             _filterCombo = new ComboBox
             {
-                Location = new Point(100, 14),
-                Size = new Size(150, 28),
+                Size = DpiHelper.ScaleSize(150, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.RegularFont,
+                Margin = new Padding(0, 0, 15, 0)
             };
             _filterCombo.Items.AddRange(new object[] { 
                 "All Times", 
@@ -107,16 +134,16 @@ namespace RegistryExpert
                 Text = "Show:",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(270, 18),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 5, 0)
             };
 
             _limitCombo = new ComboBox
             {
-                Location = new Point(320, 14),
-                Size = new Size(100, 28),
+                Size = DpiHelper.ScaleSize(80, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.RegularFont,
+                Margin = new Padding(0, 0, 5, 0)
             };
             _limitCombo.Items.AddRange(new object[] { "50", "100", "500", "1000", "All" });
             _limitCombo.SelectedIndex = 1; // Default to 100
@@ -129,26 +156,36 @@ namespace RegistryExpert
                 Text = "keys",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(425, 18),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 20, 0)
             };
 
             _refreshButton = ModernTheme.CreateButton("Scan", RefreshButton_Click);
-            _refreshButton.Location = new Point(480, 12);
-            _refreshButton.Size = new Size(100, 32);
+            _refreshButton.AutoSize = true;
+            _refreshButton.Padding = new Padding(15, 5, 15, 5);
+            _refreshButton.Margin = new Padding(0, 0, 10, 0);
 
             _exportButton = ModernTheme.CreateButton("Export", ExportButton_Click);
-            _exportButton.Location = new Point(590, 12);
-            _exportButton.Size = new Size(100, 32);
+            _exportButton.AutoSize = true;
+            _exportButton.Padding = new Padding(15, 5, 15, 5);
+            _exportButton.Margin = new Padding(0, 0, 0, 0);
             _exportButton.Enabled = false;
 
-            // Custom date range panel (hidden by default)
-            _customDatePanel = new Panel
+            filterFlow.Controls.AddRange(new Control[] { 
+                filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
+                _refreshButton, _exportButton
+            });
+
+            // Custom date range panel (hidden by default) - also use FlowLayoutPanel
+            _customDatePanel = new FlowLayoutPanel
             {
-                Location = new Point(16, 52),
-                Size = new Size(500, 36),
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(36),
                 Visible = false,
-                BackColor = ModernTheme.Surface
+                BackColor = ModernTheme.Surface,
+                WrapContents = false,
+                Padding = new Padding(0),
+                Margin = new Padding(0)
             };
 
             var fromLabel = new Label
@@ -156,17 +193,17 @@ namespace RegistryExpert
                 Text = "From:",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(0, 8),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 5, 0)
             };
 
             _fromDatePicker = new DateTimePicker
             {
-                Location = new Point(50, 4),
-                Size = new Size(180, 28),
+                Size = DpiHelper.ScaleSize(180, 28),
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "yyyy-MM-dd HH:mm",
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.RegularFont,
+                Margin = new Padding(0, 0, 15, 0)
             };
             _fromDatePicker.Value = DateTime.Now.AddDays(-7);
             _fromDatePicker.ValueChanged += (s, e) => ApplyFilter();
@@ -176,33 +213,32 @@ namespace RegistryExpert
                 Text = "To:",
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
-                Location = new Point(245, 8),
-                AutoSize = true
+                AutoSize = true,
+                Margin = new Padding(0, 6, 5, 0)
             };
 
             _toDatePicker = new DateTimePicker
             {
-                Location = new Point(275, 4),
-                Size = new Size(180, 28),
+                Size = DpiHelper.ScaleSize(180, 28),
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "yyyy-MM-dd HH:mm",
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.RegularFont,
+                Margin = new Padding(0, 0, 0, 0)
             };
             _toDatePicker.Value = DateTime.Now;
             _toDatePicker.ValueChanged += (s, e) => ApplyFilter();
 
             _customDatePanel.Controls.AddRange(new Control[] { fromLabel, _fromDatePicker, toLabel, _toDatePicker });
 
-            filterPanel.Controls.AddRange(new Control[] { 
-                filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
-                _refreshButton, _exportButton, _customDatePanel 
-            });
+            // Add flow panels to filter panel (order matters - bottom to top for Dock.Top)
+            filterPanel.Controls.Add(_customDatePanel);
+            filterPanel.Controls.Add(filterFlow);
 
             // Status bar
             var statusPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 36,
+                Height = DpiHelper.Scale(36),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(16, 0, 16, 0)
             };
@@ -219,7 +255,7 @@ namespace RegistryExpert
             _progressBar = new ProgressBar
             {
                 Dock = DockStyle.Bottom,
-                Height = 3,
+                Height = DpiHelper.Scale(3),
                 Style = ProgressBarStyle.Marquee,
                 Visible = false
             };
@@ -233,7 +269,7 @@ namespace RegistryExpert
             _timelineGrid.BackgroundColor = ModernTheme.Background;  // Override: use Background instead of Surface
             _timelineGrid.DefaultCellStyle.Padding = new Padding(8, 4, 8, 4);  // Override default padding
             _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = new Padding(8, 4, 8, 4);
-            _timelineGrid.ColumnHeadersHeight = 36;  // Override default
+            _timelineGrid.ColumnHeadersHeight = DpiHelper.Scale(36);  // Override default
 
             // Add columns
             _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -299,7 +335,7 @@ namespace RegistryExpert
             _loadMorePanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = 50,
+                Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Background,
                 Visible = false,
                 Padding = new Padding(0, 8, 0, 8)
@@ -312,7 +348,7 @@ namespace RegistryExpert
                 BackColor = ModernTheme.Surface,
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.RegularFont,
-                Size = new Size(250, 34),
+                Size = DpiHelper.ScaleSize(250, 34),
                 Cursor = Cursors.Hand
             };
             _loadMoreButton.FlatAppearance.BorderColor = ModernTheme.Border;

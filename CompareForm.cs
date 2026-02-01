@@ -139,6 +139,22 @@ namespace RegistryExpert
         }
 
         /// <summary>
+        /// Handle DPI changes when moving between monitors with different DPI settings.
+        /// </summary>
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            // Reset the cached DPI scale factor so it gets recalculated
+            DpiHelper.ResetScaleFactor();
+            
+            base.OnDpiChanged(e);
+            
+            // Update controls that need manual DPI adjustment
+            _centerButtonPanel.Size = DpiHelper.ScaleSize(180, 60);
+            _compareButton.Size = DpiHelper.ScaleSize(160, 50);
+            _progressOverlay.Size = DpiHelper.ScaleSize(300, 150);
+        }
+
+        /// <summary>
         /// Pre-load a hive file as the left (base) hive
         /// </summary>
         public void SetLeftHive(string filePath)
@@ -148,6 +164,10 @@ namespace RegistryExpert
 
         private void InitializeComponent()
         {
+            // Enable DPI scaling
+            this.AutoScaleMode = AutoScaleMode.Dpi;
+            this.AutoScaleDimensions = new SizeF(96F, 96F);
+
             this.Text = "Compare Registry Hives";
             this.Size = new Size(1400, 900);
             this.MinimumSize = new Size(1000, 700);
@@ -185,7 +205,7 @@ namespace RegistryExpert
             // Create center Compare button panel (overlays the split)
             _centerButtonPanel = new Panel
             {
-                Size = new Size(180, 60),
+                Size = DpiHelper.ScaleSize(180, 60),
                 BackColor = Color.Transparent,
                 Visible = false
             };
@@ -193,8 +213,8 @@ namespace RegistryExpert
             _compareButton = new Button
             {
                 Text = "Compare Hives",
-                Size = new Size(160, 50),
-                Location = new Point(10, 5),
+                Size = DpiHelper.ScaleSize(160, 50),
+                Location = DpiHelper.ScalePoint(10, 5),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = ModernTheme.Success,
                 ForeColor = Color.White,
@@ -244,7 +264,7 @@ namespace RegistryExpert
             // Center container
             var centerContainer = new Panel
             {
-                Size = new Size(350, 130),
+                Size = DpiHelper.ScaleSize(350, 130),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(20, 15, 20, 15)
             };
@@ -257,7 +277,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Top,
-                Height = 45,
+                Height = DpiHelper.Scale(45),
                 AutoSize = false
             };
 
@@ -266,7 +286,7 @@ namespace RegistryExpert
             {
                 Style = ProgressBarStyle.Marquee,
                 MarqueeAnimationSpeed = 30,
-                Height = 25,
+                Height = DpiHelper.Scale(25),
                 Dock = DockStyle.Bottom
             };
 
@@ -325,7 +345,7 @@ namespace RegistryExpert
             // Center container
             var centerPanel = new Panel
             {
-                Size = new Size(350, 300),
+                Size = DpiHelper.ScaleSize(350, 300),
                 BackColor = ModernTheme.Background
             };
 
@@ -333,7 +353,7 @@ namespace RegistryExpert
             var stepPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 60,
+                Height = DpiHelper.Scale(60),
                 BackColor = ModernTheme.Background
             };
             
@@ -368,7 +388,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Top,
-                Height = 40
+                Height = DpiHelper.Scale(40)
             };
 
             // Description
@@ -381,14 +401,14 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Top,
-                Height = 50
+                Height = DpiHelper.Scale(50)
             };
 
             // Large load button
             loadButton = new Button
             {
                 Text = "Load Hive File",
-                Size = new Size(200, 50),
+                Size = DpiHelper.ScaleSize(200, 50),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = ModernTheme.Accent,
                 ForeColor = Color.White,
@@ -403,7 +423,7 @@ namespace RegistryExpert
             var buttonPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 70
+                Height = DpiHelper.Scale(70)
             };
 
             // File name label (shown after loading)
@@ -414,7 +434,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.Success,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Top,
-                Height = 30,
+                Height = DpiHelper.Scale(30),
                 Visible = false
             };
 
@@ -426,7 +446,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Top,
-                Height = 30
+                Height = DpiHelper.Scale(30)
             };
 
             // Position button in center
@@ -470,7 +490,7 @@ namespace RegistryExpert
             var headerPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 36,
+                Height = DpiHelper.Scale(36),
                 BackColor = ModernTheme.Surface
             };
 
@@ -505,7 +525,7 @@ namespace RegistryExpert
             pathBox = new TextBox
             {
                 Dock = DockStyle.Top,
-                Height = 26,
+                Height = DpiHelper.Scale(26),
                 ReadOnly = true,
                 BackColor = ModernTheme.Surface,
                 ForeColor = ModernTheme.TextSecondary,
@@ -574,7 +594,7 @@ namespace RegistryExpert
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
             grid.BackgroundColor = ModernTheme.Background;
             grid.DefaultCellStyle.BackColor = ModernTheme.Background;
-            grid.ColumnHeadersHeight = 28;
+            grid.ColumnHeadersHeight = DpiHelper.Scale(28);
 
             grid.Columns.Add("Name", "Name");
             grid.Columns.Add("Type", "Type");
