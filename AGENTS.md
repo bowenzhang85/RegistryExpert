@@ -49,12 +49,14 @@ git tag v1.0.0 && git push origin v1.0.0
 Program.cs               - Entry point
 MainForm.cs              - Main window - tree/list view, menus, toolbar
 ModernTheme.cs           - Theme system (dark/light) and UI factory methods
+DpiHelper.cs             - DPI scaling utilities for High DPI support
 OfflineRegistryParser.cs - Registry hive loading wrapper
 RegistryInfoExtractor.cs - Extracts system/user/network info from hives
 RegistryComparer.cs      - Diff logic for comparing two hives
 CompareForm.cs           - Side-by-side hive comparison UI
 SearchForm.cs            - Search dialog with cancellation support
 TimelineForm.cs          - Timeline view of registry modifications
+UpdateChecker.cs         - GitHub API integration for update checking
 AppSettings.cs           - Persisted settings (JSON in %LOCALAPPDATA%)
 ```
 
@@ -170,6 +172,74 @@ Access via `ModernTheme` static class:
 - Switch: `ModernTheme.SetTheme(ThemeType.Dark)` or `ModernTheme.ToggleTheme()`
 - Events: `ModernTheme.ThemeChanged`
 
+## DPI Awareness (REQUIRED)
+
+**All UI code must be DPI-aware.** This application supports High DPI displays (125%, 150%, 200%, etc.) via PerMonitorV2 mode.
+
+### DpiHelper Class
+
+Use `DpiHelper` static class for all hardcoded pixel values:
+
+```csharp
+// Scale individual values
+int height = DpiHelper.Scale(32);           // 32px at 100% → 48px at 150%
+
+// Scale sizes and positions
+Size = DpiHelper.ScaleSize(300, 200);       // Form/control sizes
+Location = DpiHelper.ScalePoint(25, 30);    // Control positions
+Padding = DpiHelper.ScalePadding(10);       // Margins and padding
+Padding = DpiHelper.ScalePadding(10, 5, 10, 5);  // Left, Top, Right, Bottom
+```
+
+### What to Scale
+
+| Scale with DpiHelper | Do NOT Scale |
+|---------------------|--------------|
+| Form sizes (`Size`, `MinimumSize`) | Font point sizes (already DPI-aware) |
+| Control sizes and locations | `AutoScaleMode = AutoScaleMode.Dpi` forms |
+| Padding and margins | TreeView `ItemHeight` with default drawing |
+| DataGridView row/column heights | |
+| Custom drawing positions | |
+| Icon/image dimensions | |
+
+### New Form DPI Pattern
+
+For new Form classes, override `OnDpiChanged` to handle multi-monitor scenarios:
+
+```csharp
+protected override void OnDpiChanged(DpiChangedEventArgs e)
+{
+    // Reset cached scale factor so it recalculates for new DPI
+    DpiHelper.ResetScaleFactor();
+    
+    base.OnDpiChanged(e);
+    
+    // Update controls that need manual DPI adjustment
+    _myGrid.RowTemplate.Height = DpiHelper.Scale(28);
+    _myGrid.ColumnHeadersHeight = DpiHelper.Scale(32);
+}
+```
+
+### Inline Dialog DPI Pattern
+
+For dialogs created inline (not separate Form classes), scale all values at creation:
+
+```csharp
+using var dialog = new Form
+{
+    Size = DpiHelper.ScaleSize(400, 300),
+    // ...
+};
+
+var label = new Label
+{
+    Location = DpiHelper.ScalePoint(20, 15),
+    Size = DpiHelper.ScaleSize(360, 25),
+    // Font sizes in points - do NOT scale
+    Font = new Font("Segoe UI", 12F),
+};
+```
+
 ## Adding New Features
 
 ### New Analysis Category
@@ -182,3 +252,12 @@ Access via `ModernTheme` static class:
 2. Subscribe to `ThemeChanged`, unsubscribe in `FormClosing`
 3. Use `CancellationTokenSource` for long-running operations
 4. Track in `MainForm` for disposal
+5. **Override `OnDpiChanged`** - call `DpiHelper.ResetScaleFactor()` and update scaled controls
+6. **Use `DpiHelper`** for all hardcoded pixel values (sizes, positions, padding)
+
+### New Inline Dialog
+1. Call `ModernTheme.ApplyTo(dialog)`
+2. **Use `DpiHelper.ScaleSize()`** for dialog size
+3. **Use `DpiHelper.ScalePoint()`** for control positions
+4. **Use `DpiHelper.ScalePadding()`** for margins
+5. Do NOT scale font point sizes (already DPI-aware)

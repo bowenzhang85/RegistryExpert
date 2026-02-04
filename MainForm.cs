@@ -341,9 +341,10 @@ namespace RegistryExpert
             this.PerformLayout();
             
             // Set splitter distances after layout
-            this.Load += (s, e) => {
+            this.Load += async (s, e) => {
                 _mainSplitContainer.SplitterDistance = 280;
                 _rightSplitContainer.SplitterDistance = Math.Max(250, _rightSplitContainer.Height * 2 / 3);
+                await CheckForUpdatesOnStartupAsync();
             };
         }
 
@@ -577,6 +578,8 @@ namespace RegistryExpert
             _menuStrip.Items.Add(toolsMenu);
 
             var helpMenu = new ToolStripMenuItem("Help");
+            helpMenu.DropDownItems.Add("Check for Updates...", null, CheckForUpdates_Click);
+            helpMenu.DropDownItems.Add(new ToolStripSeparator());
             helpMenu.DropDownItems.Add("About", null, About_Click);
             _menuStrip.Items.Add(helpMenu);
         }
@@ -5522,6 +5525,215 @@ namespace RegistryExpert
                 }
             }
         }
+
+        #region Update Checking
+
+        /// <summary>
+        /// Silently checks for updates on startup. Only shows dialog if update is available.
+        /// </summary>
+        private async Task CheckForUpdatesOnStartupAsync()
+        {
+            // Delay to let UI fully load
+            await Task.Delay(2000).ConfigureAwait(true);
+            
+            var updateInfo = await UpdateChecker.CheckForUpdatesAsync().ConfigureAwait(true);
+            
+            // Only show dialog if update is available (silent on error or up-to-date)
+            if (updateInfo?.UpdateAvailable == true)
+            {
+                ShowUpdateDialog(updateInfo, isManualCheck: false);
+            }
+        }
+
+        /// <summary>
+        /// Manual check for updates triggered from Help menu.
+        /// </summary>
+        private async void CheckForUpdates_Click(object? sender, EventArgs e)
+        {
+            // Show "checking" dialog with DPI-aware sizing
+            using var checkingForm = new Form
+            {
+                Text = "Check for Updates",
+                Size = DpiHelper.ScaleSize(300, 120),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false,
+                ControlBox = false
+            };
+            ModernTheme.ApplyTo(checkingForm);
+            
+            var checkingLabel = new Label
+            {
+                Text = "Checking for updates...",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextPrimary,
+                AutoSize = false,
+                Size = DpiHelper.ScaleSize(280, 40),
+                Location = DpiHelper.ScalePoint(10, 35),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            checkingForm.Controls.Add(checkingLabel);
+            
+            checkingForm.Show(this);
+            checkingForm.Refresh();
+            
+            var updateInfo = await UpdateChecker.CheckForUpdatesAsync().ConfigureAwait(true);
+            
+            checkingForm.Close();
+            
+            if (updateInfo == null)
+            {
+                MessageBox.Show(this, "Unable to check for updates. Please check your internet connection.",
+                    "Update Check Failed", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            else
+            {
+                ShowUpdateDialog(updateInfo, isManualCheck: true);
+            }
+        }
+
+        /// <summary>
+        /// Shows the update dialog. If no update available and manual check, shows "up to date" message.
+        /// </summary>
+        private void ShowUpdateDialog(UpdateInfo info, bool isManualCheck)
+        {
+            // If no update and this is manual check, show "up to date" message
+            if (!info.UpdateAvailable)
+            {
+                MessageBox.Show(this, 
+                    $"You're up to date!\n\nRegistry Expert {info.CurrentVersion} is the latest version.",
+                    "No Updates Available", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            
+            // Show update available dialog
+            using var form = new Form
+            {
+                Text = "Update Available",
+                Size = DpiHelper.ScaleSize(500, 450),
+                StartPosition = FormStartPosition.CenterParent,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                ShowInTaskbar = false
+            };
+            ModernTheme.ApplyTo(form);
+            
+            // Main panel with padding
+            var panel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = DpiHelper.ScalePadding(25),
+                BackColor = ModernTheme.Background
+            };
+            
+            // Title: "A new version is available!"
+            var titleLabel = new Label
+            {
+                Text = "A new version is available!",
+                Font = new Font("Segoe UI Semibold", 14F),
+                ForeColor = ModernTheme.Accent,
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(25, 20)
+            };
+            
+            // Version info panel
+            var versionPanel = new Panel
+            {
+                Location = DpiHelper.ScalePoint(25, 55),
+                Size = DpiHelper.ScaleSize(440, 60),
+                BackColor = ModernTheme.Surface
+            };
+            
+            var currentLabel = new Label
+            {
+                Text = $"Current version: {info.CurrentVersion}",
+                Font = ModernTheme.RegularFont,
+                ForeColor = ModernTheme.TextSecondary,
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(15, 10)
+            };
+            
+            var latestLabel = new Label
+            {
+                Text = $"Latest version: {info.LatestVersion}",
+                Font = ModernTheme.BoldFont,
+                ForeColor = ModernTheme.TextPrimary,
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(15, 32)
+            };
+            
+            versionPanel.Controls.AddRange(new Control[] { currentLabel, latestLabel });
+            
+            // "What's New" section header
+            var whatsNewHeader = ModernTheme.CreateSectionHeader("What's New");
+            whatsNewHeader.Location = DpiHelper.ScalePoint(25, 130);
+            whatsNewHeader.Size = DpiHelper.ScaleSize(440, 25);
+            
+            // Release notes RichTextBox (scrollable)
+            var notesBox = new RichTextBox
+            {
+                Location = DpiHelper.ScalePoint(25, 160),
+                Size = DpiHelper.ScaleSize(440, 180),
+                Text = info.ReleaseNotes,
+                Font = ModernTheme.DataFont,
+                ForeColor = ModernTheme.TextPrimary,
+                BackColor = ModernTheme.Surface,
+                BorderStyle = BorderStyle.None,
+                ReadOnly = true,
+                ScrollBars = RichTextBoxScrollBars.Vertical
+            };
+            
+            // Button panel at bottom
+            var buttonPanel = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft,
+                Location = DpiHelper.ScalePoint(25, 355),
+                Size = DpiHelper.ScaleSize(440, 45),
+                BackColor = Color.Transparent
+            };
+            
+            var laterButton = ModernTheme.CreateSecondaryButton("Later");
+            laterButton.Size = DpiHelper.ScaleSize(90, 35);
+            laterButton.Click += (s, ev) => form.Close();
+            
+            var downloadButton = ModernTheme.CreateButton("Download");
+            downloadButton.Size = DpiHelper.ScaleSize(110, 35);
+            downloadButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
+            downloadButton.Click += (s, ev) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = info.ReleaseUrl,
+                        UseShellExecute = true
+                    });
+                    form.Close();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error opening URL: {ex.Message}");
+                    MessageBox.Show(form, "Could not open the download page. Please visit GitHub manually.",
+                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
+            
+            buttonPanel.Controls.Add(laterButton);
+            buttonPanel.Controls.Add(downloadButton);
+            
+            panel.Controls.AddRange(new Control[] 
+            { 
+                titleLabel, versionPanel, whatsNewHeader, notesBox, buttonPanel 
+            });
+            form.Controls.Add(panel);
+            
+            form.ShowDialog(this);
+        }
+
+        #endregion
 
         private void About_Click(object? sender, EventArgs e)
         {
