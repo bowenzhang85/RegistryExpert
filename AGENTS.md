@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-RegistryExpert is a .NET 8.0 Windows Forms application for viewing and analyzing offline Windows registry hive files. Uses Eric Zimmerman's Registry library for parsing.
+RegistryExpert is a .NET 8.0 Windows Forms application for viewing and analyzing offline Windows registry hive files.
 
 ## Build/Run Commands
 

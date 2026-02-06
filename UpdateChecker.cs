@@ -50,7 +50,7 @@ namespace RegistryExpert
         {
             try
             {
-                var response = await _httpClient.GetAsync(GitHubApiUrl).ConfigureAwait(false);
+                using var response = await _httpClient.GetAsync(GitHubApiUrl).ConfigureAwait(false);
                 
                 if (!response.IsSuccessStatusCode)
                 {

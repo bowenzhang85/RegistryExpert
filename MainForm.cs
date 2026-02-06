@@ -77,6 +77,7 @@ namespace RegistryExpert
         private CompareForm? _compareForm; // Track the compare window for disposal
         private Form? _timelineForm; // Track the timeline window for theme changes
         private ImageList? _imageList; // Track for disposal
+        private ImageList? _valueImageList; // Track for disposal (value type icons)
         private ToolTip? _sharedToolTip; // Single shared ToolTip for the form
         private Icon? _customIcon; // Track custom icon for disposal
         private string? _currentHivePath; // Track the current loaded hive file path
@@ -111,6 +112,7 @@ namespace RegistryExpert
                 
                 _parser?.Dispose();
                 _imageList?.Dispose();
+                _valueImageList?.Dispose();
                 _analyzeForm?.Dispose();
                 _statisticsForm?.Dispose();
                 _searchForm?.Dispose();
@@ -263,6 +265,39 @@ namespace RegistryExpert
             _treeView.AfterSelect += TreeView_AfterSelect;
             _treeView.BeforeExpand += TreeView_BeforeExpand;
             
+            // Context menu for tree view - Copy Path
+            var treeContextMenu = new ContextMenuStrip();
+            treeContextMenu.Renderer = new ToolStripProfessionalRenderer(new ModernColorTable());
+            var copyPathItem = new ToolStripMenuItem("Copy Path", null, (s, ev) =>
+            {
+                if (_treeView.SelectedNode?.Tag is RegistryKey key)
+                {
+                    Clipboard.SetText(key.KeyPath);
+                }
+            });
+            copyPathItem.ShortcutKeys = Keys.Control | Keys.C;
+            treeContextMenu.Items.Add(copyPathItem);
+            treeContextMenu.Opening += (s, ev) =>
+            {
+                treeContextMenu.BackColor = ModernTheme.Surface;
+                treeContextMenu.ForeColor = ModernTheme.TextPrimary;
+                foreach (ToolStripItem item in treeContextMenu.Items)
+                {
+                    item.ForeColor = ModernTheme.TextPrimary;
+                    item.BackColor = ModernTheme.Surface;
+                }
+                // Disable if no valid node selected
+                copyPathItem.Enabled = _treeView.SelectedNode?.Tag is RegistryKey;
+            };
+            _treeView.NodeMouseClick += (s, ev) =>
+            {
+                if (ev.Button == MouseButtons.Right)
+                {
+                    _treeView.SelectedNode = ev.Node;
+                }
+            };
+            _treeView.ContextMenuStrip = treeContextMenu;
+            
             leftPanel.Controls.Add(_treeView);
             leftPanel.Controls.Add(treeHeader);
             _mainSplitContainer.Panel1.Controls.Add(leftPanel);
@@ -292,6 +327,8 @@ namespace RegistryExpert
                 HeaderStyle = ColumnHeaderStyle.Nonclickable
             };
             ModernTheme.ApplyTo(_listView);
+            _valueImageList = CreateValueImageList();
+            _listView.SmallImageList = _valueImageList;
             _listView.Columns.Add("Name", 220);
             _listView.Columns.Add("Type", 100);
             _listView.Columns.Add("Data", 450);
@@ -301,6 +338,47 @@ namespace RegistryExpert
             _listView.Resize += (s, e) => AdjustValuesColumns();
             _rightSplitContainer.SplitterMoved += (s, e) => AdjustValuesColumns();
             _rightSplitContainer.SizeChanged += (s, e) => AdjustValuesColumns();
+            
+            // Context menu for list view - Copy Value
+            var listContextMenu = new ContextMenuStrip();
+            listContextMenu.Renderer = new ToolStripProfessionalRenderer(new ModernColorTable());
+            var copyValueItem = new ToolStripMenuItem("Copy Value", null, (s, ev) =>
+            {
+                if (_listView.SelectedItems.Count > 0)
+                {
+                    var data = _listView.SelectedItems[0].SubItems[2].Text;
+                    if (!string.IsNullOrEmpty(data))
+                    {
+                        Clipboard.SetText(data);
+                    }
+                }
+            });
+            copyValueItem.ShortcutKeys = Keys.Control | Keys.C;
+            listContextMenu.Items.Add(copyValueItem);
+            listContextMenu.Opening += (s, ev) =>
+            {
+                listContextMenu.BackColor = ModernTheme.Surface;
+                listContextMenu.ForeColor = ModernTheme.TextPrimary;
+                foreach (ToolStripItem item in listContextMenu.Items)
+                {
+                    item.ForeColor = ModernTheme.TextPrimary;
+                    item.BackColor = ModernTheme.Surface;
+                }
+                // Disable if no value selected
+                copyValueItem.Enabled = _listView.SelectedItems.Count > 0;
+            };
+            _listView.MouseDown += (s, ev) =>
+            {
+                if (ev.Button == MouseButtons.Right)
+                {
+                    var hitTest = _listView.HitTest(ev.X, ev.Y);
+                    if (hitTest.Item != null)
+                    {
+                        hitTest.Item.Selected = true;
+                    }
+                }
+            };
+            _listView.ContextMenuStrip = listContextMenu;
             
             valuesPanel.Controls.Add(_listView);
             valuesPanel.Controls.Add(valuesHeader);
@@ -344,7 +422,8 @@ namespace RegistryExpert
             this.Load += async (s, e) => {
                 _mainSplitContainer.SplitterDistance = 280;
                 _rightSplitContainer.SplitterDistance = Math.Max(250, _rightSplitContainer.Height * 2 / 3);
-                await CheckForUpdatesOnStartupAsync();
+                try { await CheckForUpdatesOnStartupAsync(); }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Startup update check failed: {ex.Message}"); }
             };
         }
 
@@ -546,6 +625,43 @@ namespace RegistryExpert
             imageList.Images.Add("value", ModernTheme.CreateValueIcon());
             
             return imageList;
+        }
+
+        private ImageList CreateValueImageList()
+        {
+            var iconSize = DpiHelper.Scale(16);
+            var imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(iconSize, iconSize)
+            };
+            
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
+            
+            foreach (var name in iconNames)
+            {
+                var resourceName = $"RegistryExpert.icons.{name}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    imageList.Images.Add(name, scaled);
+                }
+            }
+            
+            return imageList;
+        }
+
+        private static string GetValueImageKey(string? valueType)
+        {
+            return (valueType?.ToUpperInvariant() ?? "") switch
+            {
+                "REGBINARY" => "reg_bin",
+                "REGDWORD" or "REGQWORD" => "reg_num",
+                _ => "reg_str"
+            };
         }
 
         private void CreateMenu()
@@ -828,7 +944,7 @@ namespace RegistryExpert
                 var type = value.ValueType;
                 var data = FormatValueData(value);
                 
-                var item = new ListViewItem(name);
+                var item = new ListViewItem(name, GetValueImageKey(value.ValueType));
                 item.SubItems.Add(type);
                 item.SubItems.Add(data);
                 item.Tag = value;
@@ -5721,8 +5837,8 @@ namespace RegistryExpert
                 }
             };
             
-            buttonPanel.Controls.Add(laterButton);
             buttonPanel.Controls.Add(downloadButton);
+            buttonPanel.Controls.Add(laterButton);
             
             panel.Controls.AddRange(new Control[] 
             { 
