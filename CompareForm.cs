@@ -67,6 +67,7 @@ namespace RegistryExpert
         private Panel _progressOverlay = null!;
         private Label _progressLabel = null!;
         private ProgressBar _progressBar = null!;
+        private ImageList? _valueImageList; // Track for disposal (value type icons)
 
         public CompareForm()
         {
@@ -553,7 +554,7 @@ namespace RegistryExpert
                 ShowLines = true,
                 ShowPlusMinus = true,
                 ShowRootLines = true,
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.DataFont
             };
             ModernTheme.ApplyTo(treeView);
             treeView.DrawNode += TreeView_DrawNode;
@@ -604,7 +605,77 @@ namespace RegistryExpert
             grid.Columns["Type"].Width = 100;
             grid.Columns["Value"].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
 
+            // Draw value type icons in the Name column
+            if (_valueImageList == null)
+                _valueImageList = CreateValueImageList();
+
+            grid.CellPainting += (s, ev) =>
+            {
+                if (ev.RowIndex < 0 || ev.ColumnIndex != 0 || _valueImageList == null || ev.Graphics == null)
+                    return;
+
+                var typeValue = grid.Rows[ev.RowIndex].Cells[1].Value?.ToString() ?? "";
+                var imageKey = GetValueImageKey(typeValue);
+                var imgIndex = _valueImageList.Images.IndexOfKey(imageKey);
+                if (imgIndex < 0) return;
+
+                ev.PaintBackground(ev.ClipBounds, true);
+
+                var img = _valueImageList.Images[imgIndex];
+                var iconY = ev.CellBounds.Y + (ev.CellBounds.Height - img.Height) / 2;
+                var iconX = ev.CellBounds.X + 4;
+                ev.Graphics.DrawImage(img, iconX, iconY, img.Width, img.Height);
+
+                var textX = iconX + img.Width + 4;
+                var textRect = new Rectangle(textX, ev.CellBounds.Y, ev.CellBounds.Width - (textX - ev.CellBounds.X), ev.CellBounds.Height);
+                var textColor = ev.CellStyle?.ForeColor ?? ModernTheme.TextPrimary;
+                if (ev.State.HasFlag(DataGridViewElementStates.Selected))
+                    textColor = ev.CellStyle?.SelectionForeColor ?? ModernTheme.TextPrimary;
+
+                TextRenderer.DrawText(ev.Graphics, ev.Value?.ToString() ?? "", ev.CellStyle?.Font ?? ModernTheme.DataFont,
+                    textRect, textColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+
+                ev.Handled = true;
+            };
+
             return grid;
+        }
+
+        private ImageList CreateValueImageList()
+        {
+            var iconSize = DpiHelper.Scale(16);
+            var imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(iconSize, iconSize)
+            };
+
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
+
+            foreach (var name in iconNames)
+            {
+                var resourceName = $"RegistryExpert.icons.{name}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    imageList.Images.Add(name, scaled);
+                }
+            }
+
+            return imageList;
+        }
+
+        private static string GetValueImageKey(string? valueType)
+        {
+            return (valueType?.ToUpperInvariant() ?? "") switch
+            {
+                "REGBINARY" => "reg_bin",
+                "REGDWORD" or "REGQWORD" => "reg_num",
+                _ => "reg_str"
+            };
         }
 
         private void LoadHive(bool isLeft)
@@ -998,6 +1069,12 @@ namespace RegistryExpert
             var bounds = e.Bounds;
             var tag = e.Node.Tag as NodeTag;
             
+            // Extend bounds to the full width of the TreeView to prevent text clipping
+            if (e.Node.TreeView != null)
+            {
+                bounds = new Rectangle(bounds.X, bounds.Y, e.Node.TreeView.ClientSize.Width - bounds.X, bounds.Height);
+            }
+            
             // Determine color based on difference type:
             // GREEN = unique to this hive (doesn't exist in other)
             // RED = exists in both but has different values
@@ -1023,7 +1100,7 @@ namespace RegistryExpert
                 e.Graphics.FillRectangle(selBrush, bounds);
             }
 
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, ModernTheme.RegularFont, bounds, foreColor,
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, ModernTheme.DataFont, bounds, foreColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
 
@@ -1336,6 +1413,7 @@ namespace RegistryExpert
                 
                 // Note: Don't clear nodes here - it's slow and already done in FormClosing
                 // Just let base.Dispose handle the control disposal
+                _valueImageList?.Dispose();
             }
             base.Dispose(disposing);
         }

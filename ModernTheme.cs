@@ -287,7 +287,24 @@ namespace RegistryExpert
             Color textColor = e.Item.Selected && e.Item.ListView?.Focused == true ? Color.White : TextPrimary;
             using var textBrush = new SolidBrush(textColor);
             
-            var textRect = new Rectangle(e.Bounds.X + 12, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
+            var textX = e.Bounds.X + 12;
+            
+            // Draw icon for the first column if SmallImageList is available
+            if (e.ColumnIndex == 0 && e.Item.ListView?.SmallImageList is ImageList list)
+            {
+                var imgIndex = !string.IsNullOrEmpty(e.Item.ImageKey) 
+                    ? list.Images.IndexOfKey(e.Item.ImageKey) 
+                    : e.Item.ImageIndex;
+                if (imgIndex >= 0 && imgIndex < list.Images.Count)
+                {
+                    var img = list.Images[imgIndex];
+                    var iconY = e.Bounds.Y + (e.Bounds.Height - img.Height) / 2;
+                    e.Graphics.DrawImage(img, e.Bounds.X + 4, iconY, img.Width, img.Height);
+                    textX = e.Bounds.X + 4 + img.Width + 4;
+                }
+            }
+            
+            var textRect = new Rectangle(textX, e.Bounds.Y, e.Bounds.Width - (textX - e.Bounds.X), e.Bounds.Height);
             using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
             e.Graphics.DrawString(e.SubItem?.Text ?? "", DataFont, textBrush, textRect, sf);
         }
