@@ -5838,6 +5838,9 @@ namespace RegistryExpert
 
             // Installed Programs (x64 and x86)
             sections.Add(GetInstalledProgramsAnalysis());
+
+            // Startup Programs (Run and RunOnce)
+            sections.Add(GetStartupProgramsAnalysis());
             
             // Appx Applications (combined section - UI will handle filtering)
             sections.Add(GetAppxAnalysis());
@@ -5908,6 +5911,75 @@ namespace RegistryExpert
             }
 
             return apps.OrderBy(a => a.PackageName).ToList();
+        }
+
+        /// <summary>
+        /// Get startup programs from Run and RunOnce registry keys
+        /// </summary>
+        public AnalysisSection GetStartupProgramsAnalysis()
+        {
+            var section = new AnalysisSection { Title = "🚀 Startup Programs" };
+
+            const string runPath = @"Microsoft\Windows\CurrentVersion\Run";
+            const string runOncePath = @"Microsoft\Windows\CurrentVersion\RunOnce";
+
+            var entries = new List<(string Name, string Command, string Source, string RegistryPath)>();
+
+            // Fetch Run entries
+            var runKey = _parser.GetKey(runPath);
+            if (runKey?.Values != null)
+            {
+                foreach (var val in runKey.Values)
+                {
+                    var name = val.ValueName;
+                    var command = val.ValueData?.ToString() ?? "";
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        entries.Add((name, command, "Run", runPath));
+                    }
+                }
+            }
+
+            // Fetch RunOnce entries
+            var runOnceKey = _parser.GetKey(runOncePath);
+            if (runOnceKey?.Values != null)
+            {
+                foreach (var val in runOnceKey.Values)
+                {
+                    var name = val.ValueName;
+                    var command = val.ValueData?.ToString() ?? "";
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        entries.Add((name, command, "RunOnce", runOncePath));
+                    }
+                }
+            }
+
+            // Sort alphabetically by name
+            entries = entries.OrderBy(e => e.Name).ToList();
+
+            foreach (var entry in entries)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = $"[{entry.Source}] {entry.Name}",
+                    Value = entry.Command,
+                    RegistryPath = entry.RegistryPath,
+                    RegistryValue = entry.Name
+                });
+            }
+
+            if (entries.Count == 0)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Info",
+                    Value = "No startup programs found",
+                    RegistryPath = runPath
+                });
+            }
+
+            return section;
         }
 
         /// <summary>

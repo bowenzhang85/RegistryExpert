@@ -95,6 +95,40 @@ namespace RegistryExpert
         private Label _statusLabel = null!;
         private Label _hiveTypeLabel = null!;
         private Panel _dropPanel = null!;
+        private Panel _bookmarkBar = null!;
+        private Panel _bookmarkPanel = null!;
+
+        // Bookmark definitions per hive type
+        private static readonly Dictionary<string, List<(string Name, string Path)>> _bookmarksByHive = new()
+        {
+        ["SOFTWARE"] = new()
+        {
+            ("Activation", @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform"),
+            ("Component Based Servicing", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing"),
+            ("Current Version", @"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
+            ("Installed Program", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+            ("Logon UI", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI"),
+            ("Profile List", @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList"),
+            ("Startup Programs", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run"),
+            ("Windows Azure", @"SOFTWARE\Microsoft\Windows Azure"),
+            ("Windows Defender", @"SOFTWARE\Microsoft\Windows Defender"),
+            ("Windows Update", @"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"),
+        },
+        ["SYSTEM"] = new()
+        {
+            ("Class: Adapter", @"SYSTEM\ControlSet001\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"),
+            ("Class: Disk", @"SYSTEM\ControlSet001\Control\Class\{4d36e967-e325-11ce-bfc1-08002be10318}"),
+            ("Crash Control", @"SYSTEM\ControlSet001\Control\CrashControl"),
+            ("Firewall", @"SYSTEM\ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy"),
+            ("Guest Agent", @"SYSTEM\ControlSet001\Services\WindowsAzureGuestAgent"),
+            ("Network Adapters", @"SYSTEM\ControlSet001\Services\Tcpip\Parameters\Interfaces"),
+            ("Network Shares", @"SYSTEM\ControlSet001\Services\LanmanServer\Shares"),
+            ("NTLM", @"SYSTEM\ControlSet001\Control\Lsa"),
+            ("RDP-Tcp", @"SYSTEM\ControlSet001\Control\Terminal Server\WinStations\RDP-Tcp"),
+            ("Services", @"SYSTEM\ControlSet001\Services"),
+            ("TLS/SSL", @"SYSTEM\ControlSet001\Control\SecurityProviders\SCHANNEL\Protocols"),
+        },
+    };
 
         public MainForm()
         {
@@ -299,6 +333,7 @@ namespace RegistryExpert
             _treeView.ContextMenuStrip = treeContextMenu;
             
             leftPanel.Controls.Add(_treeView);
+            leftPanel.Controls.Add(CreateBookmarkPanels());
             leftPanel.Controls.Add(treeHeader);
             _mainSplitContainer.Panel1.Controls.Add(leftPanel);
 
@@ -612,6 +647,247 @@ namespace RegistryExpert
             return panel;
         }
 
+        /// <summary>
+        /// Creates the bookmark bar (collapsed) and bookmark panel (expanded).
+        /// Returns a container panel (DockStyle.Left) holding both.
+        /// </summary>
+        private Panel CreateBookmarkPanels()
+        {
+            int barWidth = DpiHelper.Scale(24);
+            int panelWidth = DpiHelper.Scale(200);
+
+            // Container holds both bar and panel, only one visible at a time
+            var container = new Panel
+            {
+                Dock = DockStyle.Left,
+                Width = barWidth,
+                BackColor = ModernTheme.Background,
+                Visible = false // Hidden until a hive with bookmarks is loaded
+            };
+
+            // --- Collapsed bar: narrow strip with rotated "Bookmarks" text + ▶ arrow ---
+            _bookmarkBar = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Surface,
+                Cursor = Cursors.Hand,
+                Visible = true
+            };
+            _bookmarkBar.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Draw ▶ arrow at top
+                using var arrowFont = new Font("Segoe UI", 8F);
+                using var arrowBrush = new SolidBrush(ModernTheme.Accent);
+                g.DrawString("\u25B6", arrowFont, arrowBrush, DpiHelper.Scale(4), DpiHelper.Scale(6));
+
+                // Draw "Bookmarks" rotated 90° (top-to-bottom)
+                using var textFont = new Font("Segoe UI", 9F);
+                using var textBrush = new SolidBrush(ModernTheme.TextSecondary);
+                var textSize = g.MeasureString("Bookmarks", textFont);
+                var state = g.Save();
+                g.TranslateTransform(_bookmarkBar.Width / 2 + textSize.Height / 2 - DpiHelper.Scale(2), DpiHelper.Scale(24));
+                g.RotateTransform(90);
+                g.DrawString("Bookmarks", textFont, textBrush, 0, 0);
+                g.Restore(state);
+
+                // Draw bookmark icon below the rotated text (GDI+ drawn, DPI-aware)
+                int iconW = DpiHelper.Scale(14);
+                int iconH = DpiHelper.Scale(18);
+                int iconX = (_bookmarkBar.Width - iconW) / 2;
+                int iconY = DpiHelper.Scale(24) + (int)textSize.Width + DpiHelper.Scale(6);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                // Ribbon/bookmark shape: rectangle with a V-notch at the bottom
+                var ribbon = new PointF[]
+                {
+                    new PointF(iconX, iconY),
+                    new PointF(iconX + iconW, iconY),
+                    new PointF(iconX + iconW, iconY + iconH),
+                    new PointF(iconX + iconW / 2f, iconY + iconH - DpiHelper.Scale(5)),
+                    new PointF(iconX, iconY + iconH),
+                };
+                g.FillPolygon(iconBrush, ribbon);
+            };
+            _bookmarkBar.Click += (s, e) => ToggleBookmarkPanel(true);
+
+            // --- Expanded panel: collapse bar on right + bookmark items ---
+            _bookmarkPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Width = panelWidth,
+                BackColor = ModernTheme.Surface,
+                Visible = false,
+                Padding = new Padding(0)
+            };
+
+            // Right-side collapse bar (mirrors the collapsed bar style, with ◀ arrow)
+            var collapseBar = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = barWidth,
+                BackColor = ModernTheme.Surface,
+                Cursor = Cursors.Hand,
+                Tag = "bookmarkCollapseBar"
+            };
+            collapseBar.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Draw ◀ arrow at top
+                using var arrowFont = new Font("Segoe UI", 8F);
+                using var arrowBrush = new SolidBrush(ModernTheme.Accent);
+                g.DrawString("\u25C0", arrowFont, arrowBrush, DpiHelper.Scale(4), DpiHelper.Scale(6));
+
+                // Draw "Bookmarks" rotated 90° (top-to-bottom)
+                using var textFont = new Font("Segoe UI", 9F);
+                using var textBrush = new SolidBrush(ModernTheme.TextSecondary);
+                var textSize = g.MeasureString("Bookmarks", textFont);
+                var state = g.Save();
+                g.TranslateTransform(collapseBar.Width / 2 + textSize.Height / 2 - DpiHelper.Scale(2), DpiHelper.Scale(24));
+                g.RotateTransform(90);
+                g.DrawString("Bookmarks", textFont, textBrush, 0, 0);
+                g.Restore(state);
+
+                // Draw bookmark ribbon icon below the rotated text
+                int iconW = DpiHelper.Scale(14);
+                int iconH = DpiHelper.Scale(18);
+                int iconX = (collapseBar.Width - iconW) / 2;
+                int iconY = DpiHelper.Scale(24) + (int)textSize.Width + DpiHelper.Scale(6);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                var ribbon = new PointF[]
+                {
+                    new PointF(iconX, iconY),
+                    new PointF(iconX + iconW, iconY),
+                    new PointF(iconX + iconW, iconY + iconH),
+                    new PointF(iconX + iconW / 2f, iconY + iconH - DpiHelper.Scale(5)),
+                    new PointF(iconX, iconY + iconH),
+                };
+                g.FillPolygon(iconBrush, ribbon);
+            };
+            collapseBar.Click += (s, e) => ToggleBookmarkPanel(false);
+
+            // Items container
+            var itemsPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                AutoScroll = true,
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(4, 6, 4, 4),
+                Tag = "bookmarkItems"
+            };
+
+            // WinForms dock order: last added docks first
+            _bookmarkPanel.Controls.Add(itemsPanel);
+            _bookmarkPanel.Controls.Add(collapseBar);
+
+            // Container holds both — bar is Fill (visible), panel is Fill (hidden)
+            container.Controls.Add(_bookmarkBar);
+            container.Controls.Add(_bookmarkPanel);
+            container.Tag = "bookmarkContainer";
+
+            return container;
+        }
+
+        /// <summary>
+        /// Toggle the bookmark panel between collapsed (bar) and expanded (panel).
+        /// </summary>
+        private void ToggleBookmarkPanel(bool expand)
+        {
+            var container = _bookmarkBar.Parent;
+            if (container == null) return;
+
+            if (expand)
+            {
+                container.Width = DpiHelper.Scale(200);
+                _bookmarkBar.Visible = false;
+                _bookmarkPanel.Visible = true;
+            }
+            else
+            {
+                container.Width = DpiHelper.Scale(24);
+                _bookmarkBar.Visible = true;
+                _bookmarkPanel.Visible = false;
+            }
+        }
+
+        /// <summary>
+        /// Populate bookmark items for the current hive type. Hides the panel if no bookmarks exist.
+        /// </summary>
+        private void PopulateBookmarks(string hiveType)
+        {
+            var container = _bookmarkBar.Parent;
+            if (container == null) return;
+
+            if (!_bookmarksByHive.TryGetValue(hiveType, out var bookmarks) || bookmarks.Count == 0)
+            {
+                container.Visible = false;
+                return;
+            }
+
+            // Find the items panel
+            FlowLayoutPanel? itemsPanel = null;
+            foreach (Control c in _bookmarkPanel.Controls)
+            {
+                if (c is FlowLayoutPanel fp && fp.Tag as string == "bookmarkItems")
+                {
+                    itemsPanel = fp;
+                    break;
+                }
+            }
+            if (itemsPanel == null) return;
+
+            // Clear previous items
+            itemsPanel.Controls.Clear();
+
+            // Add bookmark labels
+            foreach (var (name, path) in bookmarks)
+            {
+                var btn = new Label
+                {
+                    Text = $"  \u25B8  {name}",
+                    Font = new Font("Segoe UI", 9F),
+                    ForeColor = ModernTheme.TextPrimary,
+                    BackColor = ModernTheme.Surface,
+                    AutoSize = false,
+                    Width = DpiHelper.Scale(185),
+                    Height = DpiHelper.Scale(28),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    Cursor = Cursors.Hand,
+                    Padding = DpiHelper.ScalePadding(2, 0, 2, 0),
+                    Tag = path
+                };
+                btn.MouseEnter += (s, e) =>
+                {
+                    btn.BackColor = ModernTheme.Selection;
+                    btn.ForeColor = ModernTheme.Accent;
+                };
+                btn.MouseLeave += (s, e) =>
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                };
+                btn.Click += (s, e) =>
+                {
+                    if (btn.Tag is string keyPath)
+                    {
+                        NavigateToKey(keyPath);
+                    }
+                };
+                itemsPanel.Controls.Add(btn);
+            }
+
+            // Show the container in collapsed state
+            container.Visible = true;
+            ToggleBookmarkPanel(false);
+        }
+
         private ImageList CreateImageList()
         {
             var imageList = new ImageList
@@ -834,6 +1110,7 @@ namespace RegistryExpert
                 _infoExtractor = new RegistryInfoExtractor(_parser);
 
                 PopulateTreeView();
+                PopulateBookmarks(_parser.CurrentHiveType.ToString());
                 
                 // Show main view, hide drop panel
                 _dropPanel.Visible = false;
@@ -1492,8 +1769,8 @@ namespace RegistryExpert
                 ShowPlusMinus = true,
                 ShowRootLines = true,
                 FullRowSelect = true,
-                ItemHeight = DpiHelper.Scale(26),  // Scale for OwnerDrawAll mode
-                DrawMode = TreeViewDrawMode.OwnerDrawAll
+                ItemHeight = DpiHelper.Scale(26),
+                DrawMode = TreeViewDrawMode.OwnerDrawText
             };
 
             // Store value info for custom drawing
@@ -1519,7 +1796,8 @@ namespace RegistryExpert
                 tree.Nodes.Add(node);
             }
 
-            // Custom draw for bar chart effect
+            // Custom draw for bar chart effect (OwnerDrawText: system draws +/- and indentation,
+            // we draw the text area with key name, bar chart, and value)
             tree.DrawNode += (s, e) =>
             {
                 if (e.Node == null || e.Bounds.IsEmpty) return;
@@ -1527,48 +1805,16 @@ namespace RegistryExpert
                 var g = e.Graphics;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 
-                // Background
+                // Background - fill from text bounds onward (system draws +/- buttons to the left)
+                var fullBounds = new Rectangle(e.Bounds.X, e.Bounds.Y, tree.ClientSize.Width - e.Bounds.X, e.Bounds.Height);
                 var bgColor = e.Node.IsSelected ? ModernTheme.Selection : 
                              (e.Node.Index % 2 == 0 ? ModernTheme.Background : ModernTheme.ListViewAltRow);
                 using var bgBrush = new SolidBrush(bgColor);
-                g.FillRectangle(bgBrush, e.Bounds);
+                g.FillRectangle(bgBrush, fullBounds);
 
-                // Expand/collapse button area - scale for DPI
-                int levelIndent = DpiHelper.Scale(20);
-                int baseIndent = DpiHelper.Scale(5);
-                int indent = e.Node.Level * levelIndent + baseIndent;
-                int btnSize = DpiHelper.Scale(14);
-                int btnOffset = DpiHelper.Scale(5);
-                
-                // Draw +/- button if has children
-                if (e.Node.Nodes.Count > 0 || (e.Node.Tag as string) != "dummy")
-                {
-                    var btnRect = new Rectangle(indent, e.Bounds.Y + (e.Bounds.Height - btnSize) / 2, btnSize, btnSize);
-                    using var btnPen = new Pen(ModernTheme.TextSecondary, 1);
-                    g.DrawRectangle(btnPen, btnRect);
-                    
-                    // Horizontal line (centered in button)
-                    int lineMargin = DpiHelper.Scale(3);
-                    int centerY = btnRect.Y + btnSize / 2;
-                    int centerX = btnRect.X + btnSize / 2;
-                    g.DrawLine(btnPen, btnRect.X + lineMargin, centerY, btnRect.Right - lineMargin, centerY);
-                    
-                    // Vertical line (if collapsed)
-                    if (!e.Node.IsExpanded && e.Node.Nodes.Count > 0 && 
-                        !(e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy"))
-                    {
-                        g.DrawLine(btnPen, centerX, btnRect.Y + lineMargin, centerX, btnRect.Bottom - lineMargin);
-                    }
-                    else if (!e.Node.IsExpanded && e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag as string == "dummy")
-                    {
-                        g.DrawLine(btnPen, centerX, btnRect.Y + lineMargin, centerX, btnRect.Bottom - lineMargin);
-                    }
-                }
-
-                // Key path text
-                int textGap = DpiHelper.Scale(22);
-                int textX = indent + textGap;
-                int maxTextWidth = Math.Min(DpiHelper.Scale(400), e.Bounds.Width / 2);
+                // Key path text - starts at e.Bounds.X (system already handled indentation)
+                int textX = e.Bounds.X;
+                int maxTextWidth = Math.Min(DpiHelper.Scale(400), tree.ClientSize.Width / 2 - textX);
                 var displayText = e.Node.Text;
                 if (displayText.Length > 50)
                     displayText = "..." + displayText.Substring(displayText.Length - 47);
@@ -1584,7 +1830,7 @@ namespace RegistryExpert
                     int barGap = DpiHelper.Scale(20);
                     int barStartX = textX + maxTextWidth + barGap;
                     int barEndMargin = DpiHelper.Scale(100);
-                    int barMaxWidth = Math.Max(DpiHelper.Scale(100), e.Bounds.Width - barStartX - barEndMargin);
+                    int barMaxWidth = Math.Max(DpiHelper.Scale(100), tree.ClientSize.Width - barStartX - barEndMargin);
                     int barWidth = (int)((double)valInfo.value / valInfo.maxVal * barMaxWidth);
                     if (barWidth < DpiHelper.Scale(3)) barWidth = DpiHelper.Scale(3);
 
@@ -1601,35 +1847,6 @@ namespace RegistryExpert
                 }
             };
 
-            // Handle single-click expand/collapse since OwnerDrawAll breaks default hit detection
-            tree.NodeMouseClick += (s, e) =>
-            {
-                if (e.Node == null || e.Node.Nodes.Count == 0) return;
-                
-                // Calculate the +/- button area for this node
-                int levelIndent = DpiHelper.Scale(20);
-                int baseIndent = DpiHelper.Scale(5);
-                int indent = e.Node.Level * levelIndent + baseIndent;
-                int btnSize = DpiHelper.Scale(14);
-                int btnY = (tree.ItemHeight - btnSize) / 2;
-                
-                // Check if click is within the +/- button area (with some padding for easier clicking)
-                var btnRect = new Rectangle(indent - DpiHelper.Scale(2), btnY - DpiHelper.Scale(2), 
-                                           btnSize + DpiHelper.Scale(4), btnSize + DpiHelper.Scale(4));
-                
-                // Adjust click Y to be relative to the node
-                int relativeY = e.Y - e.Node.Bounds.Y + btnY;
-                
-                if (e.X >= btnRect.Left && e.X <= btnRect.Right)
-                {
-                    // Toggle expand/collapse
-                    if (e.Node.IsExpanded)
-                        e.Node.Collapse();
-                    else
-                        e.Node.Expand();
-                }
-            };
-
             // Lazy load children on expand
             tree.BeforeExpand += (s, e) =>
             {
@@ -1643,7 +1860,12 @@ namespace RegistryExpert
                     
                     try
                     {
-                        e.Node.Nodes.Clear();
+                        // Cancel the expand — we're adding siblings, not children
+                        e.Cancel = true;
+                        
+                        // Determine the parent node collection and index of the "more" node
+                        var parentNodes = e.Node.Parent?.Nodes ?? tree.Nodes;
+                        int moreIndex = e.Node.Index;
                         
                         long childMax = moreItems.Max(c => valueLabel == "Size (bytes)" ? c.TotalSize : c.SubKeyCount);
                         if (childMax == 0) childMax = 1;
@@ -1652,6 +1874,11 @@ namespace RegistryExpert
                         var batch = moreItems.Take(100).ToList();
                         var remaining = moreItems.Skip(100).ToList();
                         
+                        // Remove the "more" node
+                        parentNodes.RemoveAt(moreIndex);
+                        
+                        // Insert batch items at the same level as siblings
+                        int insertIndex = moreIndex;
                         foreach (var child in batch)
                         {
                             var childValue = valueLabel == "Size (bytes)" ? child.TotalSize : (long)child.SubKeyCount;
@@ -1669,10 +1896,10 @@ namespace RegistryExpert
                                 childNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
                             }
                             
-                            e.Node.Nodes.Add(childNode);
+                            parentNodes.Insert(insertIndex++, childNode);
                         }
                         
-                        // Add another "more" node if there are still remaining items
+                        // Add another "more" node at the same level if there are still remaining items
                         if (remaining.Count > 0)
                         {
                             var moreNode = new TreeNode($"... and {remaining.Count} more")
@@ -1681,11 +1908,8 @@ namespace RegistryExpert
                                 Tag = remaining // Store remaining items for next expansion
                             };
                             moreNode.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
-                            e.Node.Nodes.Add(moreNode);
+                            parentNodes.Insert(insertIndex, moreNode);
                         }
-                        
-                        // Update parent node text to show it's been expanded
-                        e.Node.Text = $"(showing {batch.Count} items)";
                     }
                     finally
                     {
@@ -5594,6 +5818,37 @@ namespace RegistryExpert
             _rightSplitContainer.BackColor = ModernTheme.Border;
             _rightSplitContainer.Panel1.BackColor = ModernTheme.Background;
             _rightSplitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Apply to bookmark panels
+            if (_bookmarkBar != null)
+            {
+                _bookmarkBar.BackColor = ModernTheme.Surface;
+                _bookmarkBar.Invalidate();
+            }
+            if (_bookmarkPanel != null)
+            {
+                _bookmarkPanel.BackColor = ModernTheme.Surface;
+                foreach (Control c in _bookmarkPanel.Controls)
+                {
+                    if (c is Panel collapseBar && collapseBar.Tag as string == "bookmarkCollapseBar")
+                    {
+                        collapseBar.BackColor = ModernTheme.Surface;
+                        collapseBar.Invalidate(); // Repaints arrow, text, and icon
+                    }
+                    else if (c is FlowLayoutPanel itemsPanel && itemsPanel.Tag as string == "bookmarkItems")
+                    {
+                        itemsPanel.BackColor = ModernTheme.Surface;
+                        foreach (Control item in itemsPanel.Controls)
+                        {
+                            if (item is Label lbl)
+                            {
+                                lbl.ForeColor = ModernTheme.TextPrimary;
+                                lbl.BackColor = ModernTheme.Surface;
+                            }
+                        }
+                    }
+                }
+            }
 
             // Apply to all panels recursively (section headers, etc.)
             ApplyThemeToPanels(this);
