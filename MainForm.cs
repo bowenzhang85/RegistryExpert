@@ -82,6 +82,12 @@ namespace RegistryExpert
         private Icon? _customIcon; // Track custom icon for disposal
         private string? _currentHivePath; // Track the current loaded hive file path
         private TreeNode? _previousSelectedNode; // Track for folder icon switching
+
+        // Cached icon fonts for Paint handlers (avoid allocating on every paint)
+        private static readonly Font _iconFont12 = new Font("Segoe MDL2 Assets", 12F);
+        private static readonly Font _iconFont13 = new Font("Segoe MDL2 Assets", 13F);
+        private static readonly Font _iconFont16 = new Font("Segoe MDL2 Assets", 16F);
+        private static readonly Font _iconFont10 = new Font("Segoe MDL2 Assets", 10F);
         
         // UI Controls
         private MenuStrip _menuStrip = null!;
@@ -97,6 +103,7 @@ namespace RegistryExpert
         private Panel _dropPanel = null!;
         private Panel _bookmarkBar = null!;
         private Panel _bookmarkPanel = null!;
+        private int _bookmarkExpandedWidth;
 
         // Bookmark definitions per hive type
         private static readonly Dictionary<string, List<(string Name, string Path)>> _bookmarksByHive = new()
@@ -626,7 +633,7 @@ namespace RegistryExpert
                 e.Graphics.FillRectangle(brush, panel.ClientRectangle);
                 
                 // Icon
-                using var iconFont = new Font("Segoe MDL2 Assets", 12F);
+                var iconFont = _iconFont12;
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
                 e.Graphics.DrawString(icon, iconFont, iconBrush, DpiHelper.Scale(16), (panel.Height - iconFont.Height) / 2);
                 
@@ -654,7 +661,6 @@ namespace RegistryExpert
         private Panel CreateBookmarkPanels()
         {
             int barWidth = DpiHelper.Scale(24);
-            int panelWidth = DpiHelper.Scale(200);
 
             // Container holds both bar and panel, only one visible at a time
             var container = new Panel
@@ -717,7 +723,6 @@ namespace RegistryExpert
             _bookmarkPanel = new Panel
             {
                 Dock = DockStyle.Fill,
-                Width = panelWidth,
                 BackColor = ModernTheme.Surface,
                 Visible = false,
                 Padding = new Padding(0)
@@ -805,7 +810,8 @@ namespace RegistryExpert
 
             if (expand)
             {
-                container.Width = DpiHelper.Scale(200);
+                // Use adaptive width calculated from bookmark text, fallback to 200px if not yet computed
+                container.Width = _bookmarkExpandedWidth > 0 ? _bookmarkExpandedWidth : DpiHelper.Scale(200);
                 _bookmarkBar.Visible = false;
                 _bookmarkPanel.Visible = true;
             }
@@ -846,17 +852,38 @@ namespace RegistryExpert
             // Clear previous items
             itemsPanel.Controls.Clear();
 
+            // Measure the widest bookmark text to determine adaptive panel width
+            var itemFont = new Font("Segoe UI", 9F);
+            int maxTextWidth = 0;
+            foreach (var (name, _) in bookmarks)
+            {
+                var text = $"  \u25B8  {name}";
+                var textWidth = TextRenderer.MeasureText(text, itemFont).Width;
+                if (textWidth > maxTextWidth)
+                    maxTextWidth = textWidth;
+            }
+
+            // Item width = widest text + left/right padding + small extra margin
+            int itemPadding = DpiHelper.Scale(2) * 2;
+            int itemWidth = maxTextWidth + itemPadding + DpiHelper.Scale(4);
+
+            // Expanded panel width = item width + collapse bar + flow panel padding
+            int barWidth = DpiHelper.Scale(24);
+            int flowPadding = DpiHelper.Scale(4) * 2;
+            _bookmarkExpandedWidth = itemWidth + barWidth + flowPadding;
+
             // Add bookmark labels
             foreach (var (name, path) in bookmarks)
             {
                 var btn = new Label
                 {
                     Text = $"  \u25B8  {name}",
-                    Font = new Font("Segoe UI", 9F),
+                    Font = itemFont,
                     ForeColor = ModernTheme.TextPrimary,
                     BackColor = ModernTheme.Surface,
                     AutoSize = false,
-                    Width = DpiHelper.Scale(185),
+                    AutoEllipsis = true,
+                    Width = itemWidth,
                     Height = DpiHelper.Scale(28),
                     TextAlign = ContentAlignment.MiddleLeft,
                     Cursor = Cursors.Hand,
@@ -978,6 +1005,11 @@ namespace RegistryExpert
 
         private void CreateModernToolbar()
         {
+            // Dispose old toolbar controls before creating new ones (prevents leak on DPI change)
+            foreach (Control ctrl in _toolbarPanel.Controls)
+                ctrl.Dispose();
+            _toolbarPanel.Controls.Clear();
+
             var flow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1027,7 +1059,7 @@ namespace RegistryExpert
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 
                 // Draw icon - font sizes in points are already DPI-aware, don't scale them
-                using var iconFont = new Font("Segoe MDL2 Assets", 13F);
+                var iconFont = _iconFont13;
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
                 var iconSize = g.MeasureString(icon, iconFont);
                 var iconX = DpiHelper.Scale(10);
@@ -1312,10 +1344,10 @@ namespace RegistryExpert
 
         private void ShowValueInDialog(KeyValue value)
         {
-            var form = new Form
+            using var form = new Form
             {
                 Text = $"Value: {(string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName)}",
-                Size = new Size(700, 550),
+                Size = DpiHelper.ScaleSize(700, 550),
                 StartPosition = FormStartPosition.CenterParent,
                 ShowInTaskbar = false
             };
@@ -1475,37 +1507,6 @@ namespace RegistryExpert
             }
         }
 
-        private void ExpandAll_Click(object? sender, EventArgs e)
-        {
-            if (_treeView.SelectedNode != null)
-            {
-                _treeView.BeginUpdate();
-                ExpandAllNodes(_treeView.SelectedNode);
-                _treeView.EndUpdate();
-            }
-        }
-
-        private void ExpandAllNodes(TreeNode node)
-        {
-            if (node.Nodes.Count == 1 && node.Nodes[0].Tag?.ToString() == "placeholder")
-            {
-                node.Expand();
-            }
-            
-            foreach (TreeNode child in node.Nodes)
-            {
-                ExpandAllNodes(child);
-            }
-            node.Expand();
-        }
-
-        private void CollapseAll_Click(object? sender, EventArgs e)
-        {
-            _treeView.CollapseAll();
-            if (_treeView.Nodes.Count > 0)
-                _treeView.Nodes[0].Expand();
-        }
-
         private void ShowStatistics_Click(object? sender, EventArgs e)
         {
             if (_parser == null || !_parser.IsLoaded)
@@ -1614,7 +1615,7 @@ namespace RegistryExpert
             };
             titleLabel.Paint += (s, ev) =>
             {
-                using var iconFont = new Font("Segoe MDL2 Assets", 16F);
+                var iconFont = _iconFont16;
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
                 ev.Graphics.DrawString("\uE9D9", iconFont, iconBrush, 0, 2);
             };
@@ -1779,7 +1780,6 @@ namespace RegistryExpert
             // Add top-level nodes
             foreach (var item in data)
             {
-                var valueText = FormatSize(valueSelector(item));
                 var node = new TreeNode(item.KeyPath)
                 {
                     Tag = item.KeyPath // Store path for lazy loading
@@ -2052,12 +2052,13 @@ namespace RegistryExpert
                 // Get the fully loaded key to ensure SubKeys are populated
                 var fullChildKey = _parser.GetKey(childPath);
                 
+                var (subKeyCount, valueCount, totalSize) = CalculateKeyStatisticsRecursive(fullChildKey);
                 var stat = new KeyStatistics
                 {
                     KeyPath = childPath,
-                    SubKeyCount = fullChildKey != null ? CountSubKeysRecursive(fullChildKey) : 0,
-                    ValueCount = fullChildKey != null ? CountValuesRecursive(fullChildKey) : 0,
-                    TotalSize = (calculateSize && fullChildKey != null) ? CalculateKeySizeRecursive(fullChildKey) : 0
+                    SubKeyCount = subKeyCount,
+                    ValueCount = valueCount,
+                    TotalSize = calculateSize ? totalSize : 0
                 };
                 results.Add(stat);
             }
@@ -2112,71 +2113,8 @@ namespace RegistryExpert
             public long TotalSize { get; set; }
         }
 
-        private int CountSubKeysRecursive(Registry.Abstractions.RegistryKey? key)
-        {
-            if (key == null) return 0;
-            
-            // Leaf key (no children) counts as 1 (itself)
-            if (key.SubKeys == null || key.SubKeys.Count == 0)
-                return 1;
-            
-            // Non-leaf: sum up all children's counts (not including self)
-            int count = 0;
-            foreach (var subKey in key.SubKeys)
-            {
-                count += CountSubKeysRecursive(subKey);
-            }
-            return count;
-        }
-
-        private int CountValuesRecursive(Registry.Abstractions.RegistryKey key)
-        {
-            int count = key.Values?.Count ?? 0;
-            if (key.SubKeys != null)
-            {
-                foreach (var subKey in key.SubKeys)
-                {
-                    count += CountValuesRecursive(subKey);
-                }
-            }
-            return count;
-        }
-
-        private long CalculateKeySizeRecursive(Registry.Abstractions.RegistryKey key)
-        {
-            long size = 0;
-            
-            // Only count actual data content, not structure overhead
-            // Key name (stored as UTF-16 in registry)
-            size += ((long)(key.KeyName?.Length ?? 0)) * 2;
-            
-            // Add size of values directly in this key
-            if (key.Values != null)
-            {
-                foreach (var val in key.Values)
-                {
-                    // Value name + data only (no overhead estimate)
-                    size += ((long)(val.ValueName?.Length ?? 0)) * 2;
-                    size += GetValueDataSize(val);
-                }
-            }
-            
-            // Recurse into subkeys
-            if (key.SubKeys != null)
-            {
-                foreach (var subKey in key.SubKeys)
-                {
-                    size += CalculateKeySizeRecursive(subKey);
-                }
-            }
-            
-            return size;
-        }
-
         /// <summary>
-        /// Combined single-pass traversal that calculates all three statistics at once.
-        /// This is more efficient than calling CountSubKeysRecursive, CountValuesRecursive, 
-        /// and CalculateKeySizeRecursive separately, as it only traverses the tree once.
+        /// Single-pass recursive traversal that calculates subkey count, value count, and total size at once.
         /// </summary>
         private (int subKeyCount, int valueCount, long totalSize) CalculateKeyStatisticsRecursive(Registry.Abstractions.RegistryKey? key)
         {
@@ -2300,9 +2238,9 @@ namespace RegistryExpert
             var form = new Form
             {
                 Text = $"Analyze Registry - {_parser.CurrentHiveType}",
-                Size = new Size(1100, 700),
+                Size = DpiHelper.ScaleSize(1100, 700),
                 StartPosition = FormStartPosition.CenterScreen,
-                MinimumSize = new Size(900, 500),
+                MinimumSize = DpiHelper.ScaleSize(900, 500),
                 ShowInTaskbar = true
             };
             _analyzeForm = form; // Track the form
@@ -2330,7 +2268,7 @@ namespace RegistryExpert
             form.Load += (s, ev) =>
             {
                 if (splitContainer.Width > 300)
-                    splitContainer.SplitterDistance = 250;
+                    splitContainer.SplitterDistance = DpiHelper.Scale(250);
             };
 
             // Left panel - Categories
@@ -2347,7 +2285,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(15, 0, 15, 0)
+                Padding = DpiHelper.ScalePadding(15, 0, 15, 0)
             };
             themeData.CategoryHeader = categoryHeader;
 
@@ -2627,7 +2565,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(50),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(15, 0, 15, 0)
+                Padding = DpiHelper.ScalePadding(15, 0, 15, 0)
             };
             themeData.ContentHeader = contentHeader;
 
@@ -2651,7 +2589,7 @@ namespace RegistryExpert
                 MinimumSize = DpiHelper.ScaleSize(0, 48),
                 MaximumSize = DpiHelper.ScaleSize(0, 140), // Allow up to 3 rows
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(5, 10, 5, 10),
+                Padding = DpiHelper.ScalePadding(5, 10, 5, 10),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true
             };
@@ -2664,9 +2602,8 @@ namespace RegistryExpert
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = DpiHelper.ScaleSize(0, 0),
-                MaximumSize = DpiHelper.ScaleSize(0, 48),
                 BackColor = ModernTheme.TreeViewBack,
-                Padding = new Padding(10, 5, 5, 5),
+                Padding = DpiHelper.ScalePadding(10, 5, 5, 5),
                 FlowDirection = FlowDirection.LeftToRight,
                 WrapContents = true,
                 Visible = false // Hidden by default
@@ -2678,7 +2615,7 @@ namespace RegistryExpert
             ModernTheme.ApplyTo(contentGrid);
             contentGrid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;  // Override
             contentGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
-            contentGrid.ColumnHeadersDefaultCellStyle.Padding = new Padding(5, 0, 5, 0);
+            contentGrid.ColumnHeadersDefaultCellStyle.Padding = DpiHelper.ScalePadding(5, 0, 5, 0);
             themeData.ContentGrid = contentGrid;
 
             // Network Interfaces master-detail panel
@@ -2701,7 +2638,7 @@ namespace RegistryExpert
             {
                 if (networkSplitContainer.Visible && networkSplitContainer.Width > 300)
                 {
-                    try { networkSplitContainer.SplitterDistance = 250; } catch { }
+                    try { networkSplitContainer.SplitterDistance = DpiHelper.Scale(250); } catch { }
                 }
             };
 
@@ -2734,7 +2671,7 @@ namespace RegistryExpert
 
                 using var textBrush = new SolidBrush(textColor);
                 using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
-                var textRect = new Rectangle(ev.Bounds.X + 10, ev.Bounds.Y, ev.Bounds.Width - 10, ev.Bounds.Height);
+                var textRect = new Rectangle(ev.Bounds.X + DpiHelper.Scale(10), ev.Bounds.Y, ev.Bounds.Width - DpiHelper.Scale(10), ev.Bounds.Height);
                 ev.Graphics.DrawString(item.DisplayName, ev.Font ?? networkAdaptersList.Font, textBrush, textRect, sf);
             };
 
@@ -2743,7 +2680,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(10, 0, 10, 0)
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
             themeData.NetworkAdaptersHeader = networkAdaptersHeader;
             var networkAdaptersLabel = new Label
@@ -2772,7 +2709,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(10, 0, 10, 0)
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
             themeData.NetworkDetailsHeader = networkDetailsHeader;
             var networkDetailsLabel = new Label
@@ -2809,7 +2746,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(44),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(10, 8, 10, 8),
+                Padding = DpiHelper.ScalePadding(10, 8, 10, 8),
                 FlowDirection = FlowDirection.LeftToRight
             };
 
@@ -2819,7 +2756,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.BoldFont,
                 AutoSize = true,
-                Margin = new Padding(0, 5, 10, 0)
+                Margin = DpiHelper.ScalePadding(0, 5, 10, 0)
             };
             firewallProfileButtonsPanel.Controls.Add(firewallProfileLabel);
 
@@ -2835,7 +2772,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(10, 0, 10, 0)
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
 
             var firewallRulesLabel = new Label
@@ -2850,8 +2787,7 @@ namespace RegistryExpert
 
             var firewallRulesGrid = new DataGridView { Dock = DockStyle.Fill };
             ModernTheme.ApplyTo(firewallRulesGrid);
-            firewallRulesGrid.RowTemplate.Height = DpiHelper.Scale(26);  // Override default
-            firewallRulesGrid.ColumnHeadersHeight = DpiHelper.Scale(30);  // Override default
+            firewallRulesGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(5, 1, 5, 1);  // Compact rows
 
             firewallRulesPanel.Controls.Add(firewallRulesGrid);
             firewallRulesPanel.Controls.Add(firewallRulesHeader);
@@ -3054,8 +2990,8 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         Height = DpiHelper.Scale(28),
                         AutoSize = true,
-                        Padding = new Padding(8, 0, 8, 0),
-                        Margin = new Padding(2),
+                        Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
                         Tag = filterKey
                     };
@@ -3134,8 +3070,8 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         Height = DpiHelper.Scale(28),
                         AutoSize = true,
-                        Padding = new Padding(8, 0, 8, 0),
-                        Margin = new Padding(2),
+                        Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
                         Tag = filterKey
                     };
@@ -3156,9 +3092,10 @@ namespace RegistryExpert
             // CBS Packages display state
             List<AnalysisSection>? cbsPackagesSections = null;
             string currentCbsSubView = "AllPackages"; // Track current CBS sub-view
-            List<(string group, string package, string state, string installed, string user, AnalysisItem item)> allPackagesData = new();
+            List<(string group, string package, string state, string installed, string user, int visibility, AnalysisItem item)> allPackagesData = new();
             TextBox? cbsSearchBox = null;
             Label? cbsSearchLabel = null;
+            CheckBox? cbsDismCheckBox = null;
 
             // Function to display CBS sub-buttons and content
             Action<string> displayCbsSubView = null!;
@@ -3192,8 +3129,8 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         Height = DpiHelper.Scale(26),
                         AutoSize = true,
-                        Padding = new Padding(8, 0, 8, 0),
-                        Margin = new Padding(2),
+                        Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
                         Tag = viewKey
                     };
@@ -3214,7 +3151,7 @@ namespace RegistryExpert
                     AutoSize = true,
                     ForeColor = ModernTheme.TextPrimary,
                     Font = ModernTheme.RegularFont,
-                    Margin = new Padding(15, 6, 5, 0),
+                    Margin = DpiHelper.ScalePadding(15, 6, 5, 0),
                     Visible = currentCbsSubView == "AllPackages"
                 };
                 appxFilterPanel.Controls.Add(cbsSearchLabel);
@@ -3227,12 +3164,25 @@ namespace RegistryExpert
                     BackColor = ModernTheme.Surface,
                     ForeColor = ModernTheme.TextPrimary,
                     BorderStyle = BorderStyle.FixedSingle,
-                    Margin = new Padding(2),
+                    Margin = DpiHelper.ScalePadding(2),
                     Visible = currentCbsSubView == "AllPackages"
                 };
                 ModernTheme.ApplyTo(cbsSearchBox);
                 cbsSearchBox.TextChanged += (s, e) => filterAllPackages(cbsSearchBox.Text);
                 appxFilterPanel.Controls.Add(cbsSearchBox);
+
+                // DISM /Get-Package filter checkbox (only visible on All Packages view)
+                cbsDismCheckBox = new CheckBox
+                {
+                    Text = "DISM /Get-Package",
+                    AutoSize = true,
+                    ForeColor = ModernTheme.TextPrimary,
+                    Font = ModernTheme.RegularFont,
+                    Margin = DpiHelper.ScalePadding(15, 5, 5, 0),
+                    Visible = currentCbsSubView == "AllPackages"
+                };
+                cbsDismCheckBox.CheckedChanged += (s, e) => filterAllPackages(cbsSearchBox?.Text ?? "");
+                appxFilterPanel.Controls.Add(cbsDismCheckBox);
             };
 
             // Function to update CBS sub-button states
@@ -3249,6 +3199,7 @@ namespace RegistryExpert
                 // Update search box visibility based on current view
                 if (cbsSearchBox != null) cbsSearchBox.Visible = currentCbsSubView == "AllPackages";
                 if (cbsSearchLabel != null) cbsSearchLabel.Visible = currentCbsSubView == "AllPackages";
+                if (cbsDismCheckBox != null) cbsDismCheckBox.Visible = currentCbsSubView == "AllPackages";
             };
 
             // Assign function to filter All Packages view
@@ -3258,9 +3209,14 @@ namespace RegistryExpert
                 
                 contentGrid.Rows.Clear();
                 var search = searchText.Trim().ToLowerInvariant();
+                bool dismFilter = cbsDismCheckBox?.Checked == true;
                 
-                foreach (var (group, package, state, installed, user, item) in allPackagesData)
+                foreach (var (group, package, state, installed, user, visibility, item) in allPackagesData)
                 {
+                    // Apply DISM /Get-Package filter: only show packages with Visibility == 1
+                    if (dismFilter && visibility != 1)
+                        continue;
+
                     if (string.IsNullOrEmpty(search) || 
                         group.ToLowerInvariant().Contains(search) || 
                         package.ToLowerInvariant().Contains(search))
@@ -3268,6 +3224,13 @@ namespace RegistryExpert
                         var rowIndex = contentGrid.Rows.Add(group, package, state, installed, user);
                         contentGrid.Rows[rowIndex].Tag = item;
                     }
+                }
+
+                // Re-select the first row to trigger detail pane update (Tag is now set)
+                if (contentGrid.Rows.Count > 0)
+                {
+                    contentGrid.ClearSelection();
+                    contentGrid.Rows[0].Selected = true;
                 }
             };
 
@@ -3280,6 +3243,7 @@ namespace RegistryExpert
 
                 // Clear search box when refreshing
                 if (cbsSearchBox != null) cbsSearchBox.Text = "";
+                if (cbsDismCheckBox != null) cbsDismCheckBox.Checked = false;
 
                 // Load packages data if not cached
                 if (cbsPackagesSections == null)
@@ -3324,6 +3288,7 @@ namespace RegistryExpert
                         var installed = "";
                         var user = "";
 
+                        int visibility = 0;
                         foreach (var part in valueParts)
                         {
                             var trimmed = part.Trim();
@@ -3333,14 +3298,23 @@ namespace RegistryExpert
                                 installed = trimmed.Substring(10).Trim();
                             else if (trimmed.StartsWith("User:"))
                                 user = trimmed.Substring(5).Trim();
+                            else if (trimmed.StartsWith("Visibility:"))
+                                int.TryParse(trimmed.Substring(11).Trim(), out visibility);
                         }
 
                         // Store in allPackagesData for filtering
-                        allPackagesData.Add((groupName, item.Name, state, installed, user, item));
+                        allPackagesData.Add((groupName, item.Name, state, installed, user, visibility, item));
 
                         var rowIndex = contentGrid.Rows.Add(groupName, item.Name, state, installed, user);
                         contentGrid.Rows[rowIndex].Tag = item;
                     }
+                }
+
+                // Re-select the first row to trigger detail pane update (Tag is now set)
+                if (contentGrid.Rows.Count > 0)
+                {
+                    contentGrid.ClearSelection();
+                    contentGrid.Rows[0].Selected = true;
                 }
             };
 
@@ -3374,6 +3348,13 @@ namespace RegistryExpert
                         contentGrid.Rows[rowIndex].Tag = item;
                     }
                 }
+
+                // Re-select the first row to trigger detail pane update (Tag is now set)
+                if (contentGrid.Rows.Count > 0)
+                {
+                    contentGrid.ClearSelection();
+                    contentGrid.Rows[0].Selected = true;
+                }
             };
 
             // Function to display Pending Packages view
@@ -3405,6 +3386,13 @@ namespace RegistryExpert
                         var rowIndex = contentGrid.Rows.Add(item.Name, item.Value, section.Title);
                         contentGrid.Rows[rowIndex].Tag = item;
                     }
+                }
+
+                // Re-select the first row to trigger detail pane update (Tag is now set)
+                if (contentGrid.Rows.Count > 0)
+                {
+                    contentGrid.ClearSelection();
+                    contentGrid.Rows[0].Selected = true;
                 }
             };
 
@@ -3464,6 +3452,13 @@ namespace RegistryExpert
                         var rowIndex = contentGrid.Rows.Add(item.Name, item.Value, details);
                         contentGrid.Rows[rowIndex].Tag = item;
                     }
+                }
+
+                // Re-select the first row to trigger detail pane update (Tag is now set)
+                if (contentGrid.Rows.Count > 0)
+                {
+                    contentGrid.ClearSelection();
+                    contentGrid.Rows[0].Selected = true;
                 }
             };
 
@@ -3541,8 +3536,8 @@ namespace RegistryExpert
                     Font = ModernTheme.RegularFont,
                     Height = DpiHelper.Scale(26),
                     AutoSize = true,
-                    Padding = new Padding(8, 0, 8, 0),
-                    Margin = new Padding(2),
+                    Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                    Margin = DpiHelper.ScalePadding(2),
                     Cursor = isSoftware ? Cursors.Hand : Cursors.Default,
                     Tag = "Extensions"
                 };
@@ -3669,7 +3664,7 @@ namespace RegistryExpert
                     {
                         Dock = DockStyle.Fill,
                         BackColor = ModernTheme.Background,
-                        Padding = new Padding(40)
+                        Padding = DpiHelper.ScalePadding(40)
                     };
                     
                     var titleLabel = new Label
@@ -3678,7 +3673,7 @@ namespace RegistryExpert
                         Font = new Font("Segoe UI", 18F, FontStyle.Bold),
                         ForeColor = ModernTheme.TextPrimary,
                         AutoSize = true,
-                        Location = new Point(40, 30)
+                        Location = DpiHelper.ScalePoint(40, 30)
                     };
                     componentsOverviewPanel.Controls.Add(titleLabel);
                     
@@ -3688,15 +3683,15 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         ForeColor = ModernTheme.TextSecondary,
                         AutoSize = true,
-                        Location = new Point(40, 70)
+                        Location = DpiHelper.ScalePoint(40, 70)
                     };
                     componentsOverviewPanel.Controls.Add(descLabel);
                     
                     // CBS Packages button card
                     var packagesCard = new Panel
                     {
-                        Size = new Size(350, 100),
-                        Location = new Point(40, 110),
+                        Size = DpiHelper.ScaleSize(350, 100),
+                        Location = DpiHelper.ScalePoint(40, 110),
                         BackColor = ModernTheme.Surface,
                         Cursor = Cursors.Hand
                     };
@@ -3712,7 +3707,7 @@ namespace RegistryExpert
                         Font = new Font("Segoe MDL2 Assets", 24F),
                         ForeColor = ModernTheme.Accent,
                         AutoSize = true,
-                        Location = new Point(15, 30)
+                        Location = DpiHelper.ScalePoint(15, 30)
                     };
                     packagesCard.Controls.Add(packagesIcon);
                     
@@ -3722,7 +3717,7 @@ namespace RegistryExpert
                         Font = new Font("Segoe UI Semibold", 12F),
                         ForeColor = ModernTheme.TextPrimary,
                         AutoSize = true,
-                        Location = new Point(60, 20)
+                        Location = DpiHelper.ScalePoint(60, 20)
                     };
                     packagesCard.Controls.Add(packagesTitle);
                     
@@ -3732,7 +3727,7 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         ForeColor = ModernTheme.TextSecondary,
                         AutoSize = true,
-                        Location = new Point(60, 45)
+                        Location = DpiHelper.ScalePoint(60, 45)
                     };
                     packagesCard.Controls.Add(packagesDesc);
                     
@@ -3753,8 +3748,8 @@ namespace RegistryExpert
                     // CBS Identities button card
                     var identitiesCard = new Panel
                     {
-                        Size = new Size(350, 100),
-                        Location = new Point(40, 220),
+                        Size = DpiHelper.ScaleSize(350, 100),
+                        Location = DpiHelper.ScalePoint(40, 220),
                         BackColor = ModernTheme.Surface,
                         Cursor = Cursors.Hand
                     };
@@ -3770,7 +3765,7 @@ namespace RegistryExpert
                         Font = new Font("Segoe MDL2 Assets", 24F),
                         ForeColor = ModernTheme.Accent,
                         AutoSize = true,
-                        Location = new Point(15, 30)
+                        Location = DpiHelper.ScalePoint(15, 30)
                     };
                     identitiesCard.Controls.Add(identitiesIcon);
                     
@@ -3780,7 +3775,7 @@ namespace RegistryExpert
                         Font = new Font("Segoe UI Semibold", 12F),
                         ForeColor = ModernTheme.TextPrimary,
                         AutoSize = true,
-                        Location = new Point(60, 20)
+                        Location = DpiHelper.ScalePoint(60, 20)
                     };
                     identitiesCard.Controls.Add(identitiesTitle);
                     
@@ -3790,7 +3785,7 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         ForeColor = ModernTheme.TextSecondary,
                         AutoSize = true,
-                        Location = new Point(60, 45)
+                        Location = DpiHelper.ScalePoint(60, 45)
                     };
                     identitiesCard.Controls.Add(identitiesDesc);
                     
@@ -3872,7 +3867,7 @@ namespace RegistryExpert
                         Dock = DockStyle.Top,
                         Height = DpiHelper.Scale(35),
                         BackColor = ModernTheme.TreeViewBack,
-                        Padding = new Padding(5),
+                        Padding = DpiHelper.ScalePadding(5),
                         AutoSize = false,
                         FlowDirection = FlowDirection.LeftToRight
                     };
@@ -3883,7 +3878,7 @@ namespace RegistryExpert
                         AutoSize = true,
                         ForeColor = ModernTheme.TextPrimary,
                         Font = ModernTheme.RegularFont,
-                        Margin = new Padding(5, 6, 5, 0)
+                        Margin = DpiHelper.ScalePadding(5, 6, 5, 0)
                     };
                     cbsComponentsSearchPanel.Controls.Add(cbsComponentsSearchLabel);
 
@@ -3895,7 +3890,7 @@ namespace RegistryExpert
                         BackColor = ModernTheme.Surface,
                         ForeColor = ModernTheme.TextPrimary,
                         BorderStyle = BorderStyle.FixedSingle,
-                        Margin = new Padding(2)
+                        Margin = DpiHelper.ScalePadding(2)
                     };
                     ModernTheme.ApplyTo(cbsComponentsSearchBox);
                     cbsComponentsSearchBox.TextChanged += (s, e) => filterCbsComponents(cbsComponentsSearchBox.Text);
@@ -3908,7 +3903,7 @@ namespace RegistryExpert
                         AutoSize = true,
                         ForeColor = ModernTheme.TextSecondary,
                         Font = ModernTheme.RegularFont,
-                        Margin = new Padding(15, 6, 5, 0)
+                        Margin = DpiHelper.ScalePadding(15, 6, 5, 0)
                     };
                     cbsComponentsSearchPanel.Controls.Add(totalLabel);
 
@@ -3993,7 +3988,7 @@ namespace RegistryExpert
                         Dock = DockStyle.Top,
                         Height = DpiHelper.Scale(35),
                         BackColor = ModernTheme.TreeViewBack,
-                        Padding = new Padding(5),
+                        Padding = DpiHelper.ScalePadding(5),
                         AutoSize = false,
                         FlowDirection = FlowDirection.LeftToRight
                     };
@@ -4004,7 +3999,7 @@ namespace RegistryExpert
                         AutoSize = true,
                         ForeColor = ModernTheme.TextSecondary,
                         Font = ModernTheme.RegularFont,
-                        Margin = new Padding(5, 6, 5, 0)
+                        Margin = DpiHelper.ScalePadding(5, 6, 5, 0)
                     };
                     cbsIdentitiesInfoPanel.Controls.Add(infoLabel);
 
@@ -4192,7 +4187,7 @@ namespace RegistryExpert
                             MinimumSize = DpiHelper.ScaleSize(140, 28),
                             Font = ModernTheme.RegularFont,
                             Cursor = Cursors.Hand,
-                            Margin = new Padding(0, 0, 8, 0),
+                            Margin = DpiHelper.ScalePadding(0, 0, 8, 0),
                             Tag = profileKey
                         };
                         profileBtn.FlatAppearance.BorderColor = ModernTheme.Border;
@@ -4504,8 +4499,8 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         Height = DpiHelper.Scale(28),
                         AutoSize = true,
-                        Padding = new Padding(8, 0, 8, 0),
-                        Margin = new Padding(2),
+                        Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
                         Tag = filterKey
                     };
@@ -4544,7 +4539,7 @@ namespace RegistryExpert
             {
                 Dock = DockStyle.Fill,
                 BackColor = ModernTheme.TreeViewBack,
-                Padding = new Padding(10, 5, 10, 5)
+                Padding = DpiHelper.ScalePadding(10, 5, 10, 5)
             };
             themeData.DetailPanel = detailPanel;
 
@@ -4939,7 +4934,7 @@ namespace RegistryExpert
                         Font = ModernTheme.RegularFont,
                         Height = DpiHelper.Scale(28),
                         AutoSize = false,
-                        Margin = new Padding(2),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = isAvailable ? Cursors.Hand : Cursors.Default,
                         Tag = section
                     };
@@ -4948,7 +4943,7 @@ namespace RegistryExpert
                     using (var g = btn.CreateGraphics())
                     {
                         var textSize = g.MeasureString(section.Title, ModernTheme.RegularFont);
-                        btn.Width = (int)textSize.Width + 20;
+                        btn.Width = (int)textSize.Width + DpiHelper.Scale(20);
                     }
                     
                     btn.FlatAppearance.BorderColor = isAvailable ? ModernTheme.Border : grayedOutColor;
@@ -5018,7 +5013,7 @@ namespace RegistryExpert
                             Font = ModernTheme.RegularFont,
                             Height = DpiHelper.Scale(28),
                             AutoSize = false,
-                            Margin = new Padding(2),
+                            Margin = DpiHelper.ScalePadding(2),
                             Cursor = Cursors.Default,
                             Tag = "SoftwareUpdateFeature"
                         };
@@ -5027,7 +5022,7 @@ namespace RegistryExpert
                         using (var g = softwareBtn.CreateGraphics())
                         {
                             var textSize = g.MeasureString(subcatTitle, ModernTheme.RegularFont);
-                            softwareBtn.Width = (int)textSize.Width + 20;
+                            softwareBtn.Width = (int)textSize.Width + DpiHelper.Scale(20);
                         }
                         
                         softwareBtn.FlatAppearance.BorderColor = grayedOutColor;
@@ -5081,7 +5076,7 @@ namespace RegistryExpert
                         BackColor = isSoftwareHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
                         Font = ModernTheme.RegularFont,
                         Size = DpiHelper.ScaleSize(110, 28),
-                        Margin = new Padding(2),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = isSoftwareHive ? Cursors.Hand : Cursors.Default,
                         Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null
                     };
@@ -5097,11 +5092,11 @@ namespace RegistryExpert
                         var textColor = isSoftware ? ModernTheme.TextPrimary : grayedOutColor;
                         
                         // Draw icon using Segoe MDL2 Assets (key icon)
-                        using var iconFont = new Font("Segoe MDL2 Assets", 10F);
-                        TextRenderer.DrawText(ev.Graphics, "\uE8D7", iconFont, new Point(8, 6), textColor);
+                        var iconFont = _iconFont10;
+                        TextRenderer.DrawText(ev.Graphics, "\uE8D7", iconFont, DpiHelper.ScalePoint(8, 6), textColor);
                         
                         // Draw text
-                        TextRenderer.DrawText(ev.Graphics, "Activation", ModernTheme.RegularFont, new Point(28, 5), textColor);
+                        TextRenderer.DrawText(ev.Graphics, "Activation", ModernTheme.RegularFont, DpiHelper.ScalePoint(28, 5), textColor);
                     };
 
                     // Use shared ToolTip for activation button
@@ -5157,7 +5152,7 @@ namespace RegistryExpert
                         BackColor = isComponentsHive ? ModernTheme.Surface : ModernTheme.TreeViewBack,
                         Font = ModernTheme.RegularFont,
                         Size = DpiHelper.ScaleSize(120, 28),
-                        Margin = new Padding(2),
+                        Margin = DpiHelper.ScalePadding(2),
                         Cursor = isComponentsHive ? Cursors.Hand : Cursors.Default,
                         Tag = "Components"
                     };
@@ -5302,72 +5297,6 @@ namespace RegistryExpert
             }));
         }
 
-        private void ShowInfoReport(string title, string content)
-        {
-            var form = new Form
-            {
-                Text = $"Registry Expert - {title}",
-                Size = new Size(900, 700),
-                StartPosition = FormStartPosition.CenterParent,
-                ShowInTaskbar = false
-            };
-            ModernTheme.ApplyTo(form);
-
-            var toolbar = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Top,
-                Height = DpiHelper.Scale(44),
-                BackColor = ModernTheme.Surface,
-                Padding = new Padding(8),
-                FlowDirection = FlowDirection.LeftToRight
-            };
-            
-            var copyBtn = ModernTheme.CreateButton("Copy All", (s, e) =>
-            {
-                try
-                {
-                    Clipboard.SetText(content);
-                    ShowInfo("Copied to clipboard!");
-                }
-                catch (System.Runtime.InteropServices.ExternalException)
-                {
-                    ShowError("Failed to copy - clipboard may be in use by another application");
-                }
-            });
-            copyBtn.Width = 100;
-            
-            var saveBtn = ModernTheme.CreateButton("💾 Save...", (s, e) =>
-            {
-                using var dialog = new SaveFileDialog
-                {
-                    Filter = "Text Files|*.txt|All Files|*.*",
-                    FileName = $"{title.Replace(" ", "_")}.txt"
-                };
-                if (dialog.ShowDialog() == DialogResult.OK)
-                {
-                    File.WriteAllText(dialog.FileName, content);
-                    ShowInfo("File saved successfully!");
-                }
-            });
-            saveBtn.Width = 100;
-            
-            toolbar.Controls.Add(copyBtn);
-            toolbar.Controls.Add(saveBtn);
-
-            var textBox = new RichTextBox
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                Text = content,
-                WordWrap = false
-            };
-            ModernTheme.ApplyTo(textBox);
-
-            form.Controls.Add(textBox);
-            form.Controls.Add(toolbar);
-            form.FormClosed += (s, ev) => form.Dispose();
-            form.Show(this);
-        }
 
         public void NavigateToKey(string keyPath)
         {
@@ -6108,7 +6037,7 @@ namespace RegistryExpert
 
         private void About_Click(object? sender, EventArgs e)
         {
-            var form = new Form
+            using var form = new Form
             {
                 Text = "About Registry Expert",
                 Size = DpiHelper.ScaleSize(480, 450),
@@ -6572,24 +6501,9 @@ namespace RegistryExpert
             sb.AppendLine();
         }
 
-        private string FormatAnalysisItem(AnalysisItem item)
-        {
-            if (string.IsNullOrEmpty(item.Value))
-                return item.Name;
-            return $"{item.Name}: {item.Value}";
-        }
 
-        private void ExportTreeToText(TreeNodeCollection nodes, StringBuilder sb, int indent)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                sb.AppendLine(new string(' ', indent * 2) + node.Text);
-                if (node.Nodes.Count > 0)
-                {
-                    ExportTreeToText(node.Nodes, sb, indent + 1);
-                }
-            }
-        }
+
+
     }
 
     // Data models for structured analysis
