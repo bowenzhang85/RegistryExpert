@@ -1527,6 +1527,7 @@ namespace RegistryExpert
             }
             
             _compareForm = new CompareForm();
+            _compareForm.Icon = this.Icon;
             _compareForm.FormClosed += (s, ev) => { _compareForm = null; };
             
             // If a hive is already loaded, pre-load it as the left (base) hive
@@ -2244,6 +2245,7 @@ namespace RegistryExpert
                 ShowInTaskbar = true
             };
             _analyzeForm = form; // Track the form
+            form.Icon = this.Icon;
             ModernTheme.ApplyTo(form);
 
             // Create theme data to track controls

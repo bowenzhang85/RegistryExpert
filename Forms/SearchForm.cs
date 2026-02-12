@@ -35,6 +35,7 @@ namespace RegistryExpert
             _parser = parser;
             _mainForm = mainForm;
             InitializeComponent();
+            this.Icon = mainForm.Icon;
             
             // If initial search term provided, set it and auto-search
             if (!string.IsNullOrEmpty(initialSearchTerm))
