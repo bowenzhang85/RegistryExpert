@@ -45,6 +45,7 @@ namespace RegistryExpert
             _parser = parser;
             _mainForm = mainForm;
             InitializeComponent();
+            this.Icon = mainForm.Icon;
         }
 
         protected override void Dispose(bool disposing)
