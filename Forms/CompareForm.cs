@@ -1,12 +1,11 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Registry.Abstractions;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -19,9 +18,9 @@ namespace RegistryExpert
         private OfflineRegistryParser? _leftParser;
         private OfflineRegistryParser? _rightParser;
         
-        // Lookup dictionaries for fast path-based comparison (ConcurrentDictionary for thread-safe writes from background thread)
-        private ConcurrentDictionary<string, RegistryKey> _leftKeysByPath = new(StringComparer.OrdinalIgnoreCase);
-        private ConcurrentDictionary<string, RegistryKey> _rightKeysByPath = new(StringComparer.OrdinalIgnoreCase);
+        // Lookup dictionaries for fast path-based comparison (built sequentially, only read afterward)
+        private Dictionary<string, RegistryKey> _leftKeysByPath = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, RegistryKey> _rightKeysByPath = new(StringComparer.OrdinalIgnoreCase);
         
         // Lookup dictionaries for O(1) node finding (instead of O(n) tree traversal)
         private Dictionary<string, TreeNode> _leftNodesByPath = new(StringComparer.OrdinalIgnoreCase);
@@ -165,9 +164,8 @@ namespace RegistryExpert
 
         private void InitializeComponent()
         {
-            // Enable DPI scaling
+            // Enable DPI scaling (no AutoScaleDimensions - DpiHelper handles scaling)
             this.AutoScaleMode = AutoScaleMode.Dpi;
-            this.AutoScaleDimensions = new SizeF(96F, 96F);
 
             this.Text = "Compare Registry Hives";
             this.Size = new Size(1400, 900);
@@ -450,12 +448,11 @@ namespace RegistryExpert
                 Height = DpiHelper.Scale(30)
             };
 
-            // Position button in center
-            var btn = loadButton;  // Capture for lambda
-            buttonPanel.Resize += (s, e) =>
-            {
-                btn.Location = new Point((buttonPanel.Width - btn.Width) / 2, 10);
-            };
+            // Position button in center using fixed calculation
+            // Note: Do NOT use a Resize handler here — during PerMonitorV2 DPI scaling,
+            // the parent panel is scaled before child controls, causing the Resize handler
+            // to compute positions with stale child dimensions, which are then double-scaled.
+            loadButton.Location = new Point(DpiHelper.Scale(75), DpiHelper.Scale(10));
             buttonPanel.Controls.Add(loadButton);
 
             // Add controls
@@ -595,7 +592,6 @@ namespace RegistryExpert
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
             grid.BackgroundColor = ModernTheme.Background;
             grid.DefaultCellStyle.BackColor = ModernTheme.Background;
-            grid.ColumnHeadersHeight = DpiHelper.Scale(28);
 
             grid.Columns.Add("Name", "Name");
             grid.Columns.Add("Type", "Type");
@@ -660,7 +656,7 @@ namespace RegistryExpert
                 if (stream != null)
                 {
                     using var original = Image.FromStream(stream);
-                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    using var scaled = new Bitmap(original, new Size(iconSize, iconSize));
                     imageList.Images.Add(name, scaled);
                 }
             }
@@ -913,9 +909,9 @@ namespace RegistryExpert
             UpdateUI();
         }
 
-        private ConcurrentDictionary<string, RegistryKey> BuildKeyIndex(RegistryKey? key, string parentPath)
+        private Dictionary<string, RegistryKey> BuildKeyIndex(RegistryKey? key, string parentPath)
         {
-            var result = new ConcurrentDictionary<string, RegistryKey>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, RegistryKey>(StringComparer.OrdinalIgnoreCase);
             if (key == null) return result;
 
             // Use non-recursive approach with stack to avoid dictionary merging overhead
@@ -923,7 +919,7 @@ namespace RegistryExpert
             return result;
         }
         
-        private void BuildKeyIndexRecursive(RegistryKey key, string parentPath, ConcurrentDictionary<string, RegistryKey> result)
+        private void BuildKeyIndexRecursive(RegistryKey key, string parentPath, Dictionary<string, RegistryKey> result)
         {
             var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
             result[path] = key;
@@ -1339,30 +1335,6 @@ namespace RegistryExpert
 
         private void ApplyTheme()
         {
-            // If comparison is done with lots of nodes, skip tree updates to avoid UI freeze
-            // The trees will show the old theme colors until user scrolls/interacts
-            if (_comparisonDone)
-            {
-                // Only update form and basic controls - skip heavy tree operations
-                this.BackColor = ModernTheme.Background;
-                
-                _leftPathBox.BackColor = ModernTheme.Surface;
-                _leftPathBox.ForeColor = ModernTheme.TextSecondary;
-                _rightPathBox.BackColor = ModernTheme.Surface;
-                _rightPathBox.ForeColor = ModernTheme.TextSecondary;
-
-                // Update tree backgrounds without forcing redraw
-                _leftTreeView.BackColor = ModernTheme.Background;
-                _rightTreeView.BackColor = ModernTheme.Background;
-
-                ApplyThemeToGrid(_leftValuesGrid);
-                ApplyThemeToGrid(_rightValuesGrid);
-                
-                // Don't call Invalidate() - let the tree redraw naturally when user interacts
-                return;
-            }
-            
-            // No comparison yet - safe to do full theme apply
             this.BackColor = ModernTheme.Background;
             
             _leftPathBox.BackColor = ModernTheme.Surface;

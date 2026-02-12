@@ -6,7 +6,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Registry.Abstractions;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -18,6 +18,9 @@ namespace RegistryExpert
         private DataGridView _timelineGrid = null!;
         private ComboBox _filterCombo = null!;
         private ComboBox _limitCombo = null!;
+        private TextBox _searchBox = null!;
+        private System.Windows.Forms.Timer _searchDebounce = null!;
+        private const string SearchPlaceholder = "Search key path...";
         private DateTimePicker _fromDatePicker = null!;
         private DateTimePicker _toDatePicker = null!;
         private FlowLayoutPanel _customDatePanel = null!;
@@ -51,6 +54,8 @@ namespace RegistryExpert
                 _scanCts?.Cancel();
                 _scanCts?.Dispose();
                 _scanCts = null;
+                _searchDebounce?.Stop();
+                _searchDebounce?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -65,9 +70,16 @@ namespace RegistryExpert
             
             base.OnDpiChanged(e);
             
-            // Update DataGridView row height
-            _timelineGrid.RowTemplate.Height = DpiHelper.Scale(28);
-            _timelineGrid.ColumnHeadersHeight = DpiHelper.Scale(32);
+            // Reapply theme and custom timeline padding overrides
+            ModernTheme.ApplyTo(_timelineGrid);
+            _timelineGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
+            _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
+
+            // Rescale button minimum sizes and margins for new DPI
+            _refreshButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _refreshButton.Margin = DpiHelper.ScalePadding(0, 0, 8, 0);
+            _exportButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _exportButton.Margin = DpiHelper.ScalePadding(0, 0, 12, 0);
         }
 
         private void InitializeComponent()
@@ -160,20 +172,65 @@ namespace RegistryExpert
                 Margin = new Padding(0, 6, 20, 0)
             };
 
-            _refreshButton = ModernTheme.CreateButton("Scan", RefreshButton_Click);
+            _refreshButton = ModernTheme.CreateSecondaryButton("Scan", RefreshButton_Click);
             _refreshButton.AutoSize = true;
-            _refreshButton.Padding = new Padding(15, 5, 15, 5);
-            _refreshButton.Margin = new Padding(0, 0, 10, 0);
+            _refreshButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _refreshButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _refreshButton.Margin = DpiHelper.ScalePadding(0, 0, 8, 0);
 
-            _exportButton = ModernTheme.CreateButton("Export", ExportButton_Click);
+            _exportButton = ModernTheme.CreateSecondaryButton("Export", ExportButton_Click);
             _exportButton.AutoSize = true;
-            _exportButton.Padding = new Padding(15, 5, 15, 5);
-            _exportButton.Margin = new Padding(0, 0, 0, 0);
+            _exportButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _exportButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _exportButton.Margin = DpiHelper.ScalePadding(0, 0, 12, 0);
             _exportButton.Enabled = false;
+
+            // Search box with placeholder
+            _searchBox = new TextBox
+            {
+                Size = DpiHelper.ScaleSize(200, 28),
+                Font = ModernTheme.RegularFont,
+                Text = SearchPlaceholder,
+                ForeColor = ModernTheme.TextSecondary,
+                BackColor = ModernTheme.Surface,
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(0, 0, 0, 0)
+            };
+            _searchBox.GotFocus += (s, e) =>
+            {
+                if (_searchBox.Text == SearchPlaceholder)
+                {
+                    _searchBox.Text = "";
+                    _searchBox.ForeColor = ModernTheme.TextPrimary;
+                }
+            };
+            _searchBox.LostFocus += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(_searchBox.Text))
+                {
+                    _searchBox.Text = SearchPlaceholder;
+                    _searchBox.ForeColor = ModernTheme.TextSecondary;
+                }
+            };
+
+            // Debounce timer for search (300ms)
+            _searchDebounce = new System.Windows.Forms.Timer { Interval = 300 };
+            _searchDebounce.Tick += (s, e) =>
+            {
+                _searchDebounce.Stop();
+                ApplyFilter();
+            };
+            _searchBox.TextChanged += (s, e) =>
+            {
+                // Don't trigger search on placeholder text
+                if (_searchBox.Text == SearchPlaceholder) return;
+                _searchDebounce.Stop();
+                _searchDebounce.Start();
+            };
 
             filterFlow.Controls.AddRange(new Control[] { 
                 filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
-                _refreshButton, _exportButton
+                _refreshButton, _exportButton, _searchBox
             });
 
             // Custom date range panel (hidden by default) - also use FlowLayoutPanel
@@ -267,37 +324,22 @@ namespace RegistryExpert
             _timelineGrid = new DataGridView { Dock = DockStyle.Fill };
             ModernTheme.ApplyTo(_timelineGrid);
             _timelineGrid.BackgroundColor = ModernTheme.Background;  // Override: use Background instead of Surface
-            _timelineGrid.DefaultCellStyle.Padding = new Padding(8, 4, 8, 4);  // Override default padding
-            _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = new Padding(8, 4, 8, 4);
-            _timelineGrid.ColumnHeadersHeight = DpiHelper.Scale(36);  // Override default
+            _timelineGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);  // Override default padding
+            _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
 
             // Add columns
             _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "LastModified",
                 HeaderText = "Last Modified",
-                FillWeight = 20,
+                FillWeight = 25,
                 DefaultCellStyle = { Format = "yyyy-MM-dd HH:mm:ss" }
             });
             _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "KeyPath",
                 HeaderText = "Key Path",
-                FillWeight = 60
-            });
-            _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
-            {
-                Name = "ValuesCount",
-                HeaderText = "Values",
-                FillWeight = 10,
-                DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter }
-            });
-            _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
-            {
-                Name = "SubkeysCount",
-                HeaderText = "Subkeys",
-                FillWeight = 10,
-                DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter }
+                FillWeight = 75
             });
 
             // Enable sorting
@@ -489,10 +531,7 @@ namespace RegistryExpert
                 {
                     LastModified = key.LastWriteTime.Value.DateTime,
                     KeyPath = key.KeyPath,
-                    DisplayPath = displayPath,
-                    ValuesCount = key.Values?.Count ?? 0,
-                    SubkeysCount = key.SubKeys?.Count ?? 0,
-                    RegistryKey = key
+                    DisplayPath = displayPath
                 });
             }
 
@@ -570,6 +609,11 @@ namespace RegistryExpert
             if (toDate.HasValue)
                 filtered = filtered.Where(e => e.LastModified <= toDate.Value);
 
+            // Apply search filter (case-insensitive)
+            var searchText = _searchBox.Text.Trim();
+            if (!string.IsNullOrEmpty(searchText) && searchText != SearchPlaceholder)
+                filtered = filtered.Where(e => e.DisplayPath.Contains(searchText, StringComparison.OrdinalIgnoreCase));
+
             _filteredEntries = filtered.ToList();
             
             // Reset pagination - show first page
@@ -590,9 +634,7 @@ namespace RegistryExpert
             {
                 var rowIndex = _timelineGrid.Rows.Add(
                     entry.LastModified,
-                    entry.DisplayPath,
-                    entry.ValuesCount,
-                    entry.SubkeysCount
+                    entry.DisplayPath
                 );
                 // Store the entry reference in the row's Tag for reliable retrieval after sorting
                 _timelineGrid.Rows[rowIndex].Tag = entry;
@@ -646,9 +688,7 @@ namespace RegistryExpert
             {
                 var rowIndex = _timelineGrid.Rows.Add(
                     entry.LastModified,
-                    entry.DisplayPath,
-                    entry.ValuesCount,
-                    entry.SubkeysCount
+                    entry.DisplayPath
                 );
                 // Store the entry reference in the row's Tag for reliable retrieval after sorting
                 _timelineGrid.Rows[rowIndex].Tag = entry;
@@ -671,7 +711,6 @@ namespace RegistryExpert
             // Scroll to show some of the new content
             if (_timelineGrid.Rows.Count > 0)
             {
-                int scrollToRow = Math.Min(previousCount + 5, _timelineGrid.Rows.Count - 1);
                 _timelineGrid.FirstDisplayedScrollingRowIndex = previousCount;
             }
         }
@@ -756,13 +795,13 @@ namespace RegistryExpert
                     using var writer = new StreamWriter(dialog.FileName, false, System.Text.Encoding.UTF8, 65536);
                     
                     // Write header
-                    writer.WriteLine("Last Modified,Key Path,Values Count,Subkeys Count");
+                    writer.WriteLine("Last Modified,Key Path");
                     
                     // Write data
                     foreach (var entry in _filteredEntries)
                     {
                         var path = entry.DisplayPath.Replace("\"", "\"\""); // Escape quotes
-                        writer.WriteLine($"\"{entry.LastModified:yyyy-MM-dd HH:mm:ss}\",\"{path}\",{entry.ValuesCount},{entry.SubkeysCount}");
+                        writer.WriteLine($"\"{entry.LastModified:yyyy-MM-dd HH:mm:ss}\",\"{path}\"");
                     }
 
                     _statusLabel.Text = $"Exported {_filteredEntries.Count:N0} entries to {Path.GetFileName(dialog.FileName)}";
@@ -840,6 +879,18 @@ namespace RegistryExpert
                 }
             }
 
+            // Refresh search box
+            _searchBox.BackColor = ModernTheme.Surface;
+            _searchBox.ForeColor = _searchBox.Text == SearchPlaceholder ? ModernTheme.TextSecondary : ModernTheme.TextPrimary;
+
+            // Refresh secondary buttons (Scan and Export)
+            _refreshButton.ForeColor = ModernTheme.Accent;
+            _refreshButton.FlatAppearance.BorderColor = ModernTheme.Accent;
+            _refreshButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            _exportButton.ForeColor = ModernTheme.Accent;
+            _exportButton.FlatAppearance.BorderColor = ModernTheme.Accent;
+            _exportButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
             _statusLabel.ForeColor = ModernTheme.TextSecondary;
             this.Refresh();
         }
@@ -849,9 +900,6 @@ namespace RegistryExpert
             public DateTime LastModified { get; set; }
             public string KeyPath { get; set; } = "";
             public string DisplayPath { get; set; } = "";
-            public int ValuesCount { get; set; }
-            public int SubkeysCount { get; set; }
-            public RegistryKey? RegistryKey { get; set; }
         }
     }
 }

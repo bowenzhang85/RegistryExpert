@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Registry.Abstractions;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -120,39 +120,6 @@ namespace RegistryExpert
         private int _removedValueCount;
         private int _modifiedValueCount;
         private IProgress<string>? _progress;
-
-        /// <summary>
-        /// Compares two registry hives and returns the differences
-        /// </summary>
-        public ComparisonResult Compare(OfflineRegistryParser left, OfflineRegistryParser right, IProgress<string>? progress = null)
-        {
-            _progress = progress;
-            
-            // Reset counters
-            _addedKeyCount = 0;
-            _removedKeyCount = 0;
-            _modifiedKeyCount = 0;
-            _addedValueCount = 0;
-            _removedValueCount = 0;
-            _modifiedValueCount = 0;
-
-            _progress?.Report("Starting comparison...");
-            
-            var result = new ComparisonResult
-            {
-                RootDiff = CompareKeys(left.GetRootKey(), right.GetRootKey(), "", 0)
-            };
-
-            result.AddedKeyCount = _addedKeyCount;
-            result.RemovedKeyCount = _removedKeyCount;
-            result.ModifiedKeyCount = _modifiedKeyCount;
-            result.AddedValueCount = _addedValueCount;
-            result.RemovedValueCount = _removedValueCount;
-            result.ModifiedValueCount = _modifiedValueCount;
-
-            _progress?.Report("Comparison complete");
-            return result;
-        }
 
         /// <summary>
         /// Compares two registry hives asynchronously with parallel subkey processing
@@ -293,77 +260,6 @@ namespace RegistryExpert
             return diff;
         }
 
-        private KeyDiff CompareKeys(RegistryKey? left, RegistryKey? right, string parentPath, int depth)
-        {
-            var keyName = left?.KeyName ?? right?.KeyName ?? "";
-            var keyPath = string.IsNullOrEmpty(parentPath) ? keyName : $"{parentPath}\\{keyName}";
-
-            var diff = new KeyDiff
-            {
-                KeyPath = keyPath,
-                KeyName = keyName,
-                LeftTimestamp = left?.LastWriteTime,
-                RightTimestamp = right?.LastWriteTime
-            };
-
-            // Determine key-level change type
-            if (left == null && right != null)
-            {
-                diff.ChangeType = DiffType.Added;
-                _addedKeyCount++;
-                // Count all values in added key
-                if (right.Values != null)
-                    _addedValueCount += right.Values.Count;
-                // Recursively count added subkeys
-                CountAddedKeys(right);
-            }
-            else if (left != null && right == null)
-            {
-                diff.ChangeType = DiffType.Removed;
-                _removedKeyCount++;
-                // Count all values in removed key
-                if (left.Values != null)
-                    _removedValueCount += left.Values.Count;
-                // Recursively count removed subkeys
-                CountRemovedKeys(left);
-            }
-            else if (left != null && right != null)
-            {
-                // Compare values
-                diff.ValueDiffs = CompareValues(left.Values, right.Values);
-                
-                // Determine if key is modified (has value differences)
-                if (diff.ValueDiffs.Any(v => v.ChangeType != DiffType.Unchanged))
-                {
-                    diff.ChangeType = DiffType.Modified;
-                    _modifiedKeyCount++;
-                }
-                else
-                {
-                    diff.ChangeType = DiffType.Unchanged;
-                }
-
-                // Compare subkeys
-                var leftSubKeys = left.SubKeys?.ToDictionary(k => k.KeyName, StringComparer.OrdinalIgnoreCase) 
-                    ?? new Dictionary<string, RegistryKey>();
-                var rightSubKeys = right.SubKeys?.ToDictionary(k => k.KeyName, StringComparer.OrdinalIgnoreCase) 
-                    ?? new Dictionary<string, RegistryKey>();
-
-                var allKeyNames = leftSubKeys.Keys.Union(rightSubKeys.Keys, StringComparer.OrdinalIgnoreCase);
-
-                foreach (var subKeyName in allKeyNames.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
-                {
-                    leftSubKeys.TryGetValue(subKeyName, out var leftSubKey);
-                    rightSubKeys.TryGetValue(subKeyName, out var rightSubKey);
-
-                    var subDiff = CompareKeys(leftSubKey, rightSubKey, keyPath, depth + 1);
-                    diff.SubKeyDiffs.Add(subDiff);
-                }
-            }
-
-            return diff;
-        }
-
         private void CountAddedKeysThreadSafe(RegistryKey key)
         {
             if (key.SubKeys == null) return;
@@ -385,30 +281,6 @@ namespace RegistryExpert
                 if (subKey.Values != null)
                     Interlocked.Add(ref _removedValueCount, subKey.Values.Count);
                 CountRemovedKeysThreadSafe(subKey);
-            }
-        }
-
-        private void CountAddedKeys(RegistryKey key)
-        {
-            if (key.SubKeys == null) return;
-            foreach (var subKey in key.SubKeys)
-            {
-                _addedKeyCount++;
-                if (subKey.Values != null)
-                    _addedValueCount += subKey.Values.Count;
-                CountAddedKeys(subKey);
-            }
-        }
-
-        private void CountRemovedKeys(RegistryKey key)
-        {
-            if (key.SubKeys == null) return;
-            foreach (var subKey in key.SubKeys)
-            {
-                _removedKeyCount++;
-                if (subKey.Values != null)
-                    _removedValueCount += subKey.Values.Count;
-                CountRemovedKeys(subKey);
             }
         }
 

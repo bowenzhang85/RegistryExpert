@@ -62,19 +62,9 @@ namespace RegistryExpert
         public static Size ScaleSize(int width, int height) => new Size(Scale(width), Scale(height));
 
         /// <summary>
-        /// Scales an existing Size by the current DPI factor
-        /// </summary>
-        public static Size ScaleSize(Size size) => new Size(Scale(size.Width), Scale(size.Height));
-
-        /// <summary>
         /// Creates a DPI-scaled Point from the given x and y coordinates (at 96 DPI / 100%)
         /// </summary>
         public static Point ScalePoint(int x, int y) => new Point(Scale(x), Scale(y));
-
-        /// <summary>
-        /// Scales an existing Point by the current DPI factor
-        /// </summary>
-        public static Point ScalePoint(Point point) => new Point(Scale(point.X), Scale(point.Y));
 
         /// <summary>
         /// Creates a DPI-scaled Padding from the given values (at 96 DPI / 100%)
@@ -84,37 +74,8 @@ namespace RegistryExpert
         /// <summary>
         /// Creates a DPI-scaled Padding from the given values (at 96 DPI / 100%)
         /// </summary>
-        public static Padding ScalePadding(int horizontal, int vertical) 
-            => new Padding(Scale(horizontal), Scale(vertical), Scale(horizontal), Scale(vertical));
-
-        /// <summary>
-        /// Creates a DPI-scaled Padding from the given values (at 96 DPI / 100%)
-        /// </summary>
         public static Padding ScalePadding(int left, int top, int right, int bottom) 
             => new Padding(Scale(left), Scale(top), Scale(right), Scale(bottom));
 
-        /// <summary>
-        /// Scales an existing Padding by the current DPI factor
-        /// </summary>
-        public static Padding ScalePadding(Padding padding) 
-            => new Padding(Scale(padding.Left), Scale(padding.Top), Scale(padding.Right), Scale(padding.Bottom));
-
-        /// <summary>
-        /// Creates a DPI-scaled Font from the given font parameters.
-        /// Note: Font sizes in Windows Forms are already DPI-aware when using Point units,
-        /// so this is primarily useful when you need pixel-specific font sizing.
-        /// </summary>
-        public static Font ScaleFont(string familyName, float emSize, FontStyle style = FontStyle.Regular)
-            => new Font(familyName, Scale(emSize), style);
-
-        /// <summary>
-        /// Determines if the system is running at high DPI (above 100%)
-        /// </summary>
-        public static bool IsHighDpi => ScaleFactor > 1.0f;
-
-        /// <summary>
-        /// Gets a friendly description of the current DPI scaling
-        /// </summary>
-        public static string ScaleDescription => $"{(int)(ScaleFactor * 100)}%";
     }
 }
