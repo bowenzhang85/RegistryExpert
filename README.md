@@ -4,7 +4,7 @@ Offline Windows registry hive viewer and analyzer for Azure VM support engineers
 
 ![.NET](https://img.shields.io/badge/.NET-8.0-blue) ![Windows](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
 
-<img src="icons/main_windows.png" width="700">
+<img src="docs/images/main_windows.png" width="700">
 
 ## Download
 
@@ -18,13 +18,13 @@ Single portable `.exe` — no installation required. Download `RegistryExpert.ex
 
 Open and browse registry hive files extracted from offline VMs. Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, USRCLASS.DAT, DEFAULT, Amcache.hve, and BCD. Drag-and-drop a hive file onto the window or use File > Open.
 
-<img src="icons/browse.png" width="700">
+<img src="docs/images/browse.png" width="700">
 
 ### Search
 
 Full-text search across key paths, key names, value names, and value data. Results show matching keys and values with highlighted preview. Double-click any result to navigate directly to that key in the tree.
 
-<img src="icons/search.png" width="700">
+<img src="docs/images/search.png" width="700">
 
 ### Analyze
 
@@ -42,25 +42,25 @@ One-click deep analysis of the loaded hive, organized into categories based on h
 | **RDP** | SYSTEM | RDP configuration (port, NLA, encryption, security layer), session limits, Citrix detection, RDP licensing, RDS license servers, grace period |
 | **Update** | SOFTWARE | Windows Update settings |
 
-<img src="icons/analyze.png" width="700">
+<img src="docs/images/analyze.png" width="700">
 
 ### Statistics
 
 Dashboard showing hive file size, total keys, total values, and hive type. Includes two tabs for **Key Counts (Bloat Detection)** and **Data Sizes** with expandable tree views and bar charts to identify registry bloat.
 
-<img src="icons/statistics.png" width="700">
+<img src="docs/images/statistics.png" width="700">
 
 ### Timeline
 
 Scans all registry keys by last-modified timestamp. Filter by time range (last hour, 24 hours, 7 days, 30 days, or custom range) and sort by date. Useful for identifying what changed during an incident window. Export results to CSV.
 
-<img src="icons/timeline.png" width="700">
+<img src="docs/images/timeline.png" width="700">
 
 ### Compare
 
 Side-by-side comparison of two registry hives of the same type. Color-coded diff view: green highlights keys unique to one hive, red highlights keys with changed values. Synchronized tree navigation between left and right panes.
 
-<img src="icons/compare.png" width="700">
+<img src="docs/images/compare.png" width="700">
 
 ### Additional
 
