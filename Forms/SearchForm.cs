@@ -5,7 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Registry.Abstractions;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -17,6 +17,7 @@ namespace RegistryExpert
         private TextBox _searchBox = null!;
         private Button _searchButton = null!;
         private Button _cancelButton = null!;
+        private CheckBox _matchWholeWordCheckBox = null!;
         private DataGridView _resultsGrid = null!;
         private Label _statusLabel = null!;
         private Panel _previewPanel = null!;
@@ -55,8 +56,12 @@ namespace RegistryExpert
             base.OnDpiChanged(e);
             
             // Update controls that need manual DPI adjustment
-            _resultsGrid.RowTemplate.Height = DpiHelper.Scale(28);
-            _resultsGrid.ColumnHeadersHeight = DpiHelper.Scale(32);
+            ModernTheme.ApplyTo(_resultsGrid);
+
+            // Rescale button minimum sizes and margins for new DPI
+            _searchButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
+            _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
         }
 
         private void InitializeComponent()
@@ -97,18 +102,31 @@ namespace RegistryExpert
             ModernTheme.ApplyTo(_searchBox);
             _searchBox.KeyDown += async (s, e) => { if (e.KeyCode == Keys.Enter) await SearchAsync(); };
 
-            _searchButton = ModernTheme.CreateButton("Search", async (s, e) => await SearchAsync());
+            _searchButton = ModernTheme.CreateSecondaryButton("Search", async (s, e) => await SearchAsync());
             _searchButton.AutoSize = true;
-            _searchButton.Padding = new Padding(15, 5, 15, 5);
-            _searchButton.Margin = new Padding(0, 0, 10, 0);
+            _searchButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _searchButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
 
-            _cancelButton = ModernTheme.CreateButton("Cancel", (s, e) => CancelSearch());
+            _cancelButton = ModernTheme.CreateSecondaryButton("Cancel", (s, e) => CancelSearch());
             _cancelButton.AutoSize = true;
-            _cancelButton.Padding = new Padding(15, 5, 15, 5);
-            _cancelButton.BackColor = ModernTheme.Error;
+            _cancelButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _cancelButton.ForeColor = ModernTheme.Error;
+            _cancelButton.FlatAppearance.BorderColor = ModernTheme.Error;
             _cancelButton.Visible = false;
 
-            topPanel.Controls.AddRange(new Control[] { searchLabel, _searchBox, _searchButton, _cancelButton });
+            _matchWholeWordCheckBox = new CheckBox
+            {
+                Text = "Match whole word",
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.RegularFont,
+                AutoSize = true,
+                Margin = DpiHelper.ScalePadding(8, 6, 0, 0),
+                Checked = false
+            };
+
+            topPanel.Controls.AddRange(new Control[] { searchLabel, _searchBox, _searchButton, _cancelButton, _matchWholeWordCheckBox });
 
             // Status bar
             var statusPanel = new Panel
@@ -203,8 +221,7 @@ namespace RegistryExpert
             // Results DataGridView for better column handling
             _resultsGrid = new DataGridView { Dock = DockStyle.Fill };
             ModernTheme.ApplyTo(_resultsGrid);
-            _resultsGrid.RowTemplate.Height = DpiHelper.Scale(28);  // Scale for DPI
-            _resultsGrid.ColumnHeadersHeight = DpiHelper.Scale(32); // Scale for DPI
+
 
             // Add columns with proper sizing
             _resultsGrid.Columns.Add("keyPath", "Key Path");
@@ -306,6 +323,9 @@ namespace RegistryExpert
 
             try
             {
+                var comparison = StringComparison.OrdinalIgnoreCase;
+                var wholeWord = _matchWholeWordCheckBox.Checked;
+
                 // Run search on background thread (always case-insensitive)
                 var results = await Task.Run(() => 
                     _parser.SearchKeys(searchTerm, caseSensitive: false), token);
@@ -318,9 +338,13 @@ namespace RegistryExpert
                 {
                     if (token.IsCancellationRequested) break;
                     
-                    var searchResult = new SearchResult { KeyPath = key.KeyPath, Key = key };
+                    var searchResult = new SearchResult { KeyPath = key.KeyPath };
                     
-                    if (key.KeyName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase))
+                    bool keyNameMatch = wholeWord
+                        ? IsWholeWordMatch(key.KeyName, searchTerm)
+                        : key.KeyName.Contains(searchTerm, comparison);
+
+                    if (keyNameMatch)
                     {
                         searchResult.MatchType = "Key";
                         searchResult.Details = key.KeyName;
@@ -328,22 +352,28 @@ namespace RegistryExpert
                     }
                     else
                     {
-                        var matchingValue = key.Values.FirstOrDefault(v =>
-                            v.ValueName.Contains(searchTerm, StringComparison.OrdinalIgnoreCase) ||
-                            (v.ValueData?.ToString() ?? "").Contains(searchTerm, StringComparison.OrdinalIgnoreCase));
+                        var matchingValue = wholeWord
+                            ? key.Values.FirstOrDefault(v =>
+                                IsWholeWordMatch(v.ValueName, searchTerm) ||
+                                IsWholeWordMatch(v.ValueData?.ToString() ?? "", searchTerm))
+                            : key.Values.FirstOrDefault(v =>
+                                v.ValueName.Contains(searchTerm, comparison) ||
+                                (v.ValueData?.ToString() ?? "").Contains(searchTerm, comparison));
                         
                         if (matchingValue != null)
                         {
                             searchResult.MatchType = matchingValue.ValueType;
                             searchResult.ValueName = matchingValue.ValueName;
                             searchResult.ValueData = CleanValueData(matchingValue.ValueData?.ToString() ?? "");
-                            searchResult.ValueType = matchingValue.ValueType;
                             // Show value name in Name column (use "(Default)" for empty name)
                             searchResult.Details = string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName;
                             searchResult.FullValue = $"Name: {(string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName)}\nType: {matchingValue.ValueType}\nData: {searchResult.ValueData}";
                         }
                         else
                         {
+                            // No whole-word match found in key name or values — skip this result
+                            if (wholeWord)
+                                continue;
                             searchResult.MatchType = "Data";
                             searchResult.Details = "";
                             searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
@@ -368,8 +398,10 @@ namespace RegistryExpert
                 }
                 else
                 {
-                    _statusLabel.Text = $"Found {results.Count} results" + (results.Count > 1000 ? " (showing first 1000)" : "");
-                    _statusLabel.ForeColor = results.Count > 0 ? ModernTheme.Success : ModernTheme.TextSecondary;
+                    var displayCount = _searchResults.Count;
+                    var suffix = results.Count > 1000 ? " (searched first 1000 substring matches)" : "";
+                    _statusLabel.Text = $"Found {displayCount} results{suffix}";
+                    _statusLabel.ForeColor = displayCount > 0 ? ModernTheme.Success : ModernTheme.TextSecondary;
                 }
                 _previewPathLabel.Text = _searchResults.Count > 0 ? "Select a result to preview" : "No results found";
             }
@@ -409,10 +441,24 @@ namespace RegistryExpert
             if (string.IsNullOrEmpty(searchTerm) || string.IsNullOrEmpty(text))
                 return;
             
-            // Highlight all occurrences of the search term (case-insensitive)
+            // Highlight all occurrences of the search term
+            var comparison = StringComparison.OrdinalIgnoreCase;
+            var wholeWord = _matchWholeWordCheckBox.Checked;
             int index = 0;
-            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            while ((index = text.IndexOf(searchTerm, index, comparison)) >= 0)
             {
+                // When whole-word matching, only highlight matches at word boundaries
+                if (wholeWord)
+                {
+                    bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
+                    int endPos = index + searchTerm.Length;
+                    bool endBoundary = endPos >= text.Length || !char.IsLetterOrDigit(text[endPos]);
+                    if (!startBoundary || !endBoundary)
+                    {
+                        index += searchTerm.Length;
+                        continue;
+                    }
+                }
                 _previewValueBox.Select(index, searchTerm.Length);
                 _previewValueBox.SelectionBackColor = Color.FromArgb(255, 255, 0); // Yellow highlight
                 _previewValueBox.SelectionColor = Color.Black;
@@ -421,6 +467,30 @@ namespace RegistryExpert
             
             // Reset selection to start
             _previewValueBox.Select(0, 0);
+        }
+
+        /// <summary>
+        /// Checks if searchTerm exists in text as a whole word (bounded by non-word characters or string boundaries).
+        /// Always case-insensitive.
+        /// </summary>
+        private static bool IsWholeWordMatch(string text, string searchTerm)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(searchTerm))
+                return false;
+
+            int index = 0;
+            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
+                int endPos = index + searchTerm.Length;
+                bool endBoundary = endPos >= text.Length || !char.IsLetterOrDigit(text[endPos]);
+
+                if (startBoundary && endBoundary)
+                    return true;
+
+                index += searchTerm.Length;
+            }
+            return false;
         }
 
         // Pre-allocated array to avoid per-call allocations
@@ -511,7 +581,7 @@ namespace RegistryExpert
                 string? valueNameToSelect = null;
                 if (result.MatchType != "Key" && !string.IsNullOrEmpty(result.ValueName))
                 {
-                    valueNameToSelect = string.IsNullOrEmpty(result.ValueName) ? "(Default)" : result.ValueName;
+                    valueNameToSelect = result.ValueName;
                 }
                 else if (result.MatchType != "Key" && result.Details != null && result.Details != "")
                 {
@@ -660,9 +730,7 @@ namespace RegistryExpert
             public string Details { get; set; } = "";
             public string ValueName { get; set; } = "";
             public string ValueData { get; set; } = "";
-            public string ValueType { get; set; } = "";
             public string FullValue { get; set; } = "";
-            public RegistryKey? Key { get; set; }
         }
     }
 }

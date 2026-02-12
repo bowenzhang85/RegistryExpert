@@ -76,9 +76,6 @@ namespace RegistryExpert
         public static Color Accent => Color.FromArgb(45, 156, 219);       // Modern blue
         public static Color AccentHover => Color.FromArgb(60, 175, 235);  // Lighter hover
         public static Color AccentDark => Color.FromArgb(30, 130, 190);   // Pressed state
-        public static Color AccentSubtle => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(45, 156, 219, 30)  // 30% opacity accent
-            : Color.FromArgb(45, 156, 219, 20);
         
         // Status colors (Fluent-inspired)
         public static Color Success => Color.FromArgb(16, 185, 129);      // Modern green
@@ -101,18 +98,6 @@ namespace RegistryExpert
         public static Color DiffRemoved => _currentTheme == ThemeType.Dark 
             ? Color.FromArgb(218, 54, 51)         // Red for removed
             : Color.FromArgb(207, 34, 46);
-        public static Color DiffModified => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(210, 153, 34)        // Yellow/orange for modified
-            : Color.FromArgb(191, 135, 0);
-        public static Color DiffAddedBackground => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(35, 55, 40)          // Subtle green bg
-            : Color.FromArgb(230, 255, 235);
-        public static Color DiffRemovedBackground => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(55, 35, 35)          // Subtle red bg
-            : Color.FromArgb(255, 235, 235);
-        public static Color DiffModifiedBackground => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(55, 50, 30)          // Subtle yellow bg
-            : Color.FromArgb(255, 250, 230);
         
         public static Color TreeViewBack => _currentTheme == ThemeType.Dark
             ? Color.FromArgb(28, 28, 32)      // Slightly different from background
@@ -168,14 +153,6 @@ namespace RegistryExpert
                     ThemeChanged?.Invoke(null, EventArgs.Empty);
                 }
             }
-        }
-
-        /// <summary>
-        /// Toggle between dark and light themes
-        /// </summary>
-        public static void ToggleTheme()
-        {
-            SetTheme(_currentTheme == ThemeType.Dark ? ThemeType.Light : ThemeType.Dark);
         }
 
         /// <summary>
@@ -347,8 +324,8 @@ namespace RegistryExpert
             grid.ReadOnly = true;
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            grid.RowTemplate.Height = DpiHelper.Scale(28);
             grid.Font = DataFont;
+            grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.DisplayedCells;
             
             // Ensure scrollbars are visible
             grid.ScrollBars = ScrollBars.Both;
@@ -358,7 +335,7 @@ namespace RegistryExpert
             grid.DefaultCellStyle.ForeColor = TextPrimary;
             grid.DefaultCellStyle.SelectionBackColor = Selection;
             grid.DefaultCellStyle.SelectionForeColor = TextPrimary;
-            grid.DefaultCellStyle.Padding = new Padding(5, 2, 5, 2);
+            grid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(5, 2, 5, 2);
 
             grid.AlternatingRowsDefaultCellStyle.BackColor = ListViewAltRow;
 
@@ -368,8 +345,7 @@ namespace RegistryExpert
             grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = TreeViewBack;
             grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = TextSecondary;
             grid.ColumnHeadersDefaultCellStyle.Font = DataBoldFont;
-            grid.ColumnHeadersHeight = DpiHelper.Scale(32);
-            grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+            grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize;
         }
 
         /// <summary>

@@ -7,7 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
-using Registry.Abstractions;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -2116,7 +2116,7 @@ namespace RegistryExpert
         /// <summary>
         /// Single-pass recursive traversal that calculates subkey count, value count, and total size at once.
         /// </summary>
-        private (int subKeyCount, int valueCount, long totalSize) CalculateKeyStatisticsRecursive(Registry.Abstractions.RegistryKey? key)
+        private (int subKeyCount, int valueCount, long totalSize) CalculateKeyStatisticsRecursive(RegistryParser.Abstractions.RegistryKey? key)
         {
             if (key == null) return (0, 0, 0);
             
@@ -2140,8 +2140,8 @@ namespace RegistryExpert
                 return (1, valueCount, size);
             }
             
-            // Non-leaf: recursively accumulate from children
-            int subKeyCount = 0;
+            // Non-leaf: recursively accumulate from children (start at 1 to count this key itself)
+            int subKeyCount = 1;
             foreach (var subKey in key.SubKeys)
             {
                 var (childSubKeys, childValues, childSize) = CalculateKeyStatisticsRecursive(subKey);

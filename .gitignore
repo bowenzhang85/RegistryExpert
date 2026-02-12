@@ -33,3 +33,7 @@ Desktop.ini
 
 # Logs
 *.log
+
+# AI assistant config
+.opencode/
+AGENTS.md

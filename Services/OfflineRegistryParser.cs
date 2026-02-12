@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using Registry;
-using Registry.Abstractions;
+
+using RegistryParser;
+using RegistryParser.Abstractions;
 
 namespace RegistryExpert
 {
@@ -21,8 +21,6 @@ namespace RegistryExpert
         public bool IsLoaded => _hive != null;
         public string? FilePath => _filePath;
         public HiveType CurrentHiveType => _hiveType;
-        public RegistryHive? Hive => _hive;
-
         public enum HiveType
         {
             Unknown,

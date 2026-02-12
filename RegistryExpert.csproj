@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RegistryExpert</AssemblyName>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
     <Company>RegistryExpert</Company>
     <Product>Registry Expert - Offline Registry Viewer</Product>
     <Description>A lightweight tool for viewing and analyzing offline Windows registry hive files</Description>
@@ -16,25 +16,32 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
-    <ApplicationIcon>registry_fixed.ico</ApplicationIcon>
+    <ApplicationIcon>Assets\registry_fixed.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
   <ItemGroup>
-    <Content Include="registry_fixed.ico">
+    <Content Include="Assets\registry_fixed.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>registry_fixed.ico</Link>
     </Content>
-    <Content Include="registry.png">
+    <Content Include="Assets\registry.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>registry.png</Link>
     </Content>
-    <EmbeddedResource Include="icons\reg_bin.png" />
-    <EmbeddedResource Include="icons\reg_num.png" />
-    <EmbeddedResource Include="icons\reg_str.png" />
+    <EmbeddedResource Include="docs\images\reg_bin.png">
+      <LogicalName>RegistryExpert.icons.reg_bin.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="docs\images\reg_num.png">
+      <LogicalName>RegistryExpert.icons.reg_num.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="docs\images\reg_str.png">
+      <LogicalName>RegistryExpert.icons.reg_str.png</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Registry" Version="1.3.4" />
-    <PackageReference Include="Superpower" Version="3.1.0" />
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
   </ItemGroup>
 
 </Project>
