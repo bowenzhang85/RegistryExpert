@@ -1,0 +1,27 @@
+trigger:
+  tags:
+    include:
+      - 'v*'
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- task: UseDotNet@2
+  displayName: 'Setup .NET 8'
+  inputs:
+    packageType: 'sdk'
+    version: '8.0.x'
+
+- script: dotnet restore
+  displayName: 'Restore dependencies'
+
+- script: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $(Build.ArtifactStagingDirectory)
+  displayName: 'Build and Publish'
+
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)/RegistryExpert.exe'
+    ArtifactName: 'RegistryExpert'
+    publishLocation: 'Container'
