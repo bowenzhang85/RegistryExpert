@@ -24,8 +24,13 @@ namespace RegistryExpert
         private Label _previewPathLabel = null!;
         private RichTextBox _previewValueBox = null!;
         private List<SearchResult> _searchResults = new();
+        private List<RegistryKey> _allMatchingKeys = new();
         private string _currentSearchTerm = "";
         private CancellationTokenSource? _searchCts;
+        private Panel _loadMorePanel = null!;
+        private Button _loadMoreButton = null!;
+        private const int PageSize = 1000;
+        private int _displayedKeyCount;
 
         // Public properties to preserve search state across theme changes
         public string SearchTerm => _searchBox?.Text ?? "";
@@ -63,6 +68,8 @@ namespace RegistryExpert
             _searchButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
             _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
             _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
+            _loadMoreButton.MinimumSize = DpiHelper.ScaleSize(120, 28);
+            _loadMorePanel.Height = DpiHelper.Scale(40);
         }
 
         private void InitializeComponent()
@@ -136,6 +143,28 @@ namespace RegistryExpert
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(12, 0, 12, 0)
+            };
+
+            _loadMoreButton = ModernTheme.CreateSecondaryButton("Load next 1000", async (s, e) => await LoadMoreResultsAsync());
+            _loadMoreButton.AutoSize = true;
+            _loadMoreButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _loadMoreButton.MinimumSize = DpiHelper.ScaleSize(120, 28);
+            _loadMoreButton.Anchor = AnchorStyles.None;
+
+            _loadMorePanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = DpiHelper.Scale(40),
+                BackColor = ModernTheme.Surface,
+                Visible = false
+            };
+            _loadMorePanel.Controls.Add(_loadMoreButton);
+
+            // Center the button horizontally when panel resizes
+            _loadMorePanel.Resize += (s, e) =>
+            {
+                _loadMoreButton.Left = (_loadMorePanel.Width - _loadMoreButton.Width) / 2;
+                _loadMoreButton.Top = (_loadMorePanel.Height - _loadMoreButton.Height) / 2;
             };
 
             _statusLabel = new Label
@@ -275,6 +304,7 @@ namespace RegistryExpert
 
             // Add controls
             this.Controls.Add(_resultsGrid);
+            this.Controls.Add(_loadMorePanel);
             this.Controls.Add(resultsHeader);
             this.Controls.Add(_previewPanel);
             this.Controls.Add(topPanel);
@@ -314,6 +344,9 @@ namespace RegistryExpert
 
             _resultsGrid.Rows.Clear();
             _searchResults.Clear();
+            _allMatchingKeys.Clear();
+            _displayedKeyCount = 0;
+            _loadMorePanel.Visible = false;
             _searchButton.Enabled = false;
             _searchButton.Visible = false;
             _cancelButton.Visible = true;
@@ -324,73 +357,18 @@ namespace RegistryExpert
 
             try
             {
-                var comparison = StringComparison.OrdinalIgnoreCase;
-                var wholeWord = _matchWholeWordCheckBox.Checked;
-
                 // Run search on background thread (always case-insensitive)
                 var results = await Task.Run(() => 
                     _parser.SearchKeys(searchTerm, caseSensitive: false), token);
                 
                 if (token.IsCancellationRequested) return;
-                
-                int count = 0;
-                
-                foreach (var key in results.Take(1000))
-                {
-                    if (token.IsCancellationRequested) break;
-                    
-                    var searchResult = new SearchResult { KeyPath = key.KeyPath };
-                    
-                    bool keyNameMatch = wholeWord
-                        ? IsWholeWordMatch(key.KeyName, searchTerm)
-                        : key.KeyName.Contains(searchTerm, comparison);
 
-                    if (keyNameMatch)
-                    {
-                        searchResult.MatchType = "Key";
-                        searchResult.Details = key.KeyName;
-                        searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
-                    }
-                    else
-                    {
-                        var matchingValue = wholeWord
-                            ? key.Values.FirstOrDefault(v =>
-                                IsWholeWordMatch(v.ValueName, searchTerm) ||
-                                IsWholeWordMatch(v.ValueData?.ToString() ?? "", searchTerm))
-                            : key.Values.FirstOrDefault(v =>
-                                v.ValueName.Contains(searchTerm, comparison) ||
-                                (v.ValueData?.ToString() ?? "").Contains(searchTerm, comparison));
-                        
-                        if (matchingValue != null)
-                        {
-                            searchResult.MatchType = matchingValue.ValueType;
-                            searchResult.ValueName = matchingValue.ValueName;
-                            searchResult.ValueData = CleanValueData(matchingValue.ValueData?.ToString() ?? "");
-                            // Show value name in Name column (use "(Default)" for empty name)
-                            searchResult.Details = string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName;
-                            searchResult.FullValue = $"Name: {(string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName)}\nType: {matchingValue.ValueType}\nData: {searchResult.ValueData}";
-                        }
-                        else
-                        {
-                            // No whole-word match found in key name or values — skip this result
-                            if (wholeWord)
-                                continue;
-                            searchResult.MatchType = "Data";
-                            searchResult.Details = "";
-                            searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
-                        }
-                    }
-                    
-                    _searchResults.Add(searchResult);
-                    _resultsGrid.Rows.Add(GetDisplayPath(key.KeyPath), searchResult.MatchType, searchResult.Details);
-                    count++;
-                    
-                    // Update status periodically to show progress
-                    if (count % 100 == 0)
-                    {
-                        _statusLabel.Text = $"Found {count} results so far...";
-                    }
-                }
+                // Store all matching keys for pagination
+                _allMatchingKeys = results;
+                _displayedKeyCount = 0;
+
+                // Display first page
+                await DisplayNextPageAsync(token);
 
                 if (token.IsCancellationRequested)
                 {
@@ -399,12 +377,8 @@ namespace RegistryExpert
                 }
                 else
                 {
-                    var displayCount = _searchResults.Count;
-                    var suffix = results.Count > 1000 ? " (searched first 1000 substring matches)" : "";
-                    _statusLabel.Text = $"Found {displayCount} results{suffix}";
-                    _statusLabel.ForeColor = displayCount > 0 ? ModernTheme.Success : ModernTheme.TextSecondary;
+                    UpdateStatusAndLoadMoreButton();
                 }
-                _previewPathLabel.Text = _searchResults.Count > 0 ? "Select a result to preview" : "No results found";
             }
             catch (OperationCanceledException)
             {
@@ -423,6 +397,135 @@ namespace RegistryExpert
                 _searchButton.Visible = true;
                 _cancelButton.Visible = false;
             }
+        }
+
+        /// <summary>
+        /// Display the next page of results from _allMatchingKeys into the grid.
+        /// </summary>
+        private Task DisplayNextPageAsync(CancellationToken token)
+        {
+            var comparison = StringComparison.OrdinalIgnoreCase;
+            var wholeWord = _matchWholeWordCheckBox.Checked;
+            var searchTerm = _currentSearchTerm;
+
+            var keysToProcess = _allMatchingKeys
+                .Skip(_displayedKeyCount)
+                .Take(PageSize)
+                .ToList();
+
+            int count = 0;
+
+            foreach (var key in keysToProcess)
+            {
+                if (token.IsCancellationRequested) break;
+
+                var searchResult = new SearchResult { KeyPath = key.KeyPath };
+
+                bool keyNameMatch = wholeWord
+                    ? IsWholeWordMatch(key.KeyName, searchTerm)
+                    : key.KeyName.Contains(searchTerm, comparison);
+
+                if (keyNameMatch)
+                {
+                    searchResult.MatchType = "Key";
+                    searchResult.Details = key.KeyName;
+                    searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
+                }
+                else
+                {
+                    var matchingValue = wholeWord
+                        ? key.Values.FirstOrDefault(v =>
+                            IsWholeWordMatch(v.ValueName, searchTerm) ||
+                            IsWholeWordMatch(v.ValueData?.ToString() ?? "", searchTerm))
+                        : key.Values.FirstOrDefault(v =>
+                            v.ValueName.Contains(searchTerm, comparison) ||
+                            (v.ValueData?.ToString() ?? "").Contains(searchTerm, comparison));
+
+                    if (matchingValue != null)
+                    {
+                        searchResult.MatchType = matchingValue.ValueType;
+                        searchResult.ValueName = matchingValue.ValueName;
+                        searchResult.ValueData = CleanValueData(matchingValue.ValueData?.ToString() ?? "");
+                        searchResult.Details = string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName;
+                        searchResult.FullValue = $"Name: {(string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName)}\nType: {matchingValue.ValueType}\nData: {searchResult.ValueData}";
+                    }
+                    else
+                    {
+                        if (wholeWord)
+                        {
+                            _displayedKeyCount++;
+                            continue;
+                        }
+                        searchResult.MatchType = "Data";
+                        searchResult.Details = "";
+                        searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
+                    }
+                }
+
+                _searchResults.Add(searchResult);
+                _resultsGrid.Rows.Add(GetDisplayPath(key.KeyPath), searchResult.MatchType, searchResult.Details);
+                count++;
+
+                if (count % 100 == 0)
+                {
+                    _statusLabel.Text = $"Loading results... {_searchResults.Count} so far";
+                }
+
+                _displayedKeyCount++;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Handler for Load More button — appends next page of results.
+        /// </summary>
+        private async Task LoadMoreResultsAsync()
+        {
+            _loadMoreButton.Enabled = false;
+            _statusLabel.Text = "Loading more results...";
+
+            using var cts = new CancellationTokenSource();
+            await DisplayNextPageAsync(cts.Token);
+            UpdateStatusAndLoadMoreButton();
+
+            _loadMoreButton.Enabled = true;
+        }
+
+        /// <summary>
+        /// Update the status label and Load More button visibility based on current pagination state.
+        /// </summary>
+        private void UpdateStatusAndLoadMoreButton()
+        {
+            var totalKeys = _allMatchingKeys.Count;
+            var displayed = _searchResults.Count;
+            var hasMore = _displayedKeyCount < totalKeys;
+
+            if (displayed == 0)
+            {
+                _statusLabel.Text = "No results found";
+                _statusLabel.ForeColor = ModernTheme.TextSecondary;
+                _loadMorePanel.Visible = false;
+            }
+            else if (hasMore)
+            {
+                var remaining = totalKeys - _displayedKeyCount;
+                var nextBatch = Math.Min(remaining, PageSize);
+                _statusLabel.Text = $"Showing {displayed} of {totalKeys} results";
+                _statusLabel.ForeColor = ModernTheme.Success;
+                _loadMoreButton.Text = $"Load next {nextBatch}";
+                _loadMorePanel.Visible = true;
+            }
+            else
+            {
+                _statusLabel.Text = totalKeys > PageSize
+                    ? $"Showing all {displayed} results"
+                    : $"Found {displayed} results";
+                _statusLabel.ForeColor = ModernTheme.Success;
+                _loadMorePanel.Visible = false;
+            }
+
+            _previewPathLabel.Text = displayed > 0 ? "Select a result to preview" : "No results found";
         }
 
         private void ResultsGrid_SelectionChanged(object? sender, EventArgs e)
