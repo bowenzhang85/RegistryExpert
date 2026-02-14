@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using RegistryParser.Abstractions;
 using RegistryParser.Cells;
 using RegistryParser.Lists;
@@ -27,6 +28,10 @@ public class RegistryHive : RegistryBase
     private Dictionary<string, RegistryKey> _keyPathKeyMap = new();
     private bool _parsed;
     private Dictionary<long, RegistryKey> _relativeOffsetKeyMap = new();
+    private IProgress<(string phase, double percent)>? _parseProgress;
+    private CancellationToken _parseCancellationToken;
+    private int _totalNkRecords;
+    private int _processedNkRecords;
 
     /// <summary>
     ///     If true, CellRecords and ListRecords will be purged to free memory
@@ -322,6 +327,11 @@ public class RegistryHive : RegistryBase
     private List<RegistryKey> GetSubKeysAndValues(RegistryKey key)
     {
         _relativeOffsetKeyMap.Add(key.NkRecord.RelativeOffset, key);
+
+        _parseCancellationToken.ThrowIfCancellationRequested();
+        _processedNkRecords++;
+        if (_totalNkRecords > 0)
+            _parseProgress?.Report(("Building registry tree...", (double)_processedNkRecords / _totalNkRecords));
 
 
         if (_keyPathKeyMap.ContainsKey(key.KeyPath.ToLowerInvariant()))
@@ -965,7 +975,7 @@ public class RegistryHive : RegistryBase
         return null;
     }
 
-    public bool ParseHive()
+    public bool ParseHive(IProgress<(string phase, double percent)>? progress = null, CancellationToken cancellationToken = default)
     {
         if (_parsed) throw new Exception("ParseHive already called");
 
@@ -1002,6 +1012,9 @@ public class RegistryHive : RegistryBase
         //keep reading the file until we reach the end
         while (offsetInHive < hiveLength)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            progress?.Report(("Reading hive structure...", (double)offsetInHive / hiveLength));
+
             // Safety: ensure we have enough data to read hbin header fields
             var hbinSizeBytes = ReadBytesFromHive(offsetInHive + 8, 4);
             if (hbinSizeBytes.Length < 4)
@@ -1099,6 +1112,13 @@ public class RegistryHive : RegistryBase
 
         Debug.WriteLine("Initial processing complete. Building tree...");
 
+        _parseProgress = progress;
+        _parseCancellationToken = cancellationToken;
+        _totalNkRecords = CellRecords.Values.OfType<NkCellRecord>().Count();
+        _processedNkRecords = 0;
+
+        progress?.Report(("Building registry tree...", 0.0));
+
         //The root node can be found by either looking at Header.RootCellOffset or looking for an nk record with HiveEntryRootKey flag set.
         var rootNode =
             CellRecords.Values.OfType<NkCellRecord>()
@@ -1165,6 +1185,9 @@ public class RegistryHive : RegistryBase
 
             foreach (var key in toRemove) CellRecords.Remove(key);
         }
+
+        _parseProgress = null;
+        _parseCancellationToken = default;
 
         _parsed = true;
         return true;
