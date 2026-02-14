@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using RegistryParser.Other;
@@ -28,6 +28,8 @@ public class LxListRecord : IListTemplate, IRecordBase
         _size = BitConverter.ToInt32(rawBytes, 0);
     }
 
+    private Dictionary<uint, string>? _cachedOffsets;
+
     /// <summary>
     ///     A dictionary of relative offsets and hashes to other records
     ///     <remarks>The offset is the key and the hash value is the value</remarks>
@@ -36,6 +38,9 @@ public class LxListRecord : IListTemplate, IRecordBase
     {
         get
         {
+            if (_cachedOffsets != null)
+                return _cachedOffsets;
+
             var offsets = new Dictionary<uint, string>();
 
             var index = 0x8;
@@ -67,6 +72,7 @@ public class LxListRecord : IListTemplate, IRecordBase
                 counter += 1;
             }
 
+            _cachedOffsets = offsets;
             return offsets;
         }
     }

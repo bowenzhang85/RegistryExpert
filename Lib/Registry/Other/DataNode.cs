@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Text;
 
@@ -27,7 +27,8 @@ public class DataNode : IRecordBase
     }
 
     // public properties...
-    public byte[] Data => new ArraySegment<byte>(RawBytes, 4, RawBytes.Length - 4).ToArray();
+    private byte[]? _cachedData;
+    public byte[] Data => _cachedData ??= new ArraySegment<byte>(RawBytes, 4, RawBytes.Length - 4).ToArray();
 
     public bool IsFree => _size > 0;
 

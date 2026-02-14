@@ -1,7 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using RegistryParser.Cells;
 
 // namespaces...
@@ -22,7 +23,10 @@ public class RegistryKey
         HasActiveParent = 2
     }
 
+    private static long _nextId;
+
     private string _keyPath;
+    private string _keyPathLower;
 
     // public constructors...
     public RegistryKey(NkCellRecord nk, RegistryKey parent)
@@ -31,7 +35,19 @@ public class RegistryKey
 
         Parent = parent;
 
-        InternalGuid = Guid.NewGuid().ToString();
+        InternalGuid = Interlocked.Increment(ref _nextId).ToString();
+
+        // Eagerly compute and cache the full key path to avoid repeated
+        // recursive Parent.KeyPath walks (O(depth) string concatenations per access)
+        if (parent == null)
+        {
+            _keyPath = nk.Name;
+        }
+        else
+        {
+            _keyPath = $@"{parent.KeyPath}\{nk.Name}";
+        }
+        _keyPathLower = _keyPath.ToLowerInvariant();
 
         SubKeys = new List<RegistryKey>();
         Values = new List<KeyValue>();
@@ -61,21 +77,19 @@ public class RegistryKey
     /// </summary>
     public string KeyPath
     {
-        get
+        get => _keyPath;
+
+        set
         {
-            if (_keyPath != null)
-                //sometimes we have to update the path elsewhere, so if that happens, return it
-                return _keyPath;
-
-            if (Parent == null)
-                //This is the root key
-                return $"{KeyName}";
-
-            return $@"{Parent.KeyPath}\{KeyName}";
+            _keyPath = value;
+            _keyPathLower = value?.ToLowerInvariant();
         }
-
-        set => _keyPath = value;
     }
+
+    /// <summary>
+    ///     Pre-computed lowercase version of KeyPath for case-insensitive lookups
+    /// </summary>
+    public string KeyPathLower => _keyPathLower;
 
     /// <summary>
     ///     The last write time of this key
@@ -148,7 +162,6 @@ public class RegistryKey
         sb.AppendLine();
         sb.AppendLine(keyName);
         sb.AppendLine($";Last write timestamp {LastWriteTime.Value.UtcDateTime.ToString("o")}");
-        //sb.AppendLine($";Last write timestamp {LastWriteTime.Value.UtcDateTime.ToString("o")}");
 
         foreach (var keyValue in Values)
         {
@@ -262,14 +275,9 @@ public class RegistryKey
         sb.AppendLine($"Last Write Time: {LastWriteTime}");
         sb.AppendLine();
 
-        // sb.AppendLine(string.Format("Is Deleted: {0}", IsDeleted));
-
         sb.AppendLine($"Key flags: {KeyFlags}");
 
         sb.AppendLine();
-
-//            sb.AppendLine(string.Format("Internal GUID: {0}", InternalGUID));
-//            sb.AppendLine();
 
         sb.AppendLine($"NK Record: {NkRecord}");
 

@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Text;
+using System.Threading;
 using RegistryParser.Cells;
 
 // namespaces...
@@ -13,6 +14,8 @@ namespace RegistryParser.Abstractions;
 /// </summary>
 public class KeyValue
 {
+    private static long _nextId;
+
     // public constructors...
     /// <summary>
     ///     Initializes a new instance of the <see cref="KeyValue" /> class.
@@ -20,7 +23,7 @@ public class KeyValue
     public KeyValue(VkCellRecord vk)
     {
         VkRecord = vk;
-        InternalGuid = Guid.NewGuid().ToString();
+        InternalGuid = Interlocked.Increment(ref _nextId).ToString();
     }
 
     // public properties...
@@ -73,16 +76,6 @@ public class KeyValue
     public override string ToString()
     {
         var sb = new StringBuilder();
-
-//            sb.AppendLine($"Value Name: {ValueName}");
-//            sb.AppendLine($"Value Type: {ValueType}");
-//            sb.AppendLine($"Value Data: {ValueData}");
-//            sb.AppendLine($"Value Slack: {ValueSlack}");
-//
-//            sb.AppendLine();
-
-//            sb.AppendLine(string.Format("Internal GUID: {0}", InternalGUID));
-//            sb.AppendLine();
 
         sb.AppendLine($"VK Record: {VkRecord}");
 
