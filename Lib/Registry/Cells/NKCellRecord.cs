@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -60,6 +60,7 @@ public class NkCellRecord : ICellTemplate, IRecordBase
     }
 
     private readonly int _rawBytesLength;
+    private byte[]? _cachedRawBytes;
     private readonly IRegistry _registryHive;
 
     // public fields...
@@ -309,8 +310,7 @@ public class NkCellRecord : ICellTemplate, IRecordBase
     {
         get
         {
-            var raw = _registryHive.ReadBytesFromHive(AbsoluteOffset, _rawBytesLength);
-            return raw;
+            return _cachedRawBytes ??= _registryHive.ReadBytesFromHive(AbsoluteOffset, _rawBytesLength);
         }
     }
 
