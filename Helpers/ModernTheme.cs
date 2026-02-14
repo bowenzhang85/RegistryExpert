@@ -587,8 +587,8 @@ namespace RegistryExpert
                 if (stream != null)
                 {
                     using var original = Image.FromStream(stream);
-                    using var scaled = new Bitmap(original, new Size(iconSize, iconSize));
-                    imageList.Images.Add(name, scaled);
+                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    imageList.Images.Add(name, scaled); // No 'using' - ImageList takes ownership
                 }
             }
 
