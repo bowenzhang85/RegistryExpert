@@ -39,7 +39,7 @@ namespace RegistryExpert
         /// <summary>
         /// Load a registry hive file
         /// </summary>
-        public bool LoadHive(string filePath)
+        public bool LoadHive(string filePath, IProgress<(string phase, double percent)>? progress = null, CancellationToken cancellationToken = default)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(OfflineRegistryParser));
@@ -53,7 +53,7 @@ namespace RegistryExpert
                 _filePath = filePath;
                 var newHive = new RegistryHive(filePath);
                 
-                if (!newHive.ParseHive())
+                if (!newHive.ParseHive(progress, cancellationToken))
                 {
                     // Dispose the new hive if parsing failed
                     (newHive as IDisposable)?.Dispose();
