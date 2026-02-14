@@ -362,7 +362,7 @@ namespace RegistryExpert
                 // Run search on background thread (always case-insensitive, whole-word filtering done in backend)
                 var wholeWord = _matchWholeWordCheckBox.Checked;
                 var results = await Task.Run(() => 
-                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord), token);
+                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord), token).ConfigureAwait(true);
                 
                 if (token.IsCancellationRequested) return;
 
@@ -371,7 +371,7 @@ namespace RegistryExpert
                 _displayedMatchCount = 0;
 
                 // Display first page
-                await DisplayNextPageAsync(token);
+                await DisplayNextPageAsync(token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested)
                 {
@@ -484,7 +484,7 @@ namespace RegistryExpert
             _statusLabel.Text = "Loading more results...";
 
             using var cts = new CancellationTokenSource();
-            await DisplayNextPageAsync(cts.Token);
+            await DisplayNextPageAsync(cts.Token).ConfigureAwait(true);
             UpdateStatusAndLoadMoreButton();
 
             _loadMoreButton.Enabled = true;
@@ -782,24 +782,7 @@ namespace RegistryExpert
         /// <summary>
         /// Convert a KeyPath from ROOT\... to HIVENAME\... for display
         /// </summary>
-        private string GetDisplayPath(string keyPath)
-        {
-            if (string.IsNullOrEmpty(keyPath)) return keyPath;
-            
-            var hiveName = _parser.CurrentHiveType.ToString();
-            
-            // Replace ROOT\ with HIVENAME\ or just ROOT with HIVENAME if it's the root itself
-            if (keyPath.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveName + keyPath.Substring(4); // "ROOT" is 4 chars
-            }
-            else if (keyPath.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveName;
-            }
-            
-            return keyPath;
-        }
+        private string GetDisplayPath(string keyPath) => _parser.ConvertRootPath(keyPath);
 
         private class SearchResult
         {

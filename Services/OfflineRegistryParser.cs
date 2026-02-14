@@ -141,73 +141,7 @@ namespace RegistryExpert
             }
         }
 
-        /// <summary>
-        /// Search for keys matching a pattern (legacy key-level results)
-        /// </summary>
-        public List<RegistryKey> SearchKeys(string pattern, bool caseSensitive = false)
-        {
-            if (_disposed)
-                throw new ObjectDisposedException(nameof(OfflineRegistryParser));
-                
-            var results = new List<RegistryKey>();
-            var root = _hive?.Root;
-            
-            if (root == null) return results;
-
-            // Use HashSet for O(1) duplicate checking
-            var addedKeys = new HashSet<RegistryKey>();
-            SearchKeysRecursive(root, pattern, caseSensitive, results, addedKeys, 0);
-            return results;
-        }
-
         private const int MaxSearchDepth = 100;
-        
-        private void SearchKeysRecursive(RegistryKey key, string pattern, bool caseSensitive, List<RegistryKey> results, HashSet<RegistryKey> addedKeys, int depth)
-        {
-            // Prevent stack overflow from malformed or deeply nested hives
-            if (depth > MaxSearchDepth) return;
-            
-            try
-            {
-                var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-                
-                if (key.KeyName.Contains(pattern, comparison))
-                {
-                    if (addedKeys.Add(key))
-                        results.Add(key);
-                }
-
-                foreach (var value in key.Values)
-                {
-                    if (value.ValueName.Contains(pattern, comparison))
-                    {
-                        if (addedKeys.Add(key))
-                            results.Add(key);
-                        break;
-                    }
-                    
-                    var valueData = value.ValueData?.ToString() ?? "";
-                    if (valueData.Contains(pattern, comparison))
-                    {
-                        if (addedKeys.Add(key))
-                            results.Add(key);
-                        break;
-                    }
-                }
-
-                if (key.SubKeys != null)
-                {
-                    foreach (var subKey in key.SubKeys)
-                    {
-                        SearchKeysRecursive(subKey, pattern, caseSensitive, results, addedKeys, depth + 1);
-                    }
-                }
-            }
-            catch
-            {
-                // Silently skip keys that fail to enumerate - continue searching remaining keys
-            }
-        }
 
         /// <summary>
         /// Search for all matches at the value level. Each matching value gets its own result entry.
@@ -354,6 +288,27 @@ namespace RegistryExpert
                     CountRecursive(subKey, stats);
                 }
             }
+        }
+
+        /// <summary>
+        /// Convert a KeyPath from ROOT\... to HIVENAME\... for display
+        /// </summary>
+        public string ConvertRootPath(string keyPath)
+        {
+            if (string.IsNullOrEmpty(keyPath)) return keyPath;
+            
+            var hiveName = _hiveType.ToString();
+            
+            if (keyPath.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return hiveName + keyPath.Substring(4); // "ROOT" is 4 chars
+            }
+            else if (keyPath.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
+            {
+                return hiveName;
+            }
+            
+            return keyPath;
         }
 
         public void Dispose()
