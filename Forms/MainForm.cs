@@ -100,6 +100,9 @@ namespace RegistryExpert
         private Panel _statusPanel = null!;
         private Label _statusLabel = null!;
         private Label _hiveTypeLabel = null!;
+        private ProgressBar _loadProgressBar = null!;
+        private Button _cancelLoadButton = null!;
+        private CancellationTokenSource? _loadCts;
         private Panel _dropPanel = null!;
         private Panel _bookmarkBar = null!;
         private Panel _bookmarkPanel = null!;
@@ -161,6 +164,7 @@ namespace RegistryExpert
                 _timelineForm?.Dispose();
                 _sharedToolTip?.Dispose();
                 _customIcon?.Dispose();
+                _loadCts?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -178,6 +182,8 @@ namespace RegistryExpert
             // Update controls that need manual DPI adjustment
             _toolbarPanel.Height = DpiHelper.Scale(52);
             _statusPanel.Height = DpiHelper.Scale(32);
+            _loadProgressBar.Size = DpiHelper.ScaleSize(200, 18);
+            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(60, 24);
             
             // Refresh the toolbar to recalculate button layouts
             CreateModernToolbar();
@@ -262,9 +268,31 @@ namespace RegistryExpert
                 TextAlign = ContentAlignment.MiddleRight,
                 Padding = new Padding(12, 0, 0, 0)
             };
-            
-            _statusPanel.Controls.Add(_statusLabel);
-            _statusPanel.Controls.Add(_hiveTypeLabel);
+
+            _loadProgressBar = new ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 0,
+                Visible = false,
+                Dock = DockStyle.Right,
+                Size = DpiHelper.ScaleSize(200, 18),
+                Style = ProgressBarStyle.Continuous,
+            };
+
+            _cancelLoadButton = ModernTheme.CreateSecondaryButton("Cancel");
+            _cancelLoadButton.AutoSize = true;
+            _cancelLoadButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(60, 24);
+            _cancelLoadButton.Visible = false;
+            _cancelLoadButton.Dock = DockStyle.Right;
+            _cancelLoadButton.Margin = DpiHelper.ScalePadding(4, 0, 4, 0);
+            _cancelLoadButton.Click += CancelLoad_Click;
+
+            _statusPanel.Controls.Add(_statusLabel);       // Dock.Fill - gets remaining space
+            _statusPanel.Controls.Add(_hiveTypeLabel);     // Dock.Right - docks rightmost
+            _statusPanel.Controls.Add(_cancelLoadButton);  // Dock.Right - left of hiveType
+            _statusPanel.Controls.Add(_loadProgressBar);   // Dock.Right - left of cancelBtn
 
             // Main content area
             var contentPanel = new Panel
@@ -1124,41 +1152,74 @@ namespace RegistryExpert
             }
         }
 
+        private void CancelLoad_Click(object? sender, EventArgs e)
+        {
+            _loadCts?.Cancel();
+            _cancelLoadButton.Enabled = false;
+            _statusLabel.Text = "Cancelling...";
+        }
+
         private async Task LoadHiveFileAsync(string filePath)
         {
             try
             {
+                _loadCts?.Cancel();
+                _loadCts?.Dispose();
+                _loadCts = new CancellationTokenSource();
+                var token = _loadCts.Token;
+
+                // Show progress UI
                 _statusLabel.Text = "Loading hive...";
                 _statusLabel.ForeColor = ModernTheme.Warning;
-                _statusLabel.Refresh(); // Force UI update without reentrancy issues
+                _loadProgressBar.Value = 0;
+                _loadProgressBar.Visible = true;
+                _cancelLoadButton.Visible = true;
+                _cancelLoadButton.Enabled = true;
 
                 _parser?.Dispose();
                 _parser = new OfflineRegistryParser();
-                
-                // Run the heavy hive loading on a background thread to keep UI responsive
-                await Task.Run(() => _parser.LoadHive(filePath)).ConfigureAwait(true);
-                _currentHivePath = filePath; // Store the path for later use
-                
+
+                var progress = new Progress<(string phase, double percent)>(update =>
+                {
+                    _statusLabel.Text = $"{update.phase} {update.percent:P0}";
+                    _loadProgressBar.Value = Math.Clamp((int)(update.percent * 100), 0, 100);
+                });
+
+                await Task.Run(() => _parser.LoadHive(filePath, progress, token), token).ConfigureAwait(true);
+
+                _currentHivePath = filePath;
                 _infoExtractor = new RegistryInfoExtractor(_parser);
 
                 PopulateTreeView();
                 PopulateBookmarks(_parser.CurrentHiveType.ToString());
-                
+
                 // Show main view, hide drop panel
                 _dropPanel.Visible = false;
                 _mainSplitContainer.Visible = true;
                 _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
-                
+
                 _hiveTypeLabel.Text = $"● {_parser.CurrentHiveType}";
                 _statusLabel.Text = $"Loaded: {Path.GetFileName(filePath)}";
                 _statusLabel.ForeColor = ModernTheme.Success;
                 this.Text = $"Registry Expert - {Path.GetFileName(filePath)}";
+            }
+            catch (OperationCanceledException)
+            {
+                _parser?.Dispose();
+                _parser = null;
+                _statusLabel.Text = "Loading cancelled";
+                _statusLabel.ForeColor = ModernTheme.Warning;
             }
             catch (Exception ex)
             {
                 ShowError($"Error loading hive: {ex.Message}");
                 _statusLabel.Text = "Failed to load hive";
                 _statusLabel.ForeColor = ModernTheme.Error;
+            }
+            finally
+            {
+                _loadProgressBar.Visible = false;
+                _cancelLoadButton.Visible = false;
             }
         }
 
