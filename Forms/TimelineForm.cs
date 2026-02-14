@@ -438,7 +438,7 @@ namespace RegistryExpert
                 _scanCts?.Cancel();
                 return;
             }
-            await ScanRegistryAsync();
+            await ScanRegistryAsync().ConfigureAwait(true);
         }
 
         private async Task ScanRegistryAsync()
@@ -473,7 +473,7 @@ namespace RegistryExpert
                 await Task.Run(() =>
                 {
                     ScanKeyRecursive(rootKey, entries, ref scannedCount, token);
-                }, token);
+                }, token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested)
                 {
@@ -629,9 +629,7 @@ namespace RegistryExpert
             _timelineGrid.Rows.Clear();
             
             // Display only up to _currentDisplayCount entries
-            var entriesToShow = _filteredEntries.Take(_currentDisplayCount).ToList();
-            
-            foreach (var entry in entriesToShow)
+            foreach (var entry in _filteredEntries.Take(_currentDisplayCount))
             {
                 var rowIndex = _timelineGrid.Rows.Add(
                     entry.LastModified,
@@ -817,23 +815,7 @@ namespace RegistryExpert
             }
         }
 
-        private string ConvertRootPath(string path)
-        {
-            if (string.IsNullOrEmpty(path)) return path;
-
-            var hiveType = _parser.CurrentHiveType;
-            
-            if (path.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveType.ToString() + path.Substring(4);
-            }
-            else if (path.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveType.ToString();
-            }
-            
-            return path;
-        }
+        private string ConvertRootPath(string path) => _parser.ConvertRootPath(path);
 
         /// <summary>
         /// Refresh theme colors

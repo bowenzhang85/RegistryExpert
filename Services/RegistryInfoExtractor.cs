@@ -113,29 +113,7 @@ namespace RegistryExpert
             return $"{timeSpan.TotalSeconds:F1} seconds ({msStr} ms)";
         }
 
-        private string ParseNetworkDate(byte[] data)
-        {
-            try
-            {
-                if (data == null || data.Length < 8)
-                    return "Unknown";
-                    
-                int year = BitConverter.ToInt16(data, 0);
-                int month = BitConverter.ToInt16(data, 2);
-                int day = BitConverter.ToInt16(data, 6);
-                
-                // Validate date components to handle malformed registry data
-                if (year < 1 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31)
-                    return "Unknown";
-                    
-                return $"{year:D4}-{month:D2}-{day:D2}";
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Error parsing network date: {ex.Message}");
-            }
-            return "Unknown";
-        }
+
 
         private string TruncatePath(string? path, int maxLength)
         {
@@ -2727,10 +2705,18 @@ namespace RegistryExpert
                     
                     // Get rule counts for this profile
                     var allRules = GetFirewallRulesForProfile(profileName);
-                    var activeRules = allRules.Where(r => r.IsActive).ToList();
-                    var blockRules = activeRules.Where(r => r.Action == "Block").ToList();
+                    int activeCount = 0, blockCount = 0;
+                    foreach (var rule in allRules)
+                    {
+                        if (rule.IsActive)
+                        {
+                            activeCount++;
+                            if (rule.Action == "Block")
+                                blockCount++;
+                        }
+                    }
                     
-                    var statusWithCounts = $"{(enableFirewall == "1" ? "✅" : "❌")} {firewallStatus} | Rules: {allRules.Count} total, {activeRules.Count} active, {blockRules.Count} blocking";
+                    var statusWithCounts = $"{(enableFirewall == "1" ? "✅" : "❌")} {firewallStatus} | Rules: {allRules.Count} total, {activeCount} active, {blockCount} blocking";
                     
                     firewallSection.Items.Add(new AnalysisItem
                     {
@@ -3806,34 +3792,6 @@ namespace RegistryExpert
             return 0;
         }
 
-        /// <summary>
-        /// Parse unsigned DWORD value from string
-        /// </summary>
-        private uint ParseDwordValueUnsigned(string? value)
-        {
-            if (string.IsNullOrEmpty(value))
-                return 0;
-
-            // Handle format like "112 (0x70)"
-            var spaceIndex = value.IndexOf(' ');
-            if (spaceIndex > 0)
-            {
-                value = value.Substring(0, spaceIndex);
-            }
-
-            // Handle hex format
-            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            {
-                if (uint.TryParse(value.Substring(2), System.Globalization.NumberStyles.HexNumber, null, out uint hexResult))
-                    return hexResult;
-            }
-
-            // Try decimal
-            if (uint.TryParse(value, out uint result))
-                return result;
-
-            return 0;
-        }
 
         /// <summary>
         /// Convert FILETIME (high/low parts) to DateTime
@@ -5111,14 +5069,6 @@ namespace RegistryExpert
             return items;
         }
 
-        // Keep old method for backwards compatibility but mark as obsolete
-        [Obsolete("Use GetDiskFilters() instead")]
-        public AnalysisSection GetDiskFiltersAnalysis()
-        {
-            var section = new AnalysisSection { Title = "💾 Disk Filters" };
-            section.Items.AddRange(GetDiskFilters());
-            return section;
-        }
 
         /// <summary>
         /// Parse REG_MULTI_SZ value (handles various formats)
@@ -5483,33 +5433,6 @@ namespace RegistryExpert
             return rules;
         }
 
-        /// <summary>
-        /// Get all firewall rules (unfiltered)
-        /// </summary>
-        public List<FirewallRuleInfo> GetAllFirewallRules()
-        {
-            var rules = new List<FirewallRuleInfo>();
-            const string rulesPath = @"ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
-            var rulesKey = _parser.GetKey(rulesPath);
-            
-            if (rulesKey == null) return rules;
-
-            foreach (var value in rulesKey.Values)
-            {
-                var ruleData = value.ValueData?.ToString() ?? "";
-                if (string.IsNullOrEmpty(ruleData)) continue;
-
-                var rule = ParseFirewallRule(value.ValueName, ruleData);
-                if (rule != null)
-                {
-                    rule.RegistryPath = rulesPath;
-                    rule.RegistryValueName = value.ValueName;
-                    rules.Add(rule);
-                }
-            }
-
-            return rules;
-        }
 
         /// <summary>
         /// Parse a firewall rule string into a FirewallRuleInfo object
@@ -5647,30 +5570,6 @@ namespace RegistryExpert
         public string RegistryPath { get; set; } = "";
         public string RegistryValueName { get; set; } = "";
 
-        /// <summary>
-        /// Get a display-friendly summary of the rule
-        /// </summary>
-        public string GetSummary()
-        {
-            var parts = new List<string>();
-            
-            if (!string.IsNullOrEmpty(Protocol) && Protocol != "Any")
-                parts.Add(Protocol);
-            
-            if (!string.IsNullOrEmpty(LocalPorts))
-                parts.Add($"Port {LocalPorts}");
-            
-            if (!string.IsNullOrEmpty(Application))
-            {
-                var appName = Path.GetFileName(Application);
-                parts.Add(appName);
-            }
-            
-            if (!string.IsNullOrEmpty(Service))
-                parts.Add($"Svc: {Service}");
-
-            return parts.Count > 0 ? string.Join(" | ", parts) : "(Any)";
-        }
     }
 
     /// <summary>

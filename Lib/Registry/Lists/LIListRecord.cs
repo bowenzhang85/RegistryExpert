@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using RegistryParser.Other;
@@ -27,6 +27,8 @@ public class LiListRecord : IListTemplate, IRecordBase
         _size = BitConverter.ToInt32(rawBytes, 0);
     }
 
+    private List<uint>? _cachedOffsets;
+
     /// <summary>
     ///     A list of relative offsets to other records
     /// </summary>
@@ -34,6 +36,9 @@ public class LiListRecord : IListTemplate, IRecordBase
     {
         get
         {
+            if (_cachedOffsets != null)
+                return _cachedOffsets;
+
             var offsets = new List<uint>();
 
             var index = 0x8;
@@ -54,6 +59,7 @@ public class LiListRecord : IListTemplate, IRecordBase
                 counter += 1;
             }
 
+            _cachedOffsets = offsets;
             return offsets;
         }
     }
