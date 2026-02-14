@@ -717,9 +717,9 @@ public class RegistryHive : RegistryBase
     ///     <remarks>This is the length returned by the underlying stream used to open the file</remarks>
     /// </summary>
     /// <returns></returns>
-    protected internal int HiveLength()
+    protected internal long HiveLength()
     {
-        return FileBytes.Length;
+        return FileLength;
     }
 
     /// <summary>
@@ -988,11 +988,11 @@ public class RegistryHive : RegistryBase
         ////Look at first hbin, get its size, then read that many bytes to create hbin record
         long offsetInHive = 4096;
 
-        var hiveLength = Header.Length + 0x1000;
-        if (hiveLength < FileBytes.Length)
+        long hiveLength = Header.Length + 0x1000;
+        if (hiveLength < FileLength)
         {
             Debug.WriteLine("Header length is smaller than the size of the file.");
-            hiveLength = (uint) FileBytes.Length;
+            hiveLength = FileLength;
         }
 
         if (Header.PrimarySequenceNumber != Header.SecondarySequenceNumber)
@@ -1137,7 +1137,8 @@ public class RegistryHive : RegistryBase
         //All processing is complete, so we do some tests to see if we really saw everything
         if (RecoverDeleted && HiveLength() != TotalBytesRead)
         {
-            var remainingHive = ReadBytesFromHive(TotalBytesRead, (int) (HiveLength() - TotalBytesRead));
+            var remainingLen = HiveLength() - TotalBytesRead;
+            var remainingHive = ReadBytesFromHive(TotalBytesRead, (int)Math.Min(remainingLen, int.MaxValue));
 
             //Sometimes the remainder of the file is all zeros, which is useless, so check for that
             if (!Array.TrueForAll(remainingHive, a => a == 0))

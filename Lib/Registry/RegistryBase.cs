@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Text;
 using RegistryParser.Other;
@@ -9,8 +10,14 @@ using static RegistryParser.Other.Helpers;
 
 namespace RegistryParser;
 
-public class RegistryBase : IRegistry
+public class RegistryBase : IRegistry, IDisposable
 {
+    private MemoryMappedFile? _mmf;
+    private MemoryMappedViewAccessor? _accessor;
+    private long _fileLength;
+    private byte[]? _lazyFileBytes;
+    private bool _useMemoryMap;
+    private bool _disposed;
     public RegistryBase()
     {
         throw new NotSupportedException("Call the other constructor and pass in the path to the Registry hive!");
@@ -46,27 +53,19 @@ public class RegistryBase : IRegistry
             throw new FileNotFoundException($"The specified file {fullPath} was not found.", fullPath);
         }
 
-        var fileStream = new FileStream(hivePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var binaryReader = new BinaryReader(fileStream);
-
-        binaryReader.BaseStream.Seek(0, SeekOrigin.Begin);
-
-        FileBytes = binaryReader.ReadBytes((int) binaryReader.BaseStream.Length);
-
-        binaryReader.Close();
-        fileStream.Close();
-
+        _fileLength = new FileInfo(hivePath).Length;
+        _mmf = MemoryMappedFile.CreateFromFile(hivePath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+        _accessor = _mmf.CreateViewAccessor(0, _fileLength, MemoryMappedFileAccess.Read);
+        _useMemoryMap = true;
 
         if (!HasValidSignature())
         {
             Debug.WriteLine($"ERROR: {hivePath} is not a Registry hive (bad signature)");
-
+            DisposeMemoryMap();
             throw new Exception($"{hivePath} is not a Registry hive (bad signature)");
         }
 
         HivePath = hivePath;
-
-        //    Logger.Trace("Set HivePath to {0}", hivePath);
 
         Initialize();
     }
@@ -74,7 +73,29 @@ public class RegistryBase : IRegistry
     public long TotalBytesRead { get; internal set; }
     public string Version { get; private set; }
 
-    public byte[] FileBytes { get; internal set; }
+    public byte[] FileBytes
+    {
+        get
+        {
+            if (_useMemoryMap)
+            {
+                if (_lazyFileBytes == null)
+                {
+                    if (_fileLength > int.MaxValue)
+                        throw new NotSupportedException($"File size ({_fileLength} bytes) exceeds maximum supported size for full-file byte array materialization.");
+                    _lazyFileBytes = new byte[_fileLength];
+                    _accessor!.ReadArray(0, _lazyFileBytes, 0, (int)_fileLength);
+                }
+                return _lazyFileBytes;
+            }
+            return _lazyFileBytes!;
+        }
+        internal set
+        {
+            _lazyFileBytes = value;
+            _fileLength = value.Length;
+        }
+    }
 
     public HiveTypeEnum HiveType { get; private set; }
 
@@ -88,27 +109,36 @@ public class RegistryBase : IRegistry
 
         if (readLength == 0) return Array.Empty<byte>();
 
-        // Guard against negative or out-of-bounds offsets
-        if (offset < 0 || offset >= FileBytes.Length)
+        if (offset < 0 || offset >= _fileLength)
         {
-            // Return zero-filled array of requested size so callers (BitConverter, etc.) don't crash
             return new byte[readLength];
         }
 
-        var remaining = FileBytes.Length - offset;
+        var remaining = _fileLength - offset;
+
+        if (_useMemoryMap && _accessor != null)
+        {
+            if (readLength <= remaining)
+            {
+                var result = new byte[readLength];
+                _accessor.ReadArray(offset, result, 0, readLength);
+                return result;
+            }
+
+            var padded = new byte[readLength];
+            _accessor.ReadArray(offset, padded, 0, (int)remaining);
+            return padded;
+        }
 
         if (readLength <= remaining)
         {
-            // Normal case: enough data available
-            var r = new ArraySegment<byte>(FileBytes, (int) offset, readLength);
+            var r = new ArraySegment<byte>(_lazyFileBytes!, (int)offset, readLength);
             return r.ToArray();
         }
 
-        // Partial read: not enough data remaining. Return a full-size zero-padded array
-        // so callers always get the exact number of bytes they requested.
-        var result = new byte[readLength];
-        Array.Copy(FileBytes, (int) offset, result, 0, (int) remaining);
-        return result;
+        var result2 = new byte[readLength];
+        Array.Copy(_lazyFileBytes!, (int)offset, result2, 0, (int)remaining);
+        return result2;
     }
 
     internal void Initialize()
@@ -205,8 +235,41 @@ public class RegistryBase : IRegistry
 
     public bool HasValidSignature()
     {
-        var sig = BitConverter.ToInt32(FileBytes, 0);
+        if (_useMemoryMap && _accessor != null)
+        {
+            var sig = _accessor.ReadInt32(0);
+            return sig.Equals(RegfSignature);
+        }
+        var sigBytes = BitConverter.ToInt32(_lazyFileBytes!, 0);
+        return sigBytes.Equals(RegfSignature);
+    }
 
-        return sig.Equals(RegfSignature);
+    public long FileLength => _fileLength;
+
+    private void DisposeMemoryMap()
+    {
+        _accessor?.Dispose();
+        _accessor = null;
+        _mmf?.Dispose();
+        _mmf = null;
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (!_disposed)
+        {
+            if (disposing)
+            {
+                DisposeMemoryMap();
+                _lazyFileBytes = null;
+            }
+            _disposed = true;
+        }
     }
 }
