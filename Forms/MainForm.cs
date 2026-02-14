@@ -182,8 +182,8 @@ namespace RegistryExpert
             // Update controls that need manual DPI adjustment
             _toolbarPanel.Height = DpiHelper.Scale(52);
             _statusPanel.Height = DpiHelper.Scale(32);
-            _loadProgressBar.Size = DpiHelper.ScaleSize(200, 18);
-            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(60, 24);
+            _loadProgressBar.Size = DpiHelper.ScaleSize(120, 12);
+            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(46, 20);
             
             // Refresh the toolbar to recalculate button layouts
             CreateModernToolbar();
@@ -245,7 +245,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Bottom,
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(16, 0, 16, 0)
+                Padding = new Padding(10, 0, 10, 0)
             };
             
             _statusLabel = new Label
@@ -276,17 +276,31 @@ namespace RegistryExpert
                 Value = 0,
                 Visible = false,
                 Dock = DockStyle.Right,
-                Size = DpiHelper.ScaleSize(200, 18),
+                Size = DpiHelper.ScaleSize(120, 12),
                 Style = ProgressBarStyle.Continuous,
+                Margin = DpiHelper.ScalePadding(6, 0, 2, 0),
             };
 
-            _cancelLoadButton = ModernTheme.CreateSecondaryButton("Cancel");
-            _cancelLoadButton.AutoSize = true;
-            _cancelLoadButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(60, 24);
-            _cancelLoadButton.Visible = false;
-            _cancelLoadButton.Dock = DockStyle.Right;
-            _cancelLoadButton.Margin = DpiHelper.ScalePadding(4, 0, 4, 0);
+            _cancelLoadButton = new Button
+            {
+                Text = "Cancel",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.SmallFont,
+                Cursor = Cursors.Hand,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = DpiHelper.ScaleSize(46, 20),
+                Padding = new Padding(4, 0, 4, 0),
+                Margin = DpiHelper.ScalePadding(2, 0, 4, 0),
+                Visible = false,
+                Dock = DockStyle.Right,
+            };
+            _cancelLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
+            _cancelLoadButton.FlatAppearance.BorderSize = 1;
+            _cancelLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            _cancelLoadButton.FlatAppearance.MouseDownBackColor = ModernTheme.SurfaceLight;
             _cancelLoadButton.Click += CancelLoad_Click;
 
             _statusPanel.Controls.Add(_statusLabel);       // Dock.Fill - gets remaining space
