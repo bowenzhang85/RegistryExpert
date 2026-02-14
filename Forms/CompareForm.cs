@@ -637,42 +637,9 @@ namespace RegistryExpert
             return grid;
         }
 
-        private ImageList CreateValueImageList()
-        {
-            var iconSize = DpiHelper.Scale(16);
-            var imageList = new ImageList
-            {
-                ColorDepth = ColorDepth.Depth32Bit,
-                ImageSize = new Size(iconSize, iconSize)
-            };
+        private ImageList CreateValueImageList() => ModernTheme.CreateValueImageList();
 
-            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
-
-            foreach (var name in iconNames)
-            {
-                var resourceName = $"RegistryExpert.icons.{name}.png";
-                using var stream = assembly.GetManifestResourceStream(resourceName);
-                if (stream != null)
-                {
-                    using var original = Image.FromStream(stream);
-                    using var scaled = new Bitmap(original, new Size(iconSize, iconSize));
-                    imageList.Images.Add(name, scaled);
-                }
-            }
-
-            return imageList;
-        }
-
-        private static string GetValueImageKey(string? valueType)
-        {
-            return (valueType?.ToUpperInvariant() ?? "") switch
-            {
-                "REGBINARY" => "reg_bin",
-                "REGDWORD" or "REGQWORD" => "reg_num",
-                _ => "reg_str"
-            };
-        }
+        private static string GetValueImageKey(string? valueType) => ModernTheme.GetValueImageKey(valueType);
 
         private void LoadHive(bool isLeft)
         {

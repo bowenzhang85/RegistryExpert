@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 using RegistryParser.Abstractions;
@@ -98,10 +99,14 @@ namespace RegistryExpert
         private ListView _listView = null!;
         private RichTextBox _detailsBox = null!;
         private Panel _statusPanel = null!;
-        private Label _statusLabel = null!;
+        private string _statusText = "Ready";
+        private Color _statusForeColor;
+        private Panel _statusRightPanel = null!;
         private Label _hiveTypeLabel = null!;
         private ProgressBar _loadProgressBar = null!;
+        private Panel _progressWrapper = null!;
         private Button _cancelLoadButton = null!;
+        private Panel _cancelWrapper = null!;
         private CancellationTokenSource? _loadCts;
         private Panel _dropPanel = null!;
         private Panel _bookmarkBar = null!;
@@ -182,8 +187,13 @@ namespace RegistryExpert
             // Update controls that need manual DPI adjustment
             _toolbarPanel.Height = DpiHelper.Scale(52);
             _statusPanel.Height = DpiHelper.Scale(32);
-            _loadProgressBar.Size = DpiHelper.ScaleSize(120, 12);
-            _cancelLoadButton.MinimumSize = DpiHelper.ScaleSize(46, 20);
+            _statusPanel.Padding = DpiHelper.ScalePadding(10, 0, 10, 0);
+            _statusRightPanel.Width = DpiHelper.Scale(170);
+            _progressWrapper.Width = DpiHelper.Scale(100);
+            _progressWrapper.Padding = new Padding(0, DpiHelper.Scale(8), 0, DpiHelper.Scale(8));
+            _cancelWrapper.Width = DpiHelper.Scale(68);
+            _cancelWrapper.Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4));
+            _hiveTypeLabel.Padding = DpiHelper.ScalePadding(4, 0, 0, 0);
             
             // Refresh the toolbar to recalculate button layouts
             CreateModernToolbar();
@@ -245,42 +255,57 @@ namespace RegistryExpert
                 Dock = DockStyle.Bottom,
                 Height = DpiHelper.Scale(32),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(10, 0, 10, 0)
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
             
-            _statusLabel = new Label
+            // Owner-draw status text: enable double-buffering and paint handler
+            // This avoids the Label control's intermittent text clipping during rapid progress updates
+            _statusForeColor = ModernTheme.TextSecondary;
+            typeof(Panel).InvokeMember("DoubleBuffered",
+                BindingFlags.SetProperty | BindingFlags.Instance | BindingFlags.NonPublic,
+                null, _statusPanel, new object[] { true });
+            _statusPanel.Paint += StatusPanel_Paint;
+
+            // Fixed-width right panel — always visible, never changes width.
+            // Inner controls toggle visibility without affecting the status label bounds.
+            _statusRightPanel = new Panel
             {
-                Text = "Ready",
-                ForeColor = ModernTheme.TextSecondary,
-                Font = ModernTheme.RegularFont,
-                AutoSize = false,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(170),
+                BackColor = Color.Transparent,
             };
-            
+
             _hiveTypeLabel = new Label
             {
                 Text = "",
                 ForeColor = ModernTheme.Accent,
                 Font = ModernTheme.BoldFont,
-                AutoSize = true,
-                Dock = DockStyle.Right,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleRight,
-                Padding = new Padding(12, 0, 0, 0)
+                Padding = DpiHelper.ScalePadding(4, 0, 0, 0)
             };
 
+            // Progress bar inside a wrapper panel for vertical centering (thin bar)
             _loadProgressBar = new ProgressBar
             {
                 Minimum = 0,
                 Maximum = 100,
                 Value = 0,
-                Visible = false,
-                Dock = DockStyle.Right,
-                Size = DpiHelper.ScaleSize(120, 12),
+                Dock = DockStyle.Fill,
                 Style = ProgressBarStyle.Continuous,
-                Margin = DpiHelper.ScalePadding(6, 0, 2, 0),
             };
+            _progressWrapper = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(100),
+                Padding = new Padding(0, DpiHelper.Scale(8), 0, DpiHelper.Scale(8)),
+                Visible = false,
+                BackColor = Color.Transparent,
+            };
+            _progressWrapper.Controls.Add(_loadProgressBar);
 
+            // Cancel button inside a wrapper panel for vertical centering
             _cancelLoadButton = new Button
             {
                 Text = "Cancel",
@@ -289,24 +314,31 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.SmallFont,
                 Cursor = Cursors.Hand,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = DpiHelper.ScaleSize(46, 20),
-                Padding = new Padding(4, 0, 4, 0),
-                Margin = DpiHelper.ScalePadding(2, 0, 4, 0),
-                Visible = false,
-                Dock = DockStyle.Right,
+                Dock = DockStyle.Fill,
             };
             _cancelLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
             _cancelLoadButton.FlatAppearance.BorderSize = 1;
             _cancelLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
             _cancelLoadButton.FlatAppearance.MouseDownBackColor = ModernTheme.SurfaceLight;
             _cancelLoadButton.Click += CancelLoad_Click;
+            _cancelWrapper = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(68),
+                Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4)),
+                Visible = false,
+                BackColor = Color.Transparent,
+            };
+            _cancelWrapper.Controls.Add(_cancelLoadButton);
 
-            _statusPanel.Controls.Add(_statusLabel);       // Dock.Fill - gets remaining space
-            _statusPanel.Controls.Add(_hiveTypeLabel);     // Dock.Right - docks rightmost
-            _statusPanel.Controls.Add(_cancelLoadButton);  // Dock.Right - left of hiveType
-            _statusPanel.Controls.Add(_loadProgressBar);   // Dock.Right - left of cancelBtn
+            // Dock.Fill added first (lowest z-order, fills remaining space)
+            _statusRightPanel.Controls.Add(_hiveTypeLabel);
+            // Dock.Right added after (higher z-order, docked first)
+            _statusRightPanel.Controls.Add(_cancelWrapper);
+            _statusRightPanel.Controls.Add(_progressWrapper);
+
+            // Status text is owner-drawn via _statusPanel.Paint — no Label control needed
+            _statusPanel.Controls.Add(_statusRightPanel);   // Dock.Right - fixed width, always visible
 
             // Main content area
             var contentPanel = new Panel
@@ -972,42 +1004,9 @@ namespace RegistryExpert
             return imageList;
         }
 
-        private ImageList CreateValueImageList()
-        {
-            var iconSize = DpiHelper.Scale(16);
-            var imageList = new ImageList
-            {
-                ColorDepth = ColorDepth.Depth32Bit,
-                ImageSize = new Size(iconSize, iconSize)
-            };
-            
-            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
-            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
-            
-            foreach (var name in iconNames)
-            {
-                var resourceName = $"RegistryExpert.icons.{name}.png";
-                using var stream = assembly.GetManifestResourceStream(resourceName);
-                if (stream != null)
-                {
-                    using var original = Image.FromStream(stream);
-                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
-                    imageList.Images.Add(name, scaled);
-                }
-            }
-            
-            return imageList;
-        }
+        private ImageList CreateValueImageList() => ModernTheme.CreateValueImageList();
 
-        private static string GetValueImageKey(string? valueType)
-        {
-            return (valueType?.ToUpperInvariant() ?? "") switch
-            {
-                "REGBINARY" => "reg_bin",
-                "REGDWORD" or "REGQWORD" => "reg_num",
-                _ => "reg_str"
-            };
-        }
+        private static string GetValueImageKey(string? valueType) => ModernTheme.GetValueImageKey(valueType);
 
         private void CreateMenu()
         {
@@ -1166,11 +1165,46 @@ namespace RegistryExpert
             }
         }
 
+        /// <summary>
+        /// Sets the status bar text and optional color, then invalidates for repaint.
+        /// Uses owner-draw to avoid WinForms Label clipping during rapid updates.
+        /// </summary>
+        private void SetStatusText(string text, Color? color = null)
+        {
+            _statusText = text;
+            if (color.HasValue)
+                _statusForeColor = color.Value;
+            _statusPanel.Invalidate();
+        }
+
+        /// <summary>
+        /// Owner-draw handler for the status panel — draws _statusText with EndEllipsis.
+        /// Bypasses the Label control entirely, using actual panel bounds at paint time.
+        /// </summary>
+        private void StatusPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            // Calculate text area: full panel client area minus the right panel's space and padding
+            var padding = _statusPanel.Padding;
+            var textRect = new Rectangle(
+                padding.Left,
+                padding.Top,
+                _statusPanel.ClientSize.Width - _statusRightPanel.Width - padding.Left - padding.Right,
+                _statusPanel.ClientSize.Height - padding.Top - padding.Bottom);
+
+            TextRenderer.DrawText(
+                e.Graphics,
+                _statusText,
+                ModernTheme.RegularFont,
+                textRect,
+                _statusForeColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+
         private void CancelLoad_Click(object? sender, EventArgs e)
         {
             _loadCts?.Cancel();
             _cancelLoadButton.Enabled = false;
-            _statusLabel.Text = "Cancelling...";
+            SetStatusText("Cancelling...");
         }
 
         private async Task LoadHiveFileAsync(string filePath)
@@ -1182,21 +1216,35 @@ namespace RegistryExpert
                 _loadCts = new CancellationTokenSource();
                 var token = _loadCts.Token;
 
-                // Show progress UI
-                _statusLabel.Text = "Loading hive...";
-                _statusLabel.ForeColor = ModernTheme.Warning;
+                // Show progress UI — visibility changes inside _statusRightPanel
+                // don't affect status text bounds (fixed-width right panel)
+                _hiveTypeLabel.Visible = false;
+                SetStatusText("Loading hive...", ModernTheme.Warning);
                 _loadProgressBar.Value = 0;
-                _loadProgressBar.Visible = true;
-                _cancelLoadButton.Visible = true;
+                _progressWrapper.Visible = true;
+                _cancelWrapper.Visible = true;
                 _cancelLoadButton.Enabled = true;
 
                 _parser?.Dispose();
                 _parser = new OfflineRegistryParser();
 
+                var lastPhase = string.Empty;
+                var stageNumber = 0;
+
                 var progress = new Progress<(string phase, double percent)>(update =>
                 {
-                    _statusLabel.Text = $"{update.phase} {update.percent:P0}";
-                    _loadProgressBar.Value = Math.Clamp((int)(update.percent * 100), 0, 100);
+                    if (update.phase != lastPhase)
+                    {
+                        lastPhase = update.phase;
+                        stageNumber++;
+                    }
+                    var phase = update.phase.TrimEnd('.');
+                    var newText = $"Stage {stageNumber}/2: {phase} {update.percent:P0}";
+                    if (_statusText != newText)
+                        SetStatusText(newText);
+                    var newValue = Math.Clamp((int)(update.percent * 100), 0, 100);
+                    if (_loadProgressBar.Value != newValue)
+                        _loadProgressBar.Value = newValue;
                 });
 
                 await Task.Run(() => _parser.LoadHive(filePath, progress, token), token).ConfigureAwait(true);
@@ -1213,27 +1261,25 @@ namespace RegistryExpert
                 _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
 
                 _hiveTypeLabel.Text = $"● {_parser.CurrentHiveType}";
-                _statusLabel.Text = $"Loaded: {Path.GetFileName(filePath)}";
-                _statusLabel.ForeColor = ModernTheme.Success;
+                SetStatusText($"Loaded: {Path.GetFileName(filePath)}", ModernTheme.Success);
                 this.Text = $"Registry Expert - {Path.GetFileName(filePath)}";
             }
             catch (OperationCanceledException)
             {
                 _parser?.Dispose();
                 _parser = null;
-                _statusLabel.Text = "Loading cancelled";
-                _statusLabel.ForeColor = ModernTheme.Warning;
+                SetStatusText("Loading cancelled", ModernTheme.Warning);
             }
             catch (Exception ex)
             {
                 ShowError($"Error loading hive: {ex.Message}");
-                _statusLabel.Text = "Failed to load hive";
-                _statusLabel.ForeColor = ModernTheme.Error;
+                SetStatusText("Failed to load hive", ModernTheme.Error);
             }
             finally
             {
-                _loadProgressBar.Visible = false;
-                _cancelLoadButton.Visible = false;
+                _progressWrapper.Visible = false;
+                _cancelWrapper.Visible = false;
+                _hiveTypeLabel.Visible = true;
             }
         }
 
@@ -5814,7 +5860,8 @@ namespace RegistryExpert
 
             // Apply to status panel
             _statusPanel.BackColor = ModernTheme.Surface;
-            _statusLabel.ForeColor = ModernTheme.TextSecondary;
+            _statusForeColor = ModernTheme.TextSecondary;
+            _statusPanel.Invalidate();
             _hiveTypeLabel.BackColor = ModernTheme.Surface;
 
             // Apply to splitters
@@ -6375,8 +6422,7 @@ namespace RegistryExpert
         }
 
         private const int WM_CLOSE = 0x0010;
-        private const int WM_QUERYENDSESSION = 0x0011;
-        private const int WM_ENDSESSION = 0x0016;
+
         
         protected override void WndProc(ref Message m)
         {
@@ -6397,186 +6443,8 @@ namespace RegistryExpert
             base.WndProc(ref m);
         }
 
-        private void PopulateFlowPanel(FlowLayoutPanel flow, List<AnalysisSection> sections)
-        {
-            flow.SuspendLayout();
-            flow.Controls.Clear();
 
-            // Calculate optimal column width based on available space
-            int columnWidth = DpiHelper.Scale(350);
-            int columnHeight = DpiHelper.Scale(280);
 
-            foreach (var section in sections)
-            {
-                // Create a panel for each section
-                var sectionPanel = new Panel
-                {
-                    Width = columnWidth,
-                    Height = columnHeight,
-                    Margin = new Padding(5),
-                    BackColor = ModernTheme.Surface,
-                    Padding = new Padding(1)
-                };
-
-                // Section header
-                var header = new Panel
-                {
-                    Dock = DockStyle.Top,
-                    Height = DpiHelper.Scale(35),
-                    BackColor = ModernTheme.TreeViewBack,
-                    Padding = new Padding(10, 0, 10, 0)
-                };
-
-                var headerLabel = new Label
-                {
-                    Text = section.Title,
-                    Font = new Font("Segoe UI Semibold", 10F),
-                    ForeColor = ModernTheme.Accent,
-                    Dock = DockStyle.Fill,
-                    TextAlign = ContentAlignment.MiddleLeft
-                };
-                header.Controls.Add(headerLabel);
-
-                // Content ListView for this section
-                var listView = new ListView
-                {
-                    Dock = DockStyle.Fill,
-                    View = View.Details,
-                    FullRowSelect = true,
-                    GridLines = false,
-                    HeaderStyle = ColumnHeaderStyle.Nonclickable,
-                    BackColor = ModernTheme.Surface,
-                    ForeColor = ModernTheme.TextPrimary,
-                    Font = ModernTheme.RegularFont,
-                    BorderStyle = BorderStyle.None,
-                    OwnerDraw = true
-                };
-
-                // Determine if this section has values or just names
-                bool hasValues = section.Items.Any(i => !string.IsNullOrEmpty(i.Value) || i.IsSubSection);
-
-                if (hasValues)
-                {
-                    listView.Columns.Add("Name", 140);
-                    listView.Columns.Add("Value", 190);
-                }
-                else
-                {
-                    listView.Columns.Add("Name", columnWidth - 25);
-                }
-
-                // Custom draw for alternating rows and better styling
-                listView.DrawColumnHeader += (s, e) =>
-                {
-                    using var bgBrush = new SolidBrush(ModernTheme.TreeViewBack);
-                    e.Graphics.FillRectangle(bgBrush, e.Bounds);
-                    using var brush = new SolidBrush(ModernTheme.TextSecondary);
-                    e.Graphics.DrawString(e.Header?.Text ?? "", ModernTheme.SmallFont, brush,
-                        new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width, e.Bounds.Height),
-                        new StringFormat { LineAlignment = StringAlignment.Center });
-                };
-
-                listView.DrawItem += (s, e) => { };
-
-                listView.DrawSubItem += (s, e) =>
-                {
-                    if (e.Item == null) return;
-                    Color backColor = e.ItemIndex % 2 == 0 ? ModernTheme.Surface : ModernTheme.ListViewAltRow;
-                    if (e.Item.Selected)
-                        backColor = ModernTheme.Selection;
-
-                    using var brush = new SolidBrush(backColor);
-                    e.Graphics.FillRectangle(brush, e.Bounds);
-
-                    var textColor = e.ColumnIndex == 0 && e.Item.Tag != null && (bool)e.Item.Tag
-                        ? ModernTheme.TextSecondary
-                        : ModernTheme.TextPrimary;
-
-                    using var textBrush = new SolidBrush(textColor);
-                    var text = e.SubItem?.Text ?? "";
-                    var rect = new Rectangle(e.Bounds.X + 4, e.Bounds.Y, e.Bounds.Width - 4, e.Bounds.Height);
-                    e.Graphics.DrawString(text, listView.Font, textBrush, rect,
-                        new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter });
-                };
-
-                // Populate items
-                foreach (var item in section.Items)
-                {
-                    if (item.IsSubSection && item.SubItems != null)
-                    {
-                        // Add subsection header
-                        var headerItem = new ListViewItem(item.Name);
-                        headerItem.Tag = true; // Mark as subsection header
-                        headerItem.Font = new Font("Segoe UI Semibold", 9F);
-                        if (hasValues)
-                            headerItem.SubItems.Add("");
-                        listView.Items.Add(headerItem);
-
-                        // Add subitems
-                        foreach (var subItem in item.SubItems)
-                        {
-                            var subListItem = new ListViewItem("  " + subItem.Name);
-                            subListItem.Tag = false;
-                            if (hasValues)
-                                subListItem.SubItems.Add(subItem.Value);
-                            listView.Items.Add(subListItem);
-                        }
-                    }
-                    else
-                    {
-                        var listItem = new ListViewItem(item.Name);
-                        listItem.Tag = false;
-                        if (hasValues)
-                            listItem.SubItems.Add(item.Value);
-                        listView.Items.Add(listItem);
-                    }
-                }
-
-                sectionPanel.Controls.Add(listView);
-                sectionPanel.Controls.Add(header);
-                flow.Controls.Add(sectionPanel);
-            }
-
-            flow.ResumeLayout();
-        }
-
-        private void ExportSectionsToText(List<AnalysisSection> sections, StringBuilder sb)
-        {
-            foreach (var section in sections)
-            {
-                ExportSingleSectionToText(section, sb);
-            }
-        }
-
-        private void ExportSingleSectionToText(AnalysisSection section, StringBuilder sb)
-        {
-            sb.AppendLine("═══════════════════════════════════════════════════════════════");
-            sb.AppendLine(section.Title);
-            sb.AppendLine("═══════════════════════════════════════════════════════════════");
-
-            foreach (var item in section.Items)
-            {
-                if (item.IsSubSection && item.SubItems != null)
-                {
-                    sb.AppendLine($"\n{item.Name}");
-                    foreach (var subItem in item.SubItems)
-                    {
-                        if (string.IsNullOrEmpty(subItem.Value))
-                            sb.AppendLine($"  {subItem.Name}");
-                        else
-                            sb.AppendLine($"  {subItem.Name}: {subItem.Value}");
-                    }
-                }
-                else
-                {
-                    if (string.IsNullOrEmpty(item.Value))
-                        sb.AppendLine($"  {item.Name}");
-                    else
-                        sb.AppendLine($"  {item.Name}: {item.Value}");
-                }
-            }
-            sb.AppendLine();
-        }
 
 
 

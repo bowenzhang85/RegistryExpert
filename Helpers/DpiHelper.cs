@@ -52,11 +52,6 @@ namespace RegistryExpert
         public static int Scale(int value) => (int)Math.Round(value * ScaleFactor);
 
         /// <summary>
-        /// Scales a float value by the current DPI factor
-        /// </summary>
-        public static float Scale(float value) => value * ScaleFactor;
-
-        /// <summary>
         /// Creates a DPI-scaled Size from the given width and height (at 96 DPI / 100%)
         /// </summary>
         public static Size ScaleSize(int width, int height) => new Size(Scale(width), Scale(height));

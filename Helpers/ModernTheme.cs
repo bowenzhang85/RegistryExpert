@@ -56,9 +56,6 @@ namespace RegistryExpert
             ? Color.FromArgb(58, 58, 65)      // Subtle borders
             : Color.FromArgb(225, 225, 230);
         
-        public static Color BorderLight => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(75, 75, 82)
-            : Color.FromArgb(200, 200, 208);
         
         public static Color TextPrimary => _currentTheme == ThemeType.Dark 
             ? Color.FromArgb(230, 230, 235)   // Softer white
@@ -565,6 +562,51 @@ namespace RegistryExpert
             g.FillRectangle(innerBrush, 8, 5, 2, 6);
             
             return bmp;
+        }
+
+        /// <summary>
+        /// Creates an ImageList containing registry value type icons (reg_bin, reg_num, reg_str).
+        /// Shared by MainForm and CompareForm.
+        /// </summary>
+        public static ImageList CreateValueImageList()
+        {
+            var iconSize = DpiHelper.Scale(16);
+            var imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(iconSize, iconSize)
+            };
+
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
+
+            foreach (var name in iconNames)
+            {
+                var resourceName = $"RegistryExpert.icons.{name}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    using var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    imageList.Images.Add(name, scaled);
+                }
+            }
+
+            return imageList;
+        }
+
+        /// <summary>
+        /// Returns the image key for a registry value type string.
+        /// Shared by MainForm and CompareForm.
+        /// </summary>
+        public static string GetValueImageKey(string? valueType)
+        {
+            return (valueType?.ToUpperInvariant() ?? "") switch
+            {
+                "REGBINARY" => "reg_bin",
+                "REGDWORD" or "REGQWORD" => "reg_num",
+                _ => "reg_str"
+            };
         }
     }
 
