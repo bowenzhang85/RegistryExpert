@@ -142,7 +142,7 @@ namespace RegistryExpert
         }
 
         /// <summary>
-        /// Search for keys matching a pattern
+        /// Search for keys matching a pattern (legacy key-level results)
         /// </summary>
         public List<RegistryKey> SearchKeys(string pattern, bool caseSensitive = false)
         {
@@ -173,7 +173,7 @@ namespace RegistryExpert
                 
                 if (key.KeyName.Contains(pattern, comparison))
                 {
-                    if (addedKeys.Add(key))  // O(1) check and add
+                    if (addedKeys.Add(key))
                         results.Add(key);
                 }
 
@@ -207,6 +207,120 @@ namespace RegistryExpert
             {
                 // Silently skip keys that fail to enumerate - continue searching remaining keys
             }
+        }
+
+        /// <summary>
+        /// Search for all matches at the value level. Each matching value gets its own result entry.
+        /// Key name matches also produce a separate entry with MatchedValue = null.
+        /// </summary>
+        public List<SearchMatch> SearchAll(string pattern, bool caseSensitive = false, bool wholeWord = false)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(OfflineRegistryParser));
+
+            var results = new List<SearchMatch>();
+            var root = _hive?.Root;
+
+            if (root == null) return results;
+
+            SearchAllRecursive(root, pattern, caseSensitive, wholeWord, results, 0);
+            return results;
+        }
+
+        private void SearchAllRecursive(RegistryKey key, string pattern, bool caseSensitive, bool wholeWord, List<SearchMatch> results, int depth)
+        {
+            if (depth > MaxSearchDepth) return;
+
+            try
+            {
+                var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+                // Check key name
+                bool keyNameMatch = wholeWord
+                    ? IsWholeWordMatch(key.KeyName, pattern)
+                    : key.KeyName.Contains(pattern, comparison);
+
+                if (keyNameMatch)
+                {
+                    results.Add(new SearchMatch
+                    {
+                        Key = key,
+                        MatchedValue = null,
+                        MatchKind = "Key"
+                    });
+                }
+
+                // Check each value — emit a separate result for every matching value
+                foreach (var value in key.Values)
+                {
+                    bool nameMatch = wholeWord
+                        ? IsWholeWordMatch(value.ValueName, pattern)
+                        : value.ValueName.Contains(pattern, comparison);
+
+                    if (nameMatch)
+                    {
+                        results.Add(new SearchMatch
+                        {
+                            Key = key,
+                            MatchedValue = value,
+                            MatchKind = "ValueName"
+                        });
+                        continue; // Don't double-count if data also matches
+                    }
+
+                    var valueData = value.ValueData?.ToString() ?? "";
+                    bool dataMatch = wholeWord
+                        ? IsWholeWordMatch(valueData, pattern)
+                        : valueData.Contains(pattern, comparison);
+
+                    if (dataMatch)
+                    {
+                        results.Add(new SearchMatch
+                        {
+                            Key = key,
+                            MatchedValue = value,
+                            MatchKind = "ValueData"
+                        });
+                    }
+                }
+
+                // Recurse into subkeys
+                if (key.SubKeys != null)
+                {
+                    foreach (var subKey in key.SubKeys)
+                    {
+                        SearchAllRecursive(subKey, pattern, caseSensitive, wholeWord, results, depth + 1);
+                    }
+                }
+            }
+            catch
+            {
+                // Silently skip keys that fail to enumerate - continue searching remaining keys
+            }
+        }
+
+        /// <summary>
+        /// Checks if searchTerm exists in text as a whole word (bounded by non-word characters or string boundaries).
+        /// Always case-insensitive.
+        /// </summary>
+        private static bool IsWholeWordMatch(string text, string searchTerm)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(searchTerm))
+                return false;
+
+            int index = 0;
+            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
+                int endPos = index + searchTerm.Length;
+                bool endBoundary = endPos >= text.Length || !char.IsLetterOrDigit(text[endPos]);
+
+                if (startBoundary && endBoundary)
+                    return true;
+
+                index += searchTerm.Length;
+            }
+            return false;
         }
 
         /// <summary>
@@ -268,6 +382,18 @@ namespace RegistryExpert
         {
             Dispose(false);
         }
+    }
+
+    /// <summary>
+    /// Represents a single search match at the value level.
+    /// For key name matches, MatchedValue is null.
+    /// </summary>
+    public class SearchMatch
+    {
+        public RegistryKey Key { get; set; } = null!;
+        public KeyValue? MatchedValue { get; set; }
+        /// <summary>"Key", "ValueName", or "ValueData"</summary>
+        public string MatchKind { get; set; } = "";
     }
 
     public class HiveStatistics
