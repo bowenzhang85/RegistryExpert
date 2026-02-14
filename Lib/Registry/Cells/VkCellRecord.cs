@@ -120,6 +120,7 @@ public class VkCellRecord : ICellTemplate, IRecordBase
     private readonly int _minorVersion;
 
     private readonly int _rawBytesLength;
+    private byte[]? _cachedRawBytes;
 
     private readonly IRegistry _registryHive;
 
@@ -903,9 +904,7 @@ public class VkCellRecord : ICellTemplate, IRecordBase
     {
         get
         {
-            var raw = _registryHive.ReadBytesFromHive(AbsoluteOffset, _rawBytesLength);
-
-            return raw;
+            return _cachedRawBytes ??= _registryHive.ReadBytesFromHive(AbsoluteOffset, _rawBytesLength);
         }
     }
 

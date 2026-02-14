@@ -24,13 +24,13 @@ namespace RegistryExpert
         private Label _previewPathLabel = null!;
         private RichTextBox _previewValueBox = null!;
         private List<SearchResult> _searchResults = new();
-        private List<RegistryKey> _allMatchingKeys = new();
+        private List<SearchMatch> _allMatches = new();
         private string _currentSearchTerm = "";
         private CancellationTokenSource? _searchCts;
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
         private const int PageSize = 1000;
-        private int _displayedKeyCount;
+        private int _displayedMatchCount;
 
         // Public properties to preserve search state across theme changes
         public string SearchTerm => _searchBox?.Text ?? "";
@@ -255,11 +255,13 @@ namespace RegistryExpert
 
             // Add columns with proper sizing
             _resultsGrid.Columns.Add("keyPath", "Key Path");
-            _resultsGrid.Columns.Add("matchType", "Type");
             _resultsGrid.Columns.Add("details", "Name");
-            _resultsGrid.Columns["keyPath"].FillWeight = 50;
-            _resultsGrid.Columns["matchType"].FillWeight = 15;
-            _resultsGrid.Columns["details"].FillWeight = 35;
+            _resultsGrid.Columns.Add("matchType", "Type");
+            _resultsGrid.Columns.Add("data", "Data");
+            _resultsGrid.Columns["keyPath"].FillWeight = 40;
+            _resultsGrid.Columns["details"].FillWeight = 15;
+            _resultsGrid.Columns["matchType"].FillWeight = 10;
+            _resultsGrid.Columns["data"].FillWeight = 35;
 
             _resultsGrid.SelectionChanged += ResultsGrid_SelectionChanged;
             _resultsGrid.CellDoubleClick += ResultsGrid_DoubleClick;
@@ -344,8 +346,8 @@ namespace RegistryExpert
 
             _resultsGrid.Rows.Clear();
             _searchResults.Clear();
-            _allMatchingKeys.Clear();
-            _displayedKeyCount = 0;
+            _allMatches.Clear();
+            _displayedMatchCount = 0;
             _loadMorePanel.Visible = false;
             _searchButton.Enabled = false;
             _searchButton.Visible = false;
@@ -357,18 +359,19 @@ namespace RegistryExpert
 
             try
             {
-                // Run search on background thread (always case-insensitive)
+                // Run search on background thread (always case-insensitive, whole-word filtering done in backend)
+                var wholeWord = _matchWholeWordCheckBox.Checked;
                 var results = await Task.Run(() => 
-                    _parser.SearchKeys(searchTerm, caseSensitive: false), token);
+                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord), token).ConfigureAwait(true);
                 
                 if (token.IsCancellationRequested) return;
 
-                // Store all matching keys for pagination
-                _allMatchingKeys = results;
-                _displayedKeyCount = 0;
+                // Store all matches for pagination
+                _allMatches = results;
+                _displayedMatchCount = 0;
 
                 // Display first page
-                await DisplayNextPageAsync(token);
+                await DisplayNextPageAsync(token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested)
                 {
@@ -400,70 +403,65 @@ namespace RegistryExpert
         }
 
         /// <summary>
-        /// Display the next page of results from _allMatchingKeys into the grid.
+        /// Display the next page of results from _allMatches into the grid.
+        /// Each SearchMatch is already a value-level result from the backend.
         /// </summary>
         private Task DisplayNextPageAsync(CancellationToken token)
         {
-            var comparison = StringComparison.OrdinalIgnoreCase;
-            var wholeWord = _matchWholeWordCheckBox.Checked;
             var searchTerm = _currentSearchTerm;
 
-            var keysToProcess = _allMatchingKeys
-                .Skip(_displayedKeyCount)
+            var matchesToProcess = _allMatches
+                .Skip(_displayedMatchCount)
                 .Take(PageSize)
                 .ToList();
 
             int count = 0;
 
-            foreach (var key in keysToProcess)
+            foreach (var match in matchesToProcess)
             {
                 if (token.IsCancellationRequested) break;
 
-                var searchResult = new SearchResult { KeyPath = key.KeyPath };
+                var searchResult = new SearchResult { KeyPath = match.Key.KeyPath };
 
-                bool keyNameMatch = wholeWord
-                    ? IsWholeWordMatch(key.KeyName, searchTerm)
-                    : key.KeyName.Contains(searchTerm, comparison);
-
-                if (keyNameMatch)
+                if (match.MatchKind == "Key")
                 {
+                    // Key name match
                     searchResult.MatchType = "Key";
-                    searchResult.Details = key.KeyName;
-                    searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
+                    searchResult.Details = match.Key.KeyName;
+                    searchResult.ValueData = "";
+                    searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                }
+                else if (match.MatchedValue != null)
+                {
+                    // Value match (name or data)
+                    var v = match.MatchedValue;
+                    searchResult.MatchType = v.ValueType;
+                    searchResult.ValueName = v.ValueName;
+                    searchResult.ValueData = CleanValueData(v.ValueData?.ToString() ?? "");
+                    searchResult.Details = string.IsNullOrEmpty(v.ValueName) ? "(Default)" : v.ValueName;
+                    searchResult.FullValue = $"Name: {searchResult.Details}\nType: {v.ValueType}\nData: {searchResult.ValueData}";
                 }
                 else
                 {
-                    var matchingValue = wholeWord
-                        ? key.Values.FirstOrDefault(v =>
-                            IsWholeWordMatch(v.ValueName, searchTerm) ||
-                            IsWholeWordMatch(v.ValueData?.ToString() ?? "", searchTerm))
-                        : key.Values.FirstOrDefault(v =>
-                            v.ValueName.Contains(searchTerm, comparison) ||
-                            (v.ValueData?.ToString() ?? "").Contains(searchTerm, comparison));
-
-                    if (matchingValue != null)
-                    {
-                        searchResult.MatchType = matchingValue.ValueType;
-                        searchResult.ValueName = matchingValue.ValueName;
-                        searchResult.ValueData = CleanValueData(matchingValue.ValueData?.ToString() ?? "");
-                        searchResult.Details = string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName;
-                        searchResult.FullValue = $"Name: {(string.IsNullOrEmpty(matchingValue.ValueName) ? "(Default)" : matchingValue.ValueName)}\nType: {matchingValue.ValueType}\nData: {searchResult.ValueData}";
-                    }
-                    else
-                    {
-                        if (wholeWord)
-                        {
-                            _displayedKeyCount++;
-                            continue;
-                        }
-                        searchResult.MatchType = "Data";
-                        searchResult.Details = "";
-                        searchResult.FullValue = $"Key: {GetDisplayPath(key.KeyPath)}";
-                    }
+                    // Fallback (should not normally happen)
+                    searchResult.MatchType = "Key";
+                    searchResult.Details = "";
+                    searchResult.ValueData = "";
+                    searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
                 }
 
                 _searchResults.Add(searchResult);
-                _resultsGrid.Rows.Add(GetDisplayPath(key.KeyPath), searchResult.MatchType, searchResult.Details);
+
+                // Truncate data for grid display (full data shown in preview panel)
+                var gridData = searchResult.ValueData.Length > 200
+                    ? searchResult.ValueData.Substring(0, 200) + "..."
+                    : searchResult.ValueData;
+
+                _resultsGrid.Rows.Add(
+                    GetDisplayPath(match.Key.KeyPath),
+                    searchResult.Details,
+                    searchResult.MatchType,
+                    gridData);
                 count++;
 
                 if (count % 100 == 0)
@@ -471,7 +469,7 @@ namespace RegistryExpert
                     _statusLabel.Text = $"Loading results... {_searchResults.Count} so far";
                 }
 
-                _displayedKeyCount++;
+                _displayedMatchCount++;
             }
 
             return Task.CompletedTask;
@@ -486,7 +484,7 @@ namespace RegistryExpert
             _statusLabel.Text = "Loading more results...";
 
             using var cts = new CancellationTokenSource();
-            await DisplayNextPageAsync(cts.Token);
+            await DisplayNextPageAsync(cts.Token).ConfigureAwait(true);
             UpdateStatusAndLoadMoreButton();
 
             _loadMoreButton.Enabled = true;
@@ -497,9 +495,9 @@ namespace RegistryExpert
         /// </summary>
         private void UpdateStatusAndLoadMoreButton()
         {
-            var totalKeys = _allMatchingKeys.Count;
+            var totalMatches = _allMatches.Count;
             var displayed = _searchResults.Count;
-            var hasMore = _displayedKeyCount < totalKeys;
+            var hasMore = _displayedMatchCount < totalMatches;
 
             if (displayed == 0)
             {
@@ -509,16 +507,16 @@ namespace RegistryExpert
             }
             else if (hasMore)
             {
-                var remaining = totalKeys - _displayedKeyCount;
+                var remaining = totalMatches - _displayedMatchCount;
                 var nextBatch = Math.Min(remaining, PageSize);
-                _statusLabel.Text = $"Showing {displayed} of {totalKeys} results";
+                _statusLabel.Text = $"Showing {displayed} of {totalMatches} results";
                 _statusLabel.ForeColor = ModernTheme.Success;
                 _loadMoreButton.Text = $"Load next {nextBatch}";
                 _loadMorePanel.Visible = true;
             }
             else
             {
-                _statusLabel.Text = totalKeys > PageSize
+                _statusLabel.Text = totalMatches > PageSize
                     ? $"Showing all {displayed} results"
                     : $"Found {displayed} results";
                 _statusLabel.ForeColor = ModernTheme.Success;
@@ -571,30 +569,6 @@ namespace RegistryExpert
             
             // Reset selection to start
             _previewValueBox.Select(0, 0);
-        }
-
-        /// <summary>
-        /// Checks if searchTerm exists in text as a whole word (bounded by non-word characters or string boundaries).
-        /// Always case-insensitive.
-        /// </summary>
-        private static bool IsWholeWordMatch(string text, string searchTerm)
-        {
-            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(searchTerm))
-                return false;
-
-            int index = 0;
-            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
-            {
-                bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
-                int endPos = index + searchTerm.Length;
-                bool endBoundary = endPos >= text.Length || !char.IsLetterOrDigit(text[endPos]);
-
-                if (startBoundary && endBoundary)
-                    return true;
-
-                index += searchTerm.Length;
-            }
-            return false;
         }
 
         // Pre-allocated array to avoid per-call allocations
@@ -808,24 +782,7 @@ namespace RegistryExpert
         /// <summary>
         /// Convert a KeyPath from ROOT\... to HIVENAME\... for display
         /// </summary>
-        private string GetDisplayPath(string keyPath)
-        {
-            if (string.IsNullOrEmpty(keyPath)) return keyPath;
-            
-            var hiveName = _parser.CurrentHiveType.ToString();
-            
-            // Replace ROOT\ with HIVENAME\ or just ROOT with HIVENAME if it's the root itself
-            if (keyPath.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveName + keyPath.Substring(4); // "ROOT" is 4 chars
-            }
-            else if (keyPath.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
-            {
-                return hiveName;
-            }
-            
-            return keyPath;
-        }
+        private string GetDisplayPath(string keyPath) => _parser.ConvertRootPath(keyPath);
 
         private class SearchResult
         {

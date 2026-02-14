@@ -39,7 +39,7 @@ namespace RegistryExpert
         /// <summary>
         /// Load a registry hive file
         /// </summary>
-        public bool LoadHive(string filePath)
+        public bool LoadHive(string filePath, IProgress<(string phase, double percent)>? progress = null, CancellationToken cancellationToken = default)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(OfflineRegistryParser));
@@ -53,7 +53,7 @@ namespace RegistryExpert
                 _filePath = filePath;
                 var newHive = new RegistryHive(filePath);
                 
-                if (!newHive.ParseHive())
+                if (!newHive.ParseHive(progress, cancellationToken))
                 {
                     // Dispose the new hive if parsing failed
                     (newHive as IDisposable)?.Dispose();
@@ -141,65 +141,89 @@ namespace RegistryExpert
             }
         }
 
+        private const int MaxSearchDepth = 100;
+
         /// <summary>
-        /// Search for keys matching a pattern
+        /// Search for all matches at the value level. Each matching value gets its own result entry.
+        /// Key name matches also produce a separate entry with MatchedValue = null.
         /// </summary>
-        public List<RegistryKey> SearchKeys(string pattern, bool caseSensitive = false)
+        public List<SearchMatch> SearchAll(string pattern, bool caseSensitive = false, bool wholeWord = false)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(OfflineRegistryParser));
-                
-            var results = new List<RegistryKey>();
+
+            var results = new List<SearchMatch>();
             var root = _hive?.Root;
-            
+
             if (root == null) return results;
 
-            // Use HashSet for O(1) duplicate checking
-            var addedKeys = new HashSet<RegistryKey>();
-            SearchKeysRecursive(root, pattern, caseSensitive, results, addedKeys, 0);
+            SearchAllRecursive(root, pattern, caseSensitive, wholeWord, results, 0);
             return results;
         }
 
-        private const int MaxSearchDepth = 100;
-        
-        private void SearchKeysRecursive(RegistryKey key, string pattern, bool caseSensitive, List<RegistryKey> results, HashSet<RegistryKey> addedKeys, int depth)
+        private void SearchAllRecursive(RegistryKey key, string pattern, bool caseSensitive, bool wholeWord, List<SearchMatch> results, int depth)
         {
-            // Prevent stack overflow from malformed or deeply nested hives
             if (depth > MaxSearchDepth) return;
-            
+
             try
             {
                 var comparison = caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
-                
-                if (key.KeyName.Contains(pattern, comparison))
+
+                // Check key name
+                bool keyNameMatch = wholeWord
+                    ? IsWholeWordMatch(key.KeyName, pattern)
+                    : key.KeyName.Contains(pattern, comparison);
+
+                if (keyNameMatch)
                 {
-                    if (addedKeys.Add(key))  // O(1) check and add
-                        results.Add(key);
+                    results.Add(new SearchMatch
+                    {
+                        Key = key,
+                        MatchedValue = null,
+                        MatchKind = "Key"
+                    });
                 }
 
+                // Check each value — emit a separate result for every matching value
                 foreach (var value in key.Values)
                 {
-                    if (value.ValueName.Contains(pattern, comparison))
+                    bool nameMatch = wholeWord
+                        ? IsWholeWordMatch(value.ValueName, pattern)
+                        : value.ValueName.Contains(pattern, comparison);
+
+                    if (nameMatch)
                     {
-                        if (addedKeys.Add(key))
-                            results.Add(key);
-                        break;
+                        results.Add(new SearchMatch
+                        {
+                            Key = key,
+                            MatchedValue = value,
+                            MatchKind = "ValueName"
+                        });
+                        continue; // Don't double-count if data also matches
                     }
-                    
+
                     var valueData = value.ValueData?.ToString() ?? "";
-                    if (valueData.Contains(pattern, comparison))
+                    bool dataMatch = wholeWord
+                        ? IsWholeWordMatch(valueData, pattern)
+                        : valueData.Contains(pattern, comparison);
+
+                    if (dataMatch)
                     {
-                        if (addedKeys.Add(key))
-                            results.Add(key);
-                        break;
+                        results.Add(new SearchMatch
+                        {
+                            Key = key,
+                            MatchedValue = value,
+                            MatchKind = "ValueData"
+                        });
                     }
                 }
 
+                // Recurse into subkeys
                 if (key.SubKeys != null)
                 {
                     foreach (var subKey in key.SubKeys)
                     {
-                        SearchKeysRecursive(subKey, pattern, caseSensitive, results, addedKeys, depth + 1);
+                        SearchAllRecursive(subKey, pattern, caseSensitive, wholeWord, results, depth + 1);
                     }
                 }
             }
@@ -207,6 +231,30 @@ namespace RegistryExpert
             {
                 // Silently skip keys that fail to enumerate - continue searching remaining keys
             }
+        }
+
+        /// <summary>
+        /// Checks if searchTerm exists in text as a whole word (bounded by non-word characters or string boundaries).
+        /// Always case-insensitive.
+        /// </summary>
+        private static bool IsWholeWordMatch(string text, string searchTerm)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(searchTerm))
+                return false;
+
+            int index = 0;
+            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            {
+                bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
+                int endPos = index + searchTerm.Length;
+                bool endBoundary = endPos >= text.Length || !char.IsLetterOrDigit(text[endPos]);
+
+                if (startBoundary && endBoundary)
+                    return true;
+
+                index += searchTerm.Length;
+            }
+            return false;
         }
 
         /// <summary>
@@ -242,6 +290,27 @@ namespace RegistryExpert
             }
         }
 
+        /// <summary>
+        /// Convert a KeyPath from ROOT\... to HIVENAME\... for display
+        /// </summary>
+        public string ConvertRootPath(string keyPath)
+        {
+            if (string.IsNullOrEmpty(keyPath)) return keyPath;
+            
+            var hiveName = _hiveType.ToString();
+            
+            if (keyPath.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
+            {
+                return hiveName + keyPath.Substring(4); // "ROOT" is 4 chars
+            }
+            else if (keyPath.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
+            {
+                return hiveName;
+            }
+            
+            return keyPath;
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -268,6 +337,18 @@ namespace RegistryExpert
         {
             Dispose(false);
         }
+    }
+
+    /// <summary>
+    /// Represents a single search match at the value level.
+    /// For key name matches, MatchedValue is null.
+    /// </summary>
+    public class SearchMatch
+    {
+        public RegistryKey Key { get; set; } = null!;
+        public KeyValue? MatchedValue { get; set; }
+        /// <summary>"Key", "ValueName", or "ValueData"</summary>
+        public string MatchKind { get; set; } = "";
     }
 
     public class HiveStatistics

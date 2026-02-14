@@ -41,11 +41,24 @@ public class TransactionLog
         if (!File.Exists(logFile)) throw new FileNotFoundException();
 
         var fileStream = new FileStream(logFile, FileMode.Open, FileAccess.Read, FileShare.Read);
-        var binaryReader = new BinaryReader(fileStream);
+        try
+        {
+            var binaryReader = new BinaryReader(fileStream);
+            try
+            {
+                binaryReader.BaseStream.Seek(0, SeekOrigin.Begin);
 
-        binaryReader.BaseStream.Seek(0, SeekOrigin.Begin);
-
-        FileBytes = binaryReader.ReadBytes((int) binaryReader.BaseStream.Length);
+                FileBytes = binaryReader.ReadBytes((int) binaryReader.BaseStream.Length);
+            }
+            finally
+            {
+                binaryReader.Close();
+            }
+        }
+        finally
+        {
+            fileStream.Close();
+        }
         
         var header = ReadBytesFromHive(0, 4096);
 
@@ -63,9 +76,6 @@ public class TransactionLog
 
             FileBytes = local;
         }
-
-        binaryReader.Close();
-        fileStream.Close();
 
         if (FileBytes.Length == 0) throw new Exception("0 byte log file. Nothing to do");
 
