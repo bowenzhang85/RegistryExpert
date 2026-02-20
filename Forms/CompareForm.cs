@@ -54,14 +54,11 @@ namespace RegistryExpert
 
         // Main layout
         private SplitContainer _mainSplit = null!;
-        private Panel _togglePanel = null!;
-        private CheckBox _diffToggle = null!;
 
         // State
         private volatile bool _isSyncing = false;
         private bool _comparisonDone = false;
         private bool _isDisposed = false;
-        private bool _showDifferencesOnly = true;
         private CancellationTokenSource? _cancellationTokenSource;
         private EventHandler? _themeChangedHandler;
 
@@ -228,32 +225,8 @@ namespace RegistryExpert
             _compareButton.Click += CompareButton_Click;
             _centerButtonPanel.Controls.Add(_compareButton);
 
-            // Create filter toggle panel (shown after comparison)
-            _togglePanel = new Panel
-            {
-                Dock = DockStyle.Top,
-                Height = DpiHelper.Scale(36),
-                BackColor = ModernTheme.Surface,
-                Visible = false
-            };
-
-            _diffToggle = new CheckBox
-            {
-                Text = "Show Differences Only",
-                Checked = true,
-                FlatStyle = FlatStyle.Standard,
-                ForeColor = ModernTheme.TextPrimary,
-                BackColor = ModernTheme.Surface,
-                AutoSize = true,
-                Font = new Font("Segoe UI", 9F),
-                Dock = DockStyle.Left
-            };
-            _diffToggle.CheckedChanged += DiffToggle_CheckedChanged;
-            _togglePanel.Controls.Add(_diffToggle);
-
             this.Controls.Add(_centerButtonPanel);
             this.Controls.Add(_mainSplit);
-            this.Controls.Add(_togglePanel);
 
             // Bring center button to front
             _centerButtonPanel.BringToFront();
@@ -762,12 +735,6 @@ namespace RegistryExpert
             _centerButtonPanel.Visible = _leftParser != null && _rightParser != null && !_comparisonDone;
         }
 
-        private void DiffToggle_CheckedChanged(object? sender, EventArgs e)
-        {
-            _showDifferencesOnly = _diffToggle.Checked;
-            RebuildFilteredTrees();
-        }
-
         private async void CompareButton_Click(object? sender, EventArgs e)
         {
             if (_leftParser == null || _rightParser == null)
@@ -862,13 +829,6 @@ namespace RegistryExpert
                 _leftTreeView.EndUpdate();
                 _rightTreeView.EndUpdate();
 
-                // Apply initial filter (toggle defaults to ON)
-                if (_showDifferencesOnly)
-                {
-                    if (leftRootNode != null) FilterNodeChildren(leftRootNode, _leftNodesByPath);
-                    if (rightRootNode != null) FilterNodeChildren(rightRootNode, _rightNodesByPath);
-                }
-
                 // Switch to comparison view
                 _comparisonDone = true;
                 _centerButtonPanel.Visible = false;
@@ -876,7 +836,6 @@ namespace RegistryExpert
                 _rightLandingPanel.Visible = false;
                 _leftComparePanel.Visible = true;
                 _rightComparePanel.Visible = true;
-                _togglePanel.Visible = true;
             }
             catch (OperationCanceledException)
             {
@@ -902,9 +861,6 @@ namespace RegistryExpert
             _rightComparePanel.Visible = false;
             _leftLandingPanel.Visible = true;
             _rightLandingPanel.Visible = true;
-            _togglePanel.Visible = false;
-            _showDifferencesOnly = true;
-            _diffToggle.Checked = true;
             
             _leftTreeView.Nodes.Clear();
             _rightTreeView.Nodes.Clear();
@@ -1211,7 +1167,7 @@ namespace RegistryExpert
                 }
             }
 
-            // Show values - color-coded by diff status (filter applied if differences-only mode is active)
+            // Only show values that are DIFFERENT
             foreach (var value in key.Values.OrderBy(v => v.ValueName ?? "(Default)", StringComparer.OrdinalIgnoreCase))
             {
                 var name = value.ValueName ?? "(Default)";
@@ -1237,16 +1193,15 @@ namespace RegistryExpert
                     }
                 }
                 
-                // In differences-only mode, skip identical values
-                if (_showDifferencesOnly && !isUnique && !isValueDiff)
-                    continue;
-
-                var rowIndex = grid.Rows.Add(name, type, data);
-                if (isUnique)
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffAdded;    // GREEN - unique to this hive
-                else if (isValueDiff)
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffRemoved;  // RED - value differs
-                // else: identical value — keep default TextPrimary color
+                // Only add the row if it's different (either unique or value differs)
+                if (isUnique || isValueDiff)
+                {
+                    var rowIndex = grid.Rows.Add(name, type, data);
+                    // GREEN for unique values, RED for value differences
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = isUnique 
+                        ? ModernTheme.DiffAdded    // GREEN - unique to this hive
+                        : ModernTheme.DiffRemoved; // RED - value differs
+                }
             }
         }
 
@@ -1357,10 +1312,6 @@ namespace RegistryExpert
             _leftTreeView.BackColor = ModernTheme.Background;
             _rightTreeView.BackColor = ModernTheme.Background;
 
-            _togglePanel.BackColor = ModernTheme.Surface;
-            _diffToggle.ForeColor = ModernTheme.TextPrimary;
-            _diffToggle.BackColor = ModernTheme.Surface;
-
             ApplyThemeToGrid(_leftValuesGrid);
             ApplyThemeToGrid(_rightValuesGrid);
         }
@@ -1376,142 +1327,6 @@ namespace RegistryExpert
             grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;
             grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
             grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
-        }
-
-        private void RebuildFilteredTrees()
-        {
-            if (!_comparisonDone) return;
-
-            // 1. Capture expanded paths before rebuild
-            var leftExpanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var rightExpanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            CollectExpandedPaths(_leftTreeView.Nodes, leftExpanded);
-            CollectExpandedPaths(_rightTreeView.Nodes, rightExpanded);
-
-            // 2. Capture selected paths before rebuild
-            string? leftSelectedPath = (_leftTreeView.SelectedNode?.Tag as NodeTag)?.Path;
-            string? rightSelectedPath = (_rightTreeView.SelectedNode?.Tag as NodeTag)?.Path;
-
-            // 3. Clear lookup dictionaries (CRITICAL — stale entries break FindNodeByPath)
-            _leftNodesByPath.Clear();
-            _rightNodesByPath.Clear();
-
-            // 4. Rebuild trees from scratch
-            _leftTreeView.BeginUpdate();
-            _rightTreeView.BeginUpdate();
-            _leftTreeView.Nodes.Clear();
-            _rightTreeView.Nodes.Clear();
-
-            var leftRoot = _leftParser?.GetRootKey();
-            var rightRoot = _rightParser?.GetRootKey();
-
-            TreeNode? leftRootNode = leftRoot != null ? CreateTreeNode(leftRoot, "", isLeftTree: true) : null;
-            TreeNode? rightRootNode = rightRoot != null ? CreateTreeNode(rightRoot, "", isLeftTree: false) : null;
-
-            // 5. Apply filter if differences-only mode
-            if (_showDifferencesOnly)
-            {
-                if (leftRootNode != null) FilterNodeChildren(leftRootNode, _leftNodesByPath);
-                if (rightRootNode != null) FilterNodeChildren(rightRootNode, _rightNodesByPath);
-            }
-
-            if (leftRootNode != null)
-            {
-                _leftTreeView.Nodes.Add(leftRootNode);
-                leftRootNode.Expand();
-            }
-            if (rightRootNode != null)
-            {
-                _rightTreeView.Nodes.Add(rightRootNode);
-                rightRootNode.Expand();
-            }
-
-            _leftTreeView.EndUpdate();
-            _rightTreeView.EndUpdate();
-
-            // 6. Restore expanded state
-            RestoreExpandedPaths(_leftTreeView.Nodes, leftExpanded);
-            RestoreExpandedPaths(_rightTreeView.Nodes, rightExpanded);
-
-            // 7. Restore selection (fall back to root if path no longer exists after filtering)
-            string? restorePath = leftSelectedPath ?? rightSelectedPath;
-            TreeNode? leftNode = restorePath != null ? FindNodeByPath(_leftTreeView, restorePath) : null;
-            if (leftNode == null && _leftTreeView.Nodes.Count > 0) leftNode = _leftTreeView.Nodes[0];
-            TreeNode? rightNode = restorePath != null ? FindNodeByPath(_rightTreeView, restorePath) : null;
-            if (rightNode == null && _rightTreeView.Nodes.Count > 0) rightNode = _rightTreeView.Nodes[0];
-
-            _isSyncing = true;
-            try
-            {
-                if (leftNode != null) { _leftTreeView.SelectedNode = leftNode; leftNode.EnsureVisible(); }
-                if (rightNode != null) { _rightTreeView.SelectedNode = rightNode; rightNode.EnsureVisible(); }
-            }
-            finally
-            {
-                _isSyncing = false;
-            }
-
-            // 8. Refresh grids for restored selection
-            if (leftNode?.Tag is NodeTag lt)
-            {
-                _leftPathBox.Text = lt.Path;
-                ShowValues(_leftValuesGrid, lt.Key, lt.Path, isLeftGrid: true);
-            }
-            if (rightNode?.Tag is NodeTag rt)
-            {
-                _rightPathBox.Text = rt.Path;
-                ShowValues(_rightValuesGrid, rt.Key, rt.Path, isLeftGrid: false);
-            }
-        }
-
-        private void CollectExpandedPaths(TreeNodeCollection nodes, HashSet<string> paths)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                if (node.IsExpanded)
-                {
-                    if (node.Tag is NodeTag tag) paths.Add(tag.Path);
-                    CollectExpandedPaths(node.Nodes, paths);
-                }
-            }
-        }
-
-        private void FilterNodeChildren(TreeNode node, Dictionary<string, TreeNode> nodeLookup)
-        {
-            // Prune children where HasDifference == false (safe: means no diff in this node OR any descendant)
-            for (int i = node.Nodes.Count - 1; i >= 0; i--)
-            {
-                var child = node.Nodes[i];
-                var childTag = child.Tag as NodeTag;
-                if (childTag == null || !childTag.HasDifference)
-                {
-                    if (childTag != null) RemoveFromLookup(child, nodeLookup);
-                    node.Nodes.RemoveAt(i);
-                }
-                else
-                {
-                    FilterNodeChildren(child, nodeLookup);
-                }
-            }
-        }
-
-        private void RemoveFromLookup(TreeNode node, Dictionary<string, TreeNode> nodeLookup)
-        {
-            if (node.Tag is NodeTag tag) nodeLookup.Remove(tag.Path);
-            foreach (TreeNode child in node.Nodes)
-                RemoveFromLookup(child, nodeLookup);
-        }
-
-        private void RestoreExpandedPaths(TreeNodeCollection nodes, HashSet<string> expandedPaths)
-        {
-            foreach (TreeNode node in nodes)
-            {
-                if (node.Tag is NodeTag tag && expandedPaths.Contains(tag.Path))
-                {
-                    node.Expand();
-                    RestoreExpandedPaths(node.Nodes, expandedPaths);
-                }
-            }
         }
 
         protected override void Dispose(bool disposing)
