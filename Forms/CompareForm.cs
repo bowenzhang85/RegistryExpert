@@ -797,9 +797,9 @@ namespace RegistryExpert
                     var rightRoot = rightParser.GetRootKey();
                     
                     if (leftRoot != null && !token.IsCancellationRequested)
-                        leftRootNode = CreateTreeNode(leftRoot, "", "", isLeftTree: true);
+                        leftRootNode = CreateTreeNode(leftRoot, "", isLeftTree: true);
                     if (rightRoot != null && !token.IsCancellationRequested)
-                        rightRootNode = CreateTreeNode(rightRoot, "", "", isLeftTree: false);
+                        rightRootNode = CreateTreeNode(rightRoot, "", isLeftTree: false);
                 }, token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested) return;
@@ -888,7 +888,7 @@ namespace RegistryExpert
         
         private void BuildKeyIndexRecursive(RegistryKey key, string parentPath, Dictionary<string, RegistryKey> result)
         {
-            var path = string.IsNullOrEmpty(parentPath) ? "ROOT" : $"{parentPath}\\{key.KeyName}";
+            var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
             result[path] = key;
 
             if (key.SubKeys != null)
@@ -900,10 +900,9 @@ namespace RegistryExpert
             }
         }
 
-        private TreeNode? CreateTreeNode(RegistryKey key, string parentPath, string originalParentPath, bool isLeftTree)
+        private TreeNode? CreateTreeNode(RegistryKey key, string parentPath, bool isLeftTree)
         {
-            var path = string.IsNullOrEmpty(parentPath) ? "ROOT" : $"{parentPath}\\{key.KeyName}";
-            var originalPath = string.IsNullOrEmpty(originalParentPath) ? key.KeyName : $"{originalParentPath}\\{key.KeyName}";
+            var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
             
             var otherIndex = isLeftTree ? _rightKeysByPath : _leftKeysByPath;
             
@@ -917,8 +916,7 @@ namespace RegistryExpert
 
             var nodeTag = new NodeTag 
             { 
-                Path = path,
-                OriginalPath = originalPath,
+                Path = path, 
                 Key = key, 
                 HasDifference = false,
                 IsUniqueToThisHive = false,
@@ -937,7 +935,7 @@ namespace RegistryExpert
             {
                 foreach (var subKey in key.SubKeys.OrderBy(k => k.KeyName, StringComparer.OrdinalIgnoreCase))
                 {
-                    var childNode = CreateTreeNode(subKey, path, originalPath, isLeftTree);
+                    var childNode = CreateTreeNode(subKey, path, isLeftTree);
                     if (childNode != null)
                     {
                         node.Nodes.Add(childNode);
@@ -1079,7 +1077,7 @@ namespace RegistryExpert
                 var tag = e.Node.Tag as NodeTag;
                 if (tag != null)
                 {
-                    _leftPathBox.Text = tag.OriginalPath;
+                    _leftPathBox.Text = tag.Path;
                     ShowValues(_leftValuesGrid, tag.Key, tag.Path, isLeftGrid: true);
                     
                     var rightNode = FindNodeByPath(_rightTreeView, tag.Path);
@@ -1091,13 +1089,13 @@ namespace RegistryExpert
                         var rightTag = rightNode.Tag as NodeTag;
                         if (rightTag != null)
                         {
-                            _rightPathBox.Text = rightTag.OriginalPath;
+                            _rightPathBox.Text = rightTag.Path;
                             ShowValues(_rightValuesGrid, rightTag.Key, rightTag.Path, isLeftGrid: false);
                         }
                     }
                     else
                     {
-                        _rightPathBox.Text = tag.OriginalPath + " (not found)";
+                        _rightPathBox.Text = tag.Path + " (not found)";
                         _rightValuesGrid.Rows.Clear();
                     }
                 }
@@ -1118,7 +1116,7 @@ namespace RegistryExpert
                 var tag = e.Node.Tag as NodeTag;
                 if (tag != null)
                 {
-                    _rightPathBox.Text = tag.OriginalPath;
+                    _rightPathBox.Text = tag.Path;
                     ShowValues(_rightValuesGrid, tag.Key, tag.Path, isLeftGrid: false);
                     
                     var leftNode = FindNodeByPath(_leftTreeView, tag.Path);
@@ -1130,13 +1128,13 @@ namespace RegistryExpert
                         var leftTag = leftNode.Tag as NodeTag;
                         if (leftTag != null)
                         {
-                            _leftPathBox.Text = leftTag.OriginalPath;
+                            _leftPathBox.Text = leftTag.Path;
                             ShowValues(_leftValuesGrid, leftTag.Key, leftTag.Path, isLeftGrid: true);
                         }
                     }
                     else
                     {
-                        _leftPathBox.Text = tag.OriginalPath + " (not found)";
+                        _leftPathBox.Text = tag.Path + " (not found)";
                         _leftValuesGrid.Rows.Clear();
                     }
                 }
@@ -1169,7 +1167,7 @@ namespace RegistryExpert
                 }
             }
 
-            // Show all values, highlight differences
+            // Only show values that are DIFFERENT
             foreach (var value in key.Values.OrderBy(v => v.ValueName ?? "(Default)", StringComparer.OrdinalIgnoreCase))
             {
                 var name = value.ValueName ?? "(Default)";
@@ -1195,17 +1193,15 @@ namespace RegistryExpert
                     }
                 }
                 
-                // Always add the row — color only if different
-                var rowIndex = grid.Rows.Add(name, type, data);
-                if (isUnique)
+                // Only add the row if it's different (either unique or value differs)
+                if (isUnique || isValueDiff)
                 {
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffAdded;    // GREEN - unique to this hive
+                    var rowIndex = grid.Rows.Add(name, type, data);
+                    // GREEN for unique values, RED for value differences
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = isUnique 
+                        ? ModernTheme.DiffAdded    // GREEN - unique to this hive
+                        : ModernTheme.DiffRemoved; // RED - value differs
                 }
-                else if (isValueDiff)
-                {
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffRemoved;  // RED - value differs
-                }
-                // else: default color — value is identical in both hives
             }
         }
 
@@ -1364,7 +1360,6 @@ namespace RegistryExpert
         private class NodeTag
         {
             public string Path { get; set; } = "";
-            public string OriginalPath { get; set; } = "";
             public RegistryKey Key { get; set; } = null!;
             public bool HasDifference { get; set; } = false;
             public bool IsUniqueToThisHive { get; set; } = false;  // GREEN - only exists in this hive
