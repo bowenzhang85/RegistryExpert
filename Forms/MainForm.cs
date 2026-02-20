@@ -4788,7 +4788,37 @@ namespace RegistryExpert
                     {
                         var rule = sortedRules[rowIndex];
                         registryPathLabel.Text = $"Registry Path: {rule.RegistryPath}";
-                        registryValueBox.Text = $"Value: {rule.RegistryValueName}";
+                        
+                        // Show detailed parsed fields and raw data
+                        var details = new System.Text.StringBuilder();
+                        details.AppendLine($"Rule Name: {rule.Name}");
+                        if (!string.IsNullOrEmpty(rule.Description))
+                            details.AppendLine($"Description: {rule.Description}");
+                        details.AppendLine($"Action: {rule.Action}");
+                        details.AppendLine($"Direction: {rule.Direction}");
+                        details.AppendLine($"Active: {(rule.IsActive ? "Yes" : "No")}");
+                        if (!string.IsNullOrEmpty(rule.Protocol))
+                            details.AppendLine($"Protocol: {rule.Protocol}");
+                        if (!string.IsNullOrEmpty(rule.Profiles))
+                            details.AppendLine($"Profiles: {rule.Profiles}");
+                        if (!string.IsNullOrEmpty(rule.LocalPorts))
+                            details.AppendLine($"Local Ports: {rule.LocalPorts}");
+                        if (!string.IsNullOrEmpty(rule.RemotePorts))
+                            details.AppendLine($"Remote Ports: {rule.RemotePorts}");
+                        if (!string.IsNullOrEmpty(rule.LocalAddresses))
+                            details.AppendLine($"Local Addresses: {rule.LocalAddresses}");
+                        if (!string.IsNullOrEmpty(rule.RemoteAddresses))
+                            details.AppendLine($"Remote Addresses: {rule.RemoteAddresses}");
+                        if (!string.IsNullOrEmpty(rule.Application))
+                            details.AppendLine($"Application: {rule.Application}");
+                        if (!string.IsNullOrEmpty(rule.Service))
+                            details.AppendLine($"Service: {rule.Service}");
+                        if (!string.IsNullOrEmpty(rule.EmbedContext))
+                            details.AppendLine($"Context: {rule.EmbedContext}");
+                        details.AppendLine();
+                        details.AppendLine($"Raw Data: {rule.RawData}");
+                        
+                        registryValueBox.Text = details.ToString();
                     }
                 }
             };
@@ -6120,7 +6150,7 @@ namespace RegistryExpert
             };
             
             var laterButton = ModernTheme.CreateSecondaryButton("Later");
-            laterButton.Size = DpiHelper.ScaleSize(90, 35);
+            laterButton.Size = DpiHelper.ScaleSize(110, 35);
             laterButton.Click += (s, ev) => form.Close();
             
             var downloadButton = ModernTheme.CreateButton("Download");
