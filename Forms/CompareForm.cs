@@ -37,6 +37,7 @@ namespace RegistryExpert
         private Label _leftFileNameLabel = null!;
         private Label _rightFileNameLabel = null!;
         private Button _compareButton = null!;
+        private CheckBox _diffOnlyCheckbox = null!;
 
         // Comparison panels (shown after comparison)
         private Panel _leftComparePanel = null!;
@@ -59,6 +60,7 @@ namespace RegistryExpert
         private volatile bool _isSyncing = false;
         private bool _comparisonDone = false;
         private bool _isDisposed = false;
+        private bool _showDifferencesOnly = false;
         private CancellationTokenSource? _cancellationTokenSource;
         private EventHandler? _themeChangedHandler;
 
@@ -149,7 +151,7 @@ namespace RegistryExpert
             base.OnDpiChanged(e);
             
             // Update controls that need manual DPI adjustment
-            _centerButtonPanel.Size = DpiHelper.ScaleSize(180, 60);
+            _centerButtonPanel.Size = DpiHelper.ScaleSize(180, 95);
             _compareButton.Size = DpiHelper.ScaleSize(160, 50);
             _progressOverlay.Size = DpiHelper.ScaleSize(300, 150);
         }
@@ -204,7 +206,7 @@ namespace RegistryExpert
             // Create center Compare button panel (overlays the split)
             _centerButtonPanel = new Panel
             {
-                Size = DpiHelper.ScaleSize(180, 60),
+                Size = DpiHelper.ScaleSize(180, 95),
                 BackColor = Color.Transparent,
                 Visible = false
             };
@@ -224,6 +226,19 @@ namespace RegistryExpert
             _compareButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(40, 180, 100);
             _compareButton.Click += CompareButton_Click;
             _centerButtonPanel.Controls.Add(_compareButton);
+
+            _diffOnlyCheckbox = new CheckBox
+            {
+                Text = "Show differences only",
+                Checked = false,
+                ForeColor = ModernTheme.TextPrimary,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI", 9F),
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(18, 60),
+                Cursor = Cursors.Hand
+            };
+            _centerButtonPanel.Controls.Add(_diffOnlyCheckbox);
 
             this.Controls.Add(_centerButtonPanel);
             this.Controls.Add(_mainSplit);
@@ -740,6 +755,8 @@ namespace RegistryExpert
             if (_leftParser == null || _rightParser == null)
                 return;
 
+            _showDifferencesOnly = _diffOnlyCheckbox.Checked;
+
             // Properly dispose old CancellationTokenSource before creating new one
             _cancellationTokenSource?.Cancel();
             _cancellationTokenSource?.Dispose();
@@ -804,11 +821,14 @@ namespace RegistryExpert
 
                 if (token.IsCancellationRequested) return;
 
-                // Update progress
-                _progressLabel.Text = "Building tree view...";
-                _progressLabel.Refresh();  // Force immediate repaint
+                // Switch progress to static "Rendering..." state before UI-blocking work
+                // (marquee freezes during UI-thread ops; a full bar looks intentional)
+                _progressLabel.Text = "Rendering...";
+                _progressBar.Style = ProgressBarStyle.Continuous;
+                _progressBar.Value = 100;
+                _progressOverlay.Refresh();
 
-                // Add nodes to tree views on UI thread
+                // Add nodes to tree views on UI thread (overlay hides intermediate state)
                 _leftTreeView.BeginUpdate();
                 _rightTreeView.BeginUpdate();
                 
@@ -829,7 +849,7 @@ namespace RegistryExpert
                 _leftTreeView.EndUpdate();
                 _rightTreeView.EndUpdate();
 
-                // Switch to comparison view
+                // Switch to comparison view (still behind overlay)
                 _comparisonDone = true;
                 _centerButtonPanel.Visible = false;
                 _leftLandingPanel.Visible = false;
@@ -849,6 +869,8 @@ namespace RegistryExpert
             finally
             {
                 _progressOverlay.Visible = false;
+                _progressBar.Style = ProgressBarStyle.Marquee;
+                _progressBar.Value = 0;
                 _compareButton.Enabled = true;
                 _compareButton.Text = "Compare Hives";
             }
@@ -857,6 +879,8 @@ namespace RegistryExpert
         private void ResetComparison()
         {
             _comparisonDone = false;
+            _showDifferencesOnly = false;
+            _diffOnlyCheckbox.Checked = false;
             _leftComparePanel.Visible = false;
             _rightComparePanel.Visible = false;
             _leftLandingPanel.Visible = true;
@@ -983,6 +1007,10 @@ namespace RegistryExpert
                     nodeTag.HasValueDifference = true;
                 }
             }
+
+            // In differences-only mode, skip nodes with no differences
+            if (_showDifferencesOnly && !nodeTag.HasDifference)
+                return null;
 
             // Register node in lookup dictionary for O(1) finding
             var nodeLookup = isLeftTree ? _leftNodesByPath : _rightNodesByPath;
@@ -1167,7 +1195,7 @@ namespace RegistryExpert
                 }
             }
 
-            // Only show values that are DIFFERENT
+            // Show values — filter to differences only when that mode is active
             foreach (var value in key.Values.OrderBy(v => v.ValueName ?? "(Default)", StringComparer.OrdinalIgnoreCase))
             {
                 var name = value.ValueName ?? "(Default)";
@@ -1193,15 +1221,16 @@ namespace RegistryExpert
                     }
                 }
                 
-                // Only add the row if it's different (either unique or value differs)
-                if (isUnique || isValueDiff)
-                {
-                    var rowIndex = grid.Rows.Add(name, type, data);
-                    // GREEN for unique values, RED for value differences
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = isUnique 
-                        ? ModernTheme.DiffAdded    // GREEN - unique to this hive
-                        : ModernTheme.DiffRemoved; // RED - value differs
-                }
+                // In differences-only mode, skip identical values
+                if (_showDifferencesOnly && !isUnique && !isValueDiff)
+                    continue;
+
+                var rowIndex = grid.Rows.Add(name, type, data);
+                if (isUnique)
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffAdded;    // GREEN - unique to this hive
+                else if (isValueDiff)
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffRemoved;  // RED - value differs
+                // else: identical value — default TextPrimary color
             }
         }
 
@@ -1311,6 +1340,8 @@ namespace RegistryExpert
 
             _leftTreeView.BackColor = ModernTheme.Background;
             _rightTreeView.BackColor = ModernTheme.Background;
+
+            _diffOnlyCheckbox.ForeColor = ModernTheme.TextPrimary;
 
             ApplyThemeToGrid(_leftValuesGrid);
             ApplyThemeToGrid(_rightValuesGrid);

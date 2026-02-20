@@ -5442,7 +5442,7 @@ namespace RegistryExpert
         {
             try
             {
-                var rule = new FirewallRuleInfo { RuleId = ruleName };
+                var rule = new FirewallRuleInfo { RuleId = ruleName, RawData = ruleData };
                 
                 // Split by | and parse key=value pairs
                 var parts = ruleData.Split('|');
@@ -5512,8 +5512,10 @@ namespace RegistryExpert
                     }
                 }
 
-                // Always use the registry value name as the rule name (it's the unique identifier)
-                rule.Name = ruleName;
+                // Use the parsed Name= field if the registry value name is a GUID;
+                // otherwise fall back to the registry value name (which is already readable)
+                if (string.IsNullOrEmpty(rule.Name) || !ruleName.StartsWith('{'))
+                    rule.Name = ruleName;
 
                 return rule;
             }
@@ -5569,6 +5571,7 @@ namespace RegistryExpert
         public string EmbedContext { get; set; } = "";
         public string RegistryPath { get; set; } = "";
         public string RegistryValueName { get; set; } = "";
+        public string RawData { get; set; } = "";
 
     }
 
