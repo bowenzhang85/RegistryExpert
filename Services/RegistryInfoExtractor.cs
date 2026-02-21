@@ -1122,25 +1122,6 @@ namespace RegistryExpert
         {
             var sections = new List<AnalysisSection>();
 
-            // Local Users (SAM hive)
-            var usersPath = @"SAM\Domains\Account\Users\Names";
-            var usersKey = _parser.GetKey(usersPath);
-            if (usersKey?.SubKeys != null && usersKey.SubKeys.Count > 0)
-            {
-                var usersSection = new AnalysisSection { Title = "👤 Local User Accounts" };
-                foreach (var userKey in usersKey.SubKeys.OrderBy(k => k.KeyName))
-                {
-                    usersSection.Items.Add(new AnalysisItem 
-                    { 
-                        Name = userKey.KeyName, 
-                        Value = "Local Account",
-                        RegistryPath = $"{usersPath}\\{userKey.KeyName}",
-                        RegistryValue = $"User account entry in SAM database"
-                    });
-                }
-                sections.Add(usersSection);
-            }
-
             // User Profiles (SOFTWARE hive)
             var profilesPath = @"Microsoft\Windows NT\CurrentVersion\ProfileList";
             var profilesKey = _parser.GetKey(profilesPath);
@@ -1202,34 +1183,10 @@ namespace RegistryExpert
                         profilesSection.Items.Add(subItem);
                     }
                 }
+                // Sort profiles alphabetically by username
+                profilesSection.Items = profilesSection.Items.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList();
                 if (profilesSection.Items.Count > 0)
                     sections.Add(profilesSection);
-            }
-
-            // Recent Documents (NTUSER.DAT)
-            var recentDocsPath = @"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs";
-            var recentDocs = _parser.GetKey(recentDocsPath);
-            if (recentDocs?.SubKeys != null)
-            {
-                var recentSection = new AnalysisSection { Title = "📄 Recent Documents" };
-                recentSection.Items.Add(new AnalysisItem 
-                { 
-                    Name = "Total Extensions", 
-                    Value = recentDocs.SubKeys.Count.ToString(),
-                    RegistryPath = recentDocsPath,
-                    RegistryValue = $"Contains {recentDocs.SubKeys.Count} file extension subkeys"
-                });
-                foreach (var ext in recentDocs.SubKeys.Take(10))
-                {
-                    recentSection.Items.Add(new AnalysisItem 
-                    { 
-                        Name = ext.KeyName, 
-                        Value = $"{ext.Values.Count} files",
-                        RegistryPath = $"{recentDocsPath}\\{ext.KeyName}",
-                        RegistryValue = $"Extension: {ext.KeyName}\nFiles tracked: {ext.Values.Count}"
-                    });
-                }
-                sections.Add(recentSection);
             }
 
             // Typed Paths (NTUSER.DAT)
