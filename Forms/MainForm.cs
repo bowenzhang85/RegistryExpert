@@ -3630,6 +3630,100 @@ namespace RegistryExpert
                 displayAllPackages();
             };
 
+            // User Profiles display state
+            AnalysisSection? cachedProfilesSection = null;
+            string currentProfileFilter = "All";
+
+            // Function to display User Profiles with filter
+            Action<string> displayProfilesWithFilter = null!;
+            displayProfilesWithFilter = (filter) =>
+            {
+                currentProfileFilter = filter;
+                contentGrid.Columns.Clear();
+                contentGrid.Rows.Clear();
+
+                contentGrid.Columns.Add("name", "Name");
+                contentGrid.Columns.Add("sid", "SID");
+                contentGrid.Columns.Add("path", "Path");
+                contentGrid.Columns.Add("lastLogon", "Last Logon");
+                contentGrid.Columns.Add("lastLogoff", "Last Logoff");
+                contentGrid.Columns[0].FillWeight = 20;
+                contentGrid.Columns[1].FillWeight = 25;
+                contentGrid.Columns[2].FillWeight = 25;
+                contentGrid.Columns[3].FillWeight = 15;
+                contentGrid.Columns[4].FillWeight = 15;
+
+                if (cachedProfilesSection == null) return;
+
+                foreach (var item in cachedProfilesSection.Items)
+                {
+                    if (!item.IsSubSection || item.SubItems == null || item.SubItems.Count == 0)
+                        continue;
+
+                    var sid = item.SubItems[0].Value ?? "";
+
+                    // Filter: "Temp" shows only SIDs ending with .bak
+                    if (filter == "Temp" && !sid.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var path = item.SubItems.Count > 1 ? item.SubItems[1].Value : "";
+                    var lastLogon = item.SubItems.Count > 2 ? item.SubItems[2].Value : "";
+                    var lastLogoff = item.SubItems.Count > 3 ? item.SubItems[3].Value : "";
+                    var rowIdx = contentGrid.Rows.Add(item.Name, sid, path, lastLogon, lastLogoff);
+                    contentGrid.Rows[rowIdx].Tag = item;
+                }
+
+                // Update filter button states
+                foreach (Control ctrl in appxFilterPanel.Controls)
+                {
+                    if (ctrl is Button btn && btn.Tag is string btnFilter)
+                    {
+                        btn.BackColor = btnFilter == filter ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btnFilter == filter ? Color.White : ModernTheme.TextPrimary;
+                    }
+                }
+            };
+
+            // Function to create User Profiles filter buttons
+            Action createProfileFilterButtons = null!;
+            createProfileFilterButtons = () =>
+            {
+                appxFilterPanel.Controls.Clear();
+                appxFilterPanel.Visible = true;
+
+                var filters = new[]
+                {
+                    ("All", "All Profiles"),
+                    ("Temp", "Temp Profiles")
+                };
+
+                foreach (var (filterKey, label) in filters)
+                {
+                    var btn = new Button
+                    {
+                        Text = label,
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = filterKey == currentProfileFilter ? ModernTheme.Accent : ModernTheme.Surface,
+                        ForeColor = filterKey == currentProfileFilter ? Color.White : ModernTheme.TextPrimary,
+                        Font = ModernTheme.RegularFont,
+                        Height = DpiHelper.Scale(26),
+                        AutoSize = true,
+                        Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                        Margin = DpiHelper.ScalePadding(2),
+                        Cursor = Cursors.Hand,
+                        Tag = filterKey
+                    };
+                    btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                    btn.FlatAppearance.BorderSize = 1;
+                    btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                    var capturedKey = filterKey;
+                    btn.Click += (s, e) => displayProfilesWithFilter(capturedKey);
+
+                    appxFilterPanel.Controls.Add(btn);
+                }
+            };
+
             // Guest Agent sub-view state (for Extensions sub-tab)
             string currentGuestAgentSubView = ""; // Empty = overview shown, "Extensions" = extensions shown
             
@@ -4409,11 +4503,31 @@ namespace RegistryExpert
                     return;
                 }
 
+                // Special handling for User Profiles - use filter buttons for All/Temp
+                if (section.Title.Contains("User Profiles"))
+                {
+                    contentGrid.Visible = true;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+
+                    cachedProfilesSection = section;
+                    createProfileFilterButtons();
+                    displayProfilesWithFilter("All");
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
                 // Determine columns based on content
                 bool hasSubItems = section.Items.Any(i => i.IsSubSection && i.SubItems?.Count > 0);
                 bool hasValues = section.Items.Any(i => !string.IsNullOrEmpty(i.Value));
                 bool isTlsSection = section.Title.Contains("TLS") || section.Title.Contains("SSL");
-                bool isUserProfiles = section.Title.Contains("User Profiles");
 
                 if (hasSubItems)
                 {
@@ -4435,25 +4549,13 @@ namespace RegistryExpert
                         contentGrid.Columns[2].FillWeight = 30;
                         contentGrid.Columns[3].FillWeight = 15;
                     }
-                    else if (isUserProfiles)
-                    {
-                        contentGrid.Columns.Add("sid", "SID");
-                        contentGrid.Columns.Add("path", "Path");
-                        contentGrid.Columns.Add("lastLogon", "Last Logon");
-                        contentGrid.Columns.Add("lastLogoff", "Last Logoff");
-                        contentGrid.Columns[0].FillWeight = 20;
-                        contentGrid.Columns[1].FillWeight = 25;
-                        contentGrid.Columns[2].FillWeight = 25;
-                        contentGrid.Columns[3].FillWeight = 15;
-                        contentGrid.Columns[4].FillWeight = 15;
-                    }
                     else
                     {
                         contentGrid.Columns.Add("detail1", "Detail 1");
                         contentGrid.Columns.Add("detail2", "Detail 2");
                     }
                     
-                    if (!isUserProfiles && !section.Title.Contains("Installed Programs"))
+                    if (!section.Title.Contains("Installed Programs"))
                     {
                         contentGrid.Columns[0].FillWeight = 40;
                         contentGrid.Columns[1].FillWeight = 30;
@@ -4465,16 +4567,7 @@ namespace RegistryExpert
                         int rowIdx;
                         if (item.IsSubSection && item.SubItems != null && item.SubItems.Count > 0)
                         {
-                            if (isUserProfiles)
-                            {
-                                // User Profiles: SID, Path, Last Logon, Last Logoff
-                                var sid = item.SubItems.Count > 0 ? item.SubItems[0].Value : "";
-                                var path = item.SubItems.Count > 1 ? item.SubItems[1].Value : "";
-                                var lastLogon = item.SubItems.Count > 2 ? item.SubItems[2].Value : "";
-                                var lastLogoff = item.SubItems.Count > 3 ? item.SubItems[3].Value : "";
-                                rowIdx = contentGrid.Rows.Add(item.Name, sid, path, lastLogon, lastLogoff);
-                            }
-                            else if (section.Title.Contains("Installed Programs"))
+                            if (section.Title.Contains("Installed Programs"))
                             {
                                 // Installed Programs: Version, Publisher, Install Date
                                 var version = item.SubItems.Count > 0 ? item.SubItems[0].Value : "";
@@ -4498,9 +4591,7 @@ namespace RegistryExpert
                         }
                         else
                         {
-                            if (isUserProfiles)
-                                rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "", "", "");
-                            else if (section.Title.Contains("Installed Programs"))
+                            if (section.Title.Contains("Installed Programs"))
                                 rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "", "");
                             else
                                 rowIdx = contentGrid.Rows.Add(item.Name, item.Value, "");
