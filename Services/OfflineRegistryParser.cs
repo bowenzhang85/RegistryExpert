@@ -147,7 +147,7 @@ namespace RegistryExpert
         /// Search for all matches at the value level. Each matching value gets its own result entry.
         /// Key name matches also produce a separate entry with MatchedValue = null.
         /// </summary>
-        public List<SearchMatch> SearchAll(string pattern, bool caseSensitive = false, bool wholeWord = false)
+        public List<SearchMatch> SearchAll(string pattern, bool caseSensitive = false, bool wholeWord = false, CancellationToken cancellationToken = default)
         {
             if (_disposed)
                 throw new ObjectDisposedException(nameof(OfflineRegistryParser));
@@ -157,13 +157,14 @@ namespace RegistryExpert
 
             if (root == null) return results;
 
-            SearchAllRecursive(root, pattern, caseSensitive, wholeWord, results, 0);
+            SearchAllRecursive(root, pattern, caseSensitive, wholeWord, results, 0, cancellationToken);
             return results;
         }
 
-        private void SearchAllRecursive(RegistryKey key, string pattern, bool caseSensitive, bool wholeWord, List<SearchMatch> results, int depth)
+        private void SearchAllRecursive(RegistryKey key, string pattern, bool caseSensitive, bool wholeWord, List<SearchMatch> results, int depth, CancellationToken cancellationToken)
         {
             if (depth > MaxSearchDepth) return;
+            cancellationToken.ThrowIfCancellationRequested();
 
             try
             {
@@ -223,7 +224,7 @@ namespace RegistryExpert
                 {
                     foreach (var subKey in key.SubKeys)
                     {
-                        SearchAllRecursive(subKey, pattern, caseSensitive, wholeWord, results, depth + 1);
+                        SearchAllRecursive(subKey, pattern, caseSensitive, wholeWord, results, depth + 1, cancellationToken);
                     }
                 }
             }

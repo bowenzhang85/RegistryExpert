@@ -5051,6 +5051,202 @@ namespace RegistryExpert
         #region Software Analysis (SOFTWARE hive)
 
         /// <summary>
+        /// Detect installed .NET Framework versions from the SOFTWARE hive
+        /// </summary>
+        public AnalysisSection GetDotNetFrameworkAnalysis()
+        {
+            var section = new AnalysisSection { Title = "🔷 .NET Framework" };
+            const string ndpBasePath = @"Microsoft\NET Framework Setup\NDP";
+
+            try
+            {
+                var ndpKey = _parser.GetKey(ndpBasePath);
+                if (ndpKey?.SubKeys == null)
+                {
+                    section.Items.Add(new AnalysisItem
+                    {
+                        Name = "Info",
+                        Value = "No .NET Framework versions detected",
+                        RegistryPath = ndpBasePath
+                    });
+                    return section;
+                }
+
+                // Detect older versions (v1.1, v2.0, v3.0, v3.5)
+                var olderVersionKeys = new[] { "v1.1.4322", "v2.0.50727", "v3.0", "v3.5" };
+                foreach (var versionKeyName in olderVersionKeys)
+                {
+                    var versionKey = ndpKey.SubKeys
+                        .FirstOrDefault(k => k.KeyName.Equals(versionKeyName, StringComparison.OrdinalIgnoreCase));
+                    if (versionKey == null)
+                        continue;
+
+                    var install = versionKey.Values
+                        .FirstOrDefault(v => v.ValueName == "Install")?.ValueData?.ToString() ?? "";
+                    var version = versionKey.Values
+                        .FirstOrDefault(v => v.ValueName == "Version")?.ValueData?.ToString() ?? "";
+                    var sp = versionKey.Values
+                        .FirstOrDefault(v => v.ValueName == "SP")?.ValueData?.ToString() ?? "";
+
+                    // For v3.0, Install might be in the Setup sub-key
+                    if (string.IsNullOrEmpty(install) || install != "1")
+                    {
+                        var setupKey = versionKey.SubKeys?
+                            .FirstOrDefault(k => k.KeyName.Equals("Setup", StringComparison.OrdinalIgnoreCase));
+                        if (setupKey != null)
+                        {
+                            var installSuccess = setupKey.Values
+                                .FirstOrDefault(v => v.ValueName == "InstallSuccess")?.ValueData?.ToString() ?? "";
+                            if (installSuccess == "1")
+                                install = "1";
+                        }
+                    }
+
+                    if (install != "1")
+                        continue;
+
+                    // Derive friendly name from key name
+                    var friendlyName = versionKeyName.StartsWith("v")
+                        ? versionKeyName.Substring(1) : versionKeyName;
+                    // Trim build suffix for display (e.g. "2.0.50727" -> "2.0")
+                    var dotCount = 0;
+                    var trimIndex = friendlyName.Length;
+                    for (int i = 0; i < friendlyName.Length; i++)
+                    {
+                        if (friendlyName[i] == '.')
+                        {
+                            dotCount++;
+                            if (dotCount == 2) { trimIndex = i; break; }
+                        }
+                    }
+                    var shortName = friendlyName.Substring(0, trimIndex);
+
+                    var valueText = !string.IsNullOrEmpty(version) ? version : friendlyName;
+                    if (!string.IsNullOrEmpty(sp) && sp != "0")
+                        valueText += $" SP{sp}";
+
+                    var regPath = $@"{ndpBasePath}\{versionKeyName}";
+                    section.Items.Add(new AnalysisItem
+                    {
+                        Name = $".NET Framework {shortName}",
+                        Value = valueText,
+                        RegistryPath = regPath,
+                        RegistryValue = "Version"
+                    });
+                }
+
+                // Detect .NET Framework 4.5+ via v4\Full Release DWORD
+                var v4FullPath = $@"{ndpBasePath}\v4\Full";
+                var v4FullKey = _parser.GetKey(v4FullPath);
+                var detectedV4 = false;
+
+                if (v4FullKey != null)
+                {
+                    var releaseStr = v4FullKey.Values
+                        .FirstOrDefault(v => v.ValueName == "Release")?.ValueData?.ToString() ?? "";
+                    var exactVersion = v4FullKey.Values
+                        .FirstOrDefault(v => v.ValueName == "Version")?.ValueData?.ToString() ?? "";
+
+                    var releaseNum = ParseDwordValue(releaseStr);
+                    var friendlyVersion = GetDotNet45PlusVersion(releaseNum);
+
+                    if (!string.IsNullOrEmpty(friendlyVersion))
+                    {
+                        var valueText = !string.IsNullOrEmpty(exactVersion)
+                            ? $"{exactVersion} (Release: {releaseNum})"
+                            : $"Release: {releaseNum}";
+
+                        section.Items.Add(new AnalysisItem
+                        {
+                            Name = $".NET Framework {friendlyVersion}",
+                            Value = valueText,
+                            RegistryPath = v4FullPath,
+                            RegistryValue = "Release"
+                        });
+                        detectedV4 = true;
+                    }
+                    else
+                    {
+                        // v4\Full exists but no Release DWORD → .NET 4.0 Full profile
+                        var install = v4FullKey.Values
+                            .FirstOrDefault(v => v.ValueName == "Install")?.ValueData?.ToString() ?? "";
+                        if (install == "1" && !string.IsNullOrEmpty(exactVersion))
+                        {
+                            section.Items.Add(new AnalysisItem
+                            {
+                                Name = ".NET Framework 4.0",
+                                Value = exactVersion,
+                                RegistryPath = v4FullPath,
+                                RegistryValue = "Version"
+                            });
+                            detectedV4 = true;
+                        }
+                    }
+                }
+
+                // Fallback: v4\Client profile (4.0 without Full profile)
+                if (!detectedV4)
+                {
+                    var v4ClientPath = $@"{ndpBasePath}\v4\Client";
+                    var v4ClientKey = _parser.GetKey(v4ClientPath);
+                    if (v4ClientKey != null)
+                    {
+                        var install = v4ClientKey.Values
+                            .FirstOrDefault(v => v.ValueName == "Install")?.ValueData?.ToString() ?? "";
+                        var version = v4ClientKey.Values
+                            .FirstOrDefault(v => v.ValueName == "Version")?.ValueData?.ToString() ?? "";
+
+                        if (install == "1" && !string.IsNullOrEmpty(version))
+                        {
+                            section.Items.Add(new AnalysisItem
+                            {
+                                Name = ".NET Framework 4.0 (Client Profile)",
+                                Value = version,
+                                RegistryPath = v4ClientPath,
+                                RegistryValue = "Version"
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error reading .NET Framework info: {ex.Message}");
+            }
+
+            if (section.Items.Count == 0)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Info",
+                    Value = "No .NET Framework versions detected",
+                    RegistryPath = ndpBasePath
+                });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// Map .NET Framework 4.5+ Release DWORD to friendly version string
+        /// </summary>
+        private static string? GetDotNet45PlusVersion(int releaseKey)
+        {
+            if (releaseKey >= 533320) return "4.8.1";
+            if (releaseKey >= 528040) return "4.8";
+            if (releaseKey >= 461808) return "4.7.2";
+            if (releaseKey >= 461308) return "4.7.1";
+            if (releaseKey >= 460798) return "4.7";
+            if (releaseKey >= 394802) return "4.6.2";
+            if (releaseKey >= 394254) return "4.6.1";
+            if (releaseKey >= 393295) return "4.6";
+            if (releaseKey >= 379893) return "4.5.2";
+            if (releaseKey >= 378675) return "4.5.1";
+            if (releaseKey >= 378389) return "4.5";
+            return null;
+        }
+
+        /// <summary>
         /// Get software-related information as structured sections
         /// </summary>
         public List<AnalysisSection> GetSoftwareAnalysis()
@@ -5080,6 +5276,9 @@ namespace RegistryExpert
             
             // Appx Applications (combined section - UI will handle filtering)
             sections.Add(GetAppxAnalysis());
+
+            // .NET Framework versions
+            sections.Add(GetDotNetFrameworkAnalysis());
 
             return sections;
         }
@@ -5400,6 +5599,8 @@ namespace RegistryExpert
             try
             {
                 var rule = new FirewallRuleInfo { RuleId = ruleName, RawData = ruleData };
+                var localPortsList = new List<string>();
+                var remotePortsList = new List<string>();
                 
                 // Split by | and parse key=value pairs
                 var parts = ruleData.Split('|');
@@ -5432,10 +5633,10 @@ namespace RegistryExpert
                                 rule.Profiles += "|" + val;
                             break;
                         case "lport":
-                            rule.LocalPorts = val;
+                            localPortsList.Add(val);
                             break;
                         case "rport":
-                            rule.RemotePorts = val;
+                            remotePortsList.Add(val);
                             break;
                         case "la4":
                         case "la6":
@@ -5466,12 +5667,23 @@ namespace RegistryExpert
                         case "embedctxt":
                             rule.EmbedContext = val;
                             break;
+                        case "pfn":
+                            rule.PackageFamilyName = val;
+                            break;
                     }
                 }
 
-                // Use the parsed Name= field if the registry value name is a GUID;
-                // otherwise fall back to the registry value name (which is already readable)
-                if (string.IsNullOrEmpty(rule.Name) || !ruleName.StartsWith('{'))
+                // Format accumulated port lists (ranges for consecutive, commas otherwise)
+                if (localPortsList.Count > 0)
+                    rule.LocalPorts = FormatPortList(localPortsList);
+                if (remotePortsList.Count > 0)
+                    rule.RemotePorts = FormatPortList(remotePortsList);
+
+                // Use the parsed Name= field if the registry value name is a GUID
+                // and the Name= value is a real name (not an unresolvable MUI resource);
+                // otherwise fall back to the registry value name (which is already readable).
+                if (string.IsNullOrEmpty(rule.Name) || !ruleName.StartsWith('{') ||
+                    rule.Name.StartsWith('@'))
                     rule.Name = ruleName;
 
                 return rule;
@@ -5480,6 +5692,62 @@ namespace RegistryExpert
             {
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Format a list of port values into a compact string.
+        /// Consecutive numeric ports are collapsed into ranges (e.g. "23554-23556").
+        /// Non-consecutive ports are comma-separated (e.g. "80, 443, 8080").
+        /// Non-numeric port values (e.g. "RPC", "IPHTTPS") are kept as-is.
+        /// </summary>
+        private string FormatPortList(List<string> ports)
+        {
+            if (ports.Count == 0) return "";
+            if (ports.Count == 1) return ports[0];
+
+            // Separate numeric and non-numeric ports
+            var numericPorts = new List<int>();
+            var nonNumericPorts = new List<string>();
+
+            foreach (var p in ports)
+            {
+                if (int.TryParse(p, out int num))
+                    numericPorts.Add(num);
+                else
+                    nonNumericPorts.Add(p);
+            }
+
+            // If no numeric ports, just join non-numeric
+            if (numericPorts.Count == 0)
+                return string.Join(", ", nonNumericPorts.Distinct());
+
+            // Sort and deduplicate numeric ports
+            numericPorts = numericPorts.Distinct().OrderBy(n => n).ToList();
+
+            // Build ranges for consecutive numbers
+            var parts = new List<string>();
+            int rangeStart = numericPorts[0];
+            int rangeEnd = numericPorts[0];
+
+            for (int i = 1; i < numericPorts.Count; i++)
+            {
+                if (numericPorts[i] == rangeEnd + 1)
+                {
+                    rangeEnd = numericPorts[i];
+                }
+                else
+                {
+                    parts.Add(rangeStart == rangeEnd ? rangeStart.ToString() : $"{rangeStart}-{rangeEnd}");
+                    rangeStart = numericPorts[i];
+                    rangeEnd = numericPorts[i];
+                }
+            }
+            parts.Add(rangeStart == rangeEnd ? rangeStart.ToString() : $"{rangeStart}-{rangeEnd}");
+
+            // Append non-numeric ports
+            parts.AddRange(nonNumericPorts.Distinct());
+
+            return string.Join(", ", parts);
         }
 
         /// <summary>
@@ -5526,6 +5794,7 @@ namespace RegistryExpert
         public string Application { get; set; } = "";
         public string Service { get; set; } = "";
         public string EmbedContext { get; set; } = "";
+        public string PackageFamilyName { get; set; } = "";
         public string RegistryPath { get; set; } = "";
         public string RegistryValueName { get; set; } = "";
         public string RawData { get; set; } = "";

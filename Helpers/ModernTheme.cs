@@ -36,92 +36,146 @@ namespace RegistryExpert
         private static readonly object _themeLock = new object();
 
         // Color Palette - Dynamic based on theme (Modern VS Code / Fluent inspired)
-        public static Color Background => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(24, 24, 28)      // Darker, richer background
-            : Color.FromArgb(249, 249, 251);
+        // When Windows High Contrast mode is active, all colors defer to SystemColors
+        // for full accessibility compliance.
+        public static Color Background => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(24, 24, 28)      // Darker, richer background
+                : Color.FromArgb(249, 249, 251);
         
-        public static Color Surface => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(32, 32, 36)      // Subtle elevation
-            : Color.FromArgb(255, 255, 255);
+        public static Color Surface => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(32, 32, 36)      // Subtle elevation
+                : Color.FromArgb(255, 255, 255);
         
-        public static Color SurfaceLight => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(44, 44, 50)      // Hover states
-            : Color.FromArgb(245, 245, 248);
+        public static Color SurfaceLight => SystemInformation.HighContrast
+            ? SystemColors.Control
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(44, 44, 50)      // Hover states
+                : Color.FromArgb(245, 245, 248);
         
-        public static Color SurfaceHover => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(55, 55, 62)      // Card hover
-            : Color.FromArgb(235, 235, 240);
+        public static Color SurfaceHover => SystemInformation.HighContrast
+            ? SystemColors.ControlLight
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(55, 55, 62)      // Card hover
+                : Color.FromArgb(235, 235, 240);
         
-        public static Color Border => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(58, 58, 65)      // Subtle borders
-            : Color.FromArgb(225, 225, 230);
+        public static Color Border => SystemInformation.HighContrast
+            ? SystemColors.ControlDark
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(58, 58, 65)      // Subtle borders
+                : Color.FromArgb(225, 225, 230);
         
         
-        public static Color TextPrimary => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(230, 230, 235)   // Softer white
-            : Color.FromArgb(28, 28, 35);
+        public static Color TextPrimary => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(230, 230, 235)   // Softer white
+                : Color.FromArgb(28, 28, 35);
         
-        public static Color TextSecondary => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(160, 160, 170)   // Muted text
-            : Color.FromArgb(90, 90, 100);
+        public static Color TextSecondary => SystemInformation.HighContrast
+            ? SystemColors.GrayText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(160, 160, 170)   // Muted text
+                : Color.FromArgb(90, 90, 100);
         
-        public static Color TextDisabled => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(70, 70, 80)
-            : Color.FromArgb(170, 170, 180);
+        public static Color TextDisabled => SystemInformation.HighContrast
+            ? SystemColors.GrayText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(70, 70, 80)
+                : Color.FromArgb(170, 170, 180);
         
         // Modern accent colors (teal/cyan inspired)
-        public static Color Accent => Color.FromArgb(45, 156, 219);       // Modern blue
-        public static Color AccentHover => Color.FromArgb(60, 175, 235);  // Lighter hover
-        public static Color AccentDark => Color.FromArgb(30, 130, 190);   // Pressed state
+        public static Color Accent => SystemInformation.HighContrast
+            ? SystemColors.Highlight
+            : Color.FromArgb(45, 156, 219);       // Modern blue
+        public static Color AccentHover => SystemInformation.HighContrast
+            ? SystemColors.HotTrack
+            : Color.FromArgb(60, 175, 235);       // Lighter hover
+        public static Color AccentDark => SystemInformation.HighContrast
+            ? SystemColors.Highlight
+            : Color.FromArgb(30, 130, 190);       // Pressed state
         
         // Status colors (Fluent-inspired)
-        public static Color Success => Color.FromArgb(16, 185, 129);      // Modern green
-        public static Color Warning => Color.FromArgb(245, 158, 11);      // Warm amber
-        public static Color Error => Color.FromArgb(239, 68, 68);         // Modern red
-        public static Color Info => Color.FromArgb(99, 102, 241);         // Indigo
+        public static Color Success => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : Color.FromArgb(16, 185, 129);       // Modern green
+        public static Color Warning => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : Color.FromArgb(245, 158, 11);       // Warm amber
+        public static Color Error => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : Color.FromArgb(239, 68, 68);        // Modern red
+        public static Color Info => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : Color.FromArgb(99, 102, 241);       // Indigo
         
         // Block/Error row highlighting (for firewall rules, etc.)
-        public static Color BlockRowBackground => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(60, 40, 40)          // Dark reddish
-            : Color.FromArgb(255, 235, 235);      // Light pink
-        public static Color BlockRowForeground => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(255, 180, 180)       // Light red text
-            : Color.FromArgb(180, 40, 40);        // Dark red text
+        public static Color BlockRowBackground => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(60, 40, 40)          // Dark reddish
+                : Color.FromArgb(255, 235, 235);      // Light pink
+        public static Color BlockRowForeground => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(255, 180, 180)       // Light red text
+                : Color.FromArgb(180, 40, 40);        // Dark red text
         
         // Diff colors for Compare feature
-        public static Color DiffAdded => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(46, 160, 67)         // Green for added
-            : Color.FromArgb(35, 134, 54);
-        public static Color DiffRemoved => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(218, 54, 51)         // Red for removed
-            : Color.FromArgb(207, 34, 46);
+        public static Color DiffAdded => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(46, 160, 67)         // Green for added
+                : Color.FromArgb(35, 134, 54);
+        public static Color DiffRemoved => SystemInformation.HighContrast
+            ? SystemColors.GrayText
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(218, 54, 51)         // Red for removed
+                : Color.FromArgb(207, 34, 46);
         
-        public static Color TreeViewBack => _currentTheme == ThemeType.Dark
-            ? Color.FromArgb(28, 28, 32)      // Slightly different from background
-            : Color.FromArgb(252, 252, 254);
+        public static Color TreeViewBack => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(28, 28, 32)      // Slightly different from background
+                : Color.FromArgb(252, 252, 254);
         
-        public static Color ListViewBack => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(28, 28, 32)
-            : Color.FromArgb(252, 252, 254);
+        public static Color ListViewBack => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(28, 28, 32)
+                : Color.FromArgb(252, 252, 254);
         
-        public static Color ListViewAltRow => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(34, 34, 40)      // Subtle striping
-            : Color.FromArgb(247, 247, 250);
+        public static Color ListViewAltRow => SystemInformation.HighContrast
+            ? SystemColors.Window
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(34, 34, 40)      // Subtle striping
+                : Color.FromArgb(247, 247, 250);
         
-        public static Color Selection => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(45, 50, 60)      // Subtle selection
-            : Color.FromArgb(230, 242, 255);
+        public static Color Selection => SystemInformation.HighContrast
+            ? SystemColors.Highlight
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(45, 50, 60)      // Subtle selection
+                : Color.FromArgb(230, 242, 255);
         
-        public static Color SelectionActive => Color.FromArgb(45, 156, 219);
+        public static Color SelectionActive => SystemInformation.HighContrast
+            ? SystemColors.Highlight
+            : Color.FromArgb(45, 156, 219);
         
         // Gradient colors for headers
-        public static Color GradientStart => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(35, 35, 42)
-            : Color.FromArgb(250, 250, 252);
+        public static Color GradientStart => SystemInformation.HighContrast
+            ? SystemColors.Control
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(35, 35, 42)
+                : Color.FromArgb(250, 250, 252);
         
-        public static Color GradientEnd => _currentTheme == ThemeType.Dark 
-            ? Color.FromArgb(28, 28, 32)
-            : Color.FromArgb(245, 245, 248);
+        public static Color GradientEnd => SystemInformation.HighContrast
+            ? SystemColors.Control
+            : _currentTheme == ThemeType.Dark 
+                ? Color.FromArgb(28, 28, 32)
+                : Color.FromArgb(245, 245, 248);
 
         // Fonts (Modern, consistent sizing)
         public static readonly Font RegularFont = new Font("Segoe UI", 9F, FontStyle.Regular);
@@ -588,7 +642,7 @@ namespace RegistryExpert
                 {
                     using var original = Image.FromStream(stream);
                     var scaled = new Bitmap(original, new Size(iconSize, iconSize));
-                    imageList.Images.Add(name, scaled); // No 'using' - ImageList takes ownership
+                    imageList.Images.Add(name, scaled); // ImageList takes ownership; disposed when ImageList is disposed
                 }
             }
 

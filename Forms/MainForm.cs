@@ -235,6 +235,7 @@ namespace RegistryExpert
 
             // Menu Strip
             _menuStrip = new MenuStrip();
+            _menuStrip.AccessibleName = "Main Menu";
             ModernTheme.ApplyTo(_menuStrip);
             _menuStrip.Padding = new Padding(8, 4, 0, 4);
             CreateMenu();
@@ -265,6 +266,8 @@ namespace RegistryExpert
                 BindingFlags.SetProperty | BindingFlags.Instance | BindingFlags.NonPublic,
                 null, _statusPanel, new object[] { true });
             _statusPanel.Paint += StatusPanel_Paint;
+            _statusPanel.AccessibleRole = AccessibleRole.StatusBar;
+            _statusPanel.AccessibleName = _statusText;
 
             // Fixed-width right panel — always visible, never changes width.
             // Inner controls toggle visibility without affecting the status label bounds.
@@ -309,6 +312,7 @@ namespace RegistryExpert
             _cancelLoadButton = new Button
             {
                 Text = "Cancel",
+                AccessibleName = "Cancel Loading",
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.Transparent,
                 ForeColor = ModernTheme.TextSecondary,
@@ -350,6 +354,8 @@ namespace RegistryExpert
 
             // Drop Panel (shown when no hive is loaded)
             _dropPanel = CreateDropPanel();
+            _dropPanel.AccessibleName = "Drop a registry hive file here or click Open";
+            _dropPanel.AccessibleRole = AccessibleRole.Pane;
             
             // Main Split Container (Tree | Right Panel)
             _mainSplitContainer = new SplitContainer
@@ -377,6 +383,7 @@ namespace RegistryExpert
                 HideSelection = false  // Keep selection visible when focus is lost
             };
             ModernTheme.ApplyTo(_treeView);
+            _treeView.AccessibleName = "Registry Keys";
             _treeView.AfterSelect += TreeView_AfterSelect;
             _treeView.BeforeExpand += TreeView_BeforeExpand;
             
@@ -443,6 +450,7 @@ namespace RegistryExpert
                 HeaderStyle = ColumnHeaderStyle.Nonclickable
             };
             ModernTheme.ApplyTo(_listView);
+            _listView.AccessibleName = "Registry Values";
             _valueImageList = CreateValueImageList();
             _listView.SmallImageList = _valueImageList;
             _listView.Columns.Add("Name", 220);
@@ -513,6 +521,7 @@ namespace RegistryExpert
                 ScrollBars = RichTextBoxScrollBars.Vertical
             };
             ModernTheme.ApplyTo(_detailsBox);
+            _detailsBox.AccessibleName = "Value Details";
             _detailsBox.Padding = new Padding(8);
             
             detailsPanel.Controls.Add(_detailsBox);
@@ -927,12 +936,11 @@ namespace RegistryExpert
             itemsPanel.Controls.Clear();
 
             // Measure the widest bookmark text to determine adaptive panel width
-            var itemFont = new Font("Segoe UI", 9F);
             int maxTextWidth = 0;
             foreach (var (name, _) in bookmarks)
             {
                 var text = $"  \u25B8  {name}";
-                var textWidth = TextRenderer.MeasureText(text, itemFont).Width;
+                var textWidth = TextRenderer.MeasureText(text, ModernTheme.RegularFont).Width;
                 if (textWidth > maxTextWidth)
                     maxTextWidth = textWidth;
             }
@@ -952,7 +960,7 @@ namespace RegistryExpert
                 var btn = new Label
                 {
                     Text = $"  \u25B8  {name}",
-                    Font = itemFont,
+                    Font = ModernTheme.RegularFont,
                     ForeColor = ModernTheme.TextPrimary,
                     BackColor = ModernTheme.Surface,
                     AutoSize = false,
@@ -1010,37 +1018,37 @@ namespace RegistryExpert
 
         private void CreateMenu()
         {
-            var fileMenu = new ToolStripMenuItem("File");
-            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Open Hive...", null, OpenHive_Click) { ShortcutKeys = Keys.Control | Keys.O });
+            var fileMenu = new ToolStripMenuItem("&File");
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("&Open Hive...", null, OpenHive_Click) { ShortcutKeys = Keys.Control | Keys.O });
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
-            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Export Key...", null, ExportKey_Click) { ShortcutKeys = Keys.Control | Keys.E });
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("&Export Key...", null, ExportKey_Click) { ShortcutKeys = Keys.Control | Keys.E });
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
-            fileMenu.DropDownItems.Add(new ToolStripMenuItem("Exit", null, (s, e) => Close()) { ShortcutKeys = Keys.Alt | Keys.F4 });
+            fileMenu.DropDownItems.Add(new ToolStripMenuItem("E&xit", null, (s, e) => Close()) { ShortcutKeys = Keys.Alt | Keys.F4 });
             _menuStrip.Items.Add(fileMenu);
 
-            var viewMenu = new ToolStripMenuItem("View");
+            var viewMenu = new ToolStripMenuItem("&View");
             
-            var darkThemeItem = new ToolStripMenuItem("Dark Theme", null, (s, e) => SwitchTheme(ThemeType.Dark));
-            var lightThemeItem = new ToolStripMenuItem("Light Theme", null, (s, e) => SwitchTheme(ThemeType.Light));
+            var darkThemeItem = new ToolStripMenuItem("&Dark Theme", null, (s, e) => SwitchTheme(ThemeType.Dark));
+            var lightThemeItem = new ToolStripMenuItem("&Light Theme", null, (s, e) => SwitchTheme(ThemeType.Light));
             darkThemeItem.Checked = ModernTheme.CurrentTheme == ThemeType.Dark;
             lightThemeItem.Checked = ModernTheme.CurrentTheme == ThemeType.Light;
             viewMenu.DropDownItems.Add(darkThemeItem);
             viewMenu.DropDownItems.Add(lightThemeItem);
             _menuStrip.Items.Add(viewMenu);
 
-            var toolsMenu = new ToolStripMenuItem("Tools");
-            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Search...", null, Search_Click) { ShortcutKeys = Keys.Control | Keys.F });
+            var toolsMenu = new ToolStripMenuItem("&Tools");
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("&Search...", null, Search_Click) { ShortcutKeys = Keys.Control | Keys.F });
             toolsMenu.DropDownItems.Add(new ToolStripSeparator());
-            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Analyze...", null, ShowAnalyzeDialog_Click) { ShortcutKeys = Keys.F5 });
-            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Statistics...", null, ShowStatistics_Click) { ShortcutKeys = Keys.Control | Keys.I });
-            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Timeline...", null, ShowTimeline_Click) { ShortcutKeys = Keys.Control | Keys.T });
-            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Compare...", null, ShowCompare_Click) { ShortcutKeys = Keys.Control | Keys.M });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("&Analyze...", null, ShowAnalyzeDialog_Click) { ShortcutKeys = Keys.F5 });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("S&tatistics...", null, ShowStatistics_Click) { ShortcutKeys = Keys.Control | Keys.I });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("Ti&meline...", null, ShowTimeline_Click) { ShortcutKeys = Keys.Control | Keys.T });
+            toolsMenu.DropDownItems.Add(new ToolStripMenuItem("&Compare...", null, ShowCompare_Click) { ShortcutKeys = Keys.Control | Keys.M });
             _menuStrip.Items.Add(toolsMenu);
 
-            var helpMenu = new ToolStripMenuItem("Help");
-            helpMenu.DropDownItems.Add("Check for Updates...", null, CheckForUpdates_Click);
+            var helpMenu = new ToolStripMenuItem("&Help");
+            helpMenu.DropDownItems.Add("Check for &Updates...", null, CheckForUpdates_Click);
             helpMenu.DropDownItems.Add(new ToolStripSeparator());
-            helpMenu.DropDownItems.Add("About", null, About_Click);
+            helpMenu.DropDownItems.Add("&About", null, About_Click);
             _menuStrip.Items.Add(helpMenu);
         }
 
@@ -1080,6 +1088,8 @@ namespace RegistryExpert
             var btn = new Button
             {
                 Text = "",  // We'll draw text manually
+                AccessibleName = text,
+                AccessibleRole = AccessibleRole.PushButton,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.Transparent,
                 ForeColor = ModernTheme.TextPrimary,
@@ -1172,6 +1182,7 @@ namespace RegistryExpert
         private void SetStatusText(string text, Color? color = null)
         {
             _statusText = text;
+            _statusPanel.AccessibleName = text;
             if (color.HasValue)
                 _statusForeColor = color.Value;
             _statusPanel.Invalidate();
@@ -2959,28 +2970,31 @@ namespace RegistryExpert
                 firewallRulesGrid.Columns.Add("direction", "Dir");
                 firewallRulesGrid.Columns.Add("name", "Name");
                 firewallRulesGrid.Columns.Add("protocol", "Protocol");
-                firewallRulesGrid.Columns.Add("ports", "Ports");
+                firewallRulesGrid.Columns.Add("lport", "Local Port");
+                firewallRulesGrid.Columns.Add("rport", "Remote Port");
                 firewallRulesGrid.Columns.Add("application", "Application");
 
                 firewallRulesGrid.Columns["status"].FillWeight = 8;
                 firewallRulesGrid.Columns["action"].FillWeight = 8;
                 firewallRulesGrid.Columns["direction"].FillWeight = 8;
-                firewallRulesGrid.Columns["name"].FillWeight = 30;
+                firewallRulesGrid.Columns["name"].FillWeight = 28;
                 firewallRulesGrid.Columns["protocol"].FillWeight = 10;
-                firewallRulesGrid.Columns["ports"].FillWeight = 12;
-                firewallRulesGrid.Columns["application"].FillWeight = 24;
+                firewallRulesGrid.Columns["lport"].FillWeight = 10;
+                firewallRulesGrid.Columns["rport"].FillWeight = 10;
+                firewallRulesGrid.Columns["application"].FillWeight = 18;
 
                 foreach (var rule in sortedRules)
                 {
                     var statusIcon = rule.IsActive ? "✅" : "⬜";
                     var actionDisplay = rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? "🚫 Block" : "✓ Allow";
                     var dirDisplay = rule.Direction.Equals("Inbound", StringComparison.OrdinalIgnoreCase) ? "⬇ In" : "⬆ Out";
-                    var ports = !string.IsNullOrEmpty(rule.LocalPorts) ? rule.LocalPorts : 
-                               (!string.IsNullOrEmpty(rule.RemotePorts) ? $"R:{rule.RemotePorts}" : "Any");
+                    var localPort = !string.IsNullOrEmpty(rule.LocalPorts) ? rule.LocalPorts : "Any";
+                    var remotePort = !string.IsNullOrEmpty(rule.RemotePorts) ? rule.RemotePorts : "Any";
                     var app = !string.IsNullOrEmpty(rule.Application) ? Path.GetFileName(rule.Application) : 
-                             (!string.IsNullOrEmpty(rule.Service) ? $"[{rule.Service}]" : "");
+                             (!string.IsNullOrEmpty(rule.Service) ? $"[{rule.Service}]" : 
+                             (!string.IsNullOrEmpty(rule.PackageFamilyName) ? rule.PackageFamilyName : ""));
 
-                    var rowIndex = firewallRulesGrid.Rows.Add(statusIcon, actionDisplay, dirDisplay, rule.Name, rule.Protocol, ports, app);
+                    var rowIndex = firewallRulesGrid.Rows.Add(statusIcon, actionDisplay, dirDisplay, rule.Name, rule.Protocol, localPort, remotePort, app);
 
                     // Color coding for block rules
                     if (rule.IsActive && rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
@@ -4779,8 +4793,8 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 ReadOnly = true,
                 BorderStyle = BorderStyle.None,
-                WordWrap = false,
-                ScrollBars = RichTextBoxScrollBars.Both
+                WordWrap = true,
+                ScrollBars = RichTextBoxScrollBars.Vertical
             };
             themeData.RegistryValueBox = registryValueBox;
 
@@ -4904,6 +4918,8 @@ namespace RegistryExpert
                             details.AppendLine($"Application: {rule.Application}");
                         if (!string.IsNullOrEmpty(rule.Service))
                             details.AppendLine($"Service: {rule.Service}");
+                        if (!string.IsNullOrEmpty(rule.PackageFamilyName))
+                            details.AppendLine($"Package Family Name: {rule.PackageFamilyName}");
                         if (!string.IsNullOrEmpty(rule.EmbedContext))
                             details.AppendLine($"Context: {rule.EmbedContext}");
                         details.AppendLine();
@@ -5640,15 +5656,15 @@ namespace RegistryExpert
             // Update menu checkmarks
             foreach (ToolStripMenuItem item in _menuStrip.Items)
             {
-                if (item.Text == "View")
+                if (item.Text == "&View")
                 {
                     foreach (var dropItem in item.DropDownItems)
                     {
                         if (dropItem is ToolStripMenuItem menuItem)
                         {
-                            if (menuItem.Text == "Dark Theme")
+                            if (menuItem.Text == "&Dark Theme")
                                 menuItem.Checked = theme == ThemeType.Dark;
-                            else if (menuItem.Text == "Light Theme")
+                            else if (menuItem.Text == "&Light Theme")
                                 menuItem.Checked = theme == ThemeType.Light;
                         }
                     }

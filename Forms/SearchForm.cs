@@ -362,7 +362,7 @@ namespace RegistryExpert
                 // Run search on background thread (always case-insensitive, whole-word filtering done in backend)
                 var wholeWord = _matchWholeWordCheckBox.Checked;
                 var results = await Task.Run(() => 
-                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord), token).ConfigureAwait(true);
+                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord, cancellationToken: token), token).ConfigureAwait(true);
                 
                 if (token.IsCancellationRequested) return;
 
