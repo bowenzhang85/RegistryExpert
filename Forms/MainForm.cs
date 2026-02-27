@@ -54,17 +54,20 @@ namespace RegistryExpert
         public List<Button> FirewallProfileButtons { get; set; } = new();
         public Action? RefreshFirewallDisplay { get; set; }
         // Fonts used in drawing (need explicit disposal)
-        public Font? CategoryIconFont { get; set; }
         public Font? CategoryTextFont { get; set; }
         public ToolTip? CategoryToolTip { get; set; }
         public ToolTip? SubCategoryToolTip { get; set; }
+        // Category icon images (need explicit disposal)
+        public Dictionary<string, Image> CategoryIcons { get; set; } = new();
 
         public void Dispose()
         {
-            CategoryIconFont?.Dispose();
             CategoryTextFont?.Dispose();
             CategoryToolTip?.Dispose();
             SubCategoryToolTip?.Dispose();
+            foreach (var img in CategoryIcons.Values)
+                img.Dispose();
+            CategoryIcons.Clear();
         }
     }
 
@@ -83,6 +86,7 @@ namespace RegistryExpert
         private Icon? _customIcon; // Track custom icon for disposal
         private string? _currentHivePath; // Track the current loaded hive file path
         private TreeNode? _previousSelectedNode; // Track for folder icon switching
+        private Dictionary<string, Image> _toolbarIcons = new(); // Track toolbar icons for disposal
 
         // Cached icon fonts for Paint handlers (avoid allocating on every paint)
         private static readonly Font _iconFont12 = new Font("Segoe MDL2 Assets", 12F);
@@ -170,6 +174,9 @@ namespace RegistryExpert
                 _sharedToolTip?.Dispose();
                 _customIcon?.Dispose();
                 _loadCts?.Dispose();
+                foreach (var img in _toolbarIcons.Values)
+                    img.Dispose();
+                _toolbarIcons.Clear();
             }
             base.Dispose(disposing);
         }
@@ -1016,6 +1023,42 @@ namespace RegistryExpert
 
         private static string GetValueImageKey(string? valueType) => ModernTheme.GetValueImageKey(valueType);
 
+        /// <summary>
+        /// Strips leading emoji/symbol characters from text for use in AccessibleName properties.
+        /// Emoji prefixed titles follow the pattern "&lt;emoji&gt; &lt;text&gt;" (e.g. "📁 Hive Information" → "Hive Information").
+        /// </summary>
+        private static string StripEmojiPrefix(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            int i = 0;
+            while (i < text.Length)
+            {
+                char c = text[i];
+                // Skip surrogate pairs (emoji like 📁, 🪟, etc.)
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    i += 2;
+                    continue;
+                }
+                // Skip common symbol/emoji characters in BMP (✅, ❌, ⛔, ⚡, ☁, etc.)
+                if (c > '\u2000' && !char.IsLetterOrDigit(c) && c != '(')
+                {
+                    i++;
+                    continue;
+                }
+                // Skip variation selectors (U+FE0E, U+FE0F) and zero-width joiners
+                if (c == '\uFE0E' || c == '\uFE0F' || c == '\u200D')
+                {
+                    i++;
+                    continue;
+                }
+                break;
+            }
+            // Skip trailing spaces after emoji
+            while (i < text.Length && text[i] == ' ') i++;
+            return i > 0 && i < text.Length ? text[i..] : text;
+        }
+
         private void CreateMenu()
         {
             var fileMenu = new ToolStripMenuItem("&File");
@@ -1059,6 +1102,32 @@ namespace RegistryExpert
                 ctrl.Dispose();
             _toolbarPanel.Controls.Clear();
 
+            // Dispose old toolbar icons and reload at current DPI
+            foreach (var img in _toolbarIcons.Values)
+                img.Dispose();
+            _toolbarIcons.Clear();
+
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            int toolbarIconSize = DpiHelper.Scale(28);
+            var toolbarIconNames = new[] { "open", "search", "analyze", "statistics", "compare", "timeline" };
+            foreach (var name in toolbarIconNames)
+            {
+                var resourceName = $"RegistryExpert.icons.toolbar_{name}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    var scaled = new Bitmap(toolbarIconSize, toolbarIconSize);
+                    using (var g = Graphics.FromImage(scaled))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+                        g.DrawImage(original, 0, 0, toolbarIconSize, toolbarIconSize);
+                    }
+                    _toolbarIcons[name] = scaled;
+                }
+            }
+
             var flow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1068,22 +1137,22 @@ namespace RegistryExpert
                 Padding = new Padding(4, 0, 0, 0)
             };
 
-            flow.Controls.Add(CreateToolbarButton("Open", "\uE838", OpenHive_Click, "Open registry hive (Ctrl+O)"));
+            flow.Controls.Add(CreateToolbarButton("Open", "open", OpenHive_Click, "Open registry hive (Ctrl+O)"));
             flow.Controls.Add(CreateToolbarSeparator());
-            flow.Controls.Add(CreateToolbarButton("Search", "\uE721", Search_Click, "Search registry (Ctrl+F)"));
+            flow.Controls.Add(CreateToolbarButton("Search", "search", Search_Click, "Search registry (Ctrl+F)"));
             flow.Controls.Add(CreateToolbarSeparator());
-            flow.Controls.Add(CreateToolbarButton("Analyze", "\uE9D9", ShowAnalyzeDialog_Click, "Analyze registry (F5)"));
+            flow.Controls.Add(CreateToolbarButton("Analyze", "analyze", ShowAnalyzeDialog_Click, "Analyze registry (F5)"));
             flow.Controls.Add(CreateToolbarSeparator());
-            flow.Controls.Add(CreateToolbarButton("Statistics", "\uE9F9", ShowStatistics_Click, "View registry statistics"));
+            flow.Controls.Add(CreateToolbarButton("Statistics", "statistics", ShowStatistics_Click, "View registry statistics"));
             flow.Controls.Add(CreateToolbarSeparator());
-            flow.Controls.Add(CreateToolbarButton("Compare", "\uE8F4", ShowCompare_Click, "Compare two registry hives"));
+            flow.Controls.Add(CreateToolbarButton("Compare", "compare", ShowCompare_Click, "Compare two registry hives"));
             flow.Controls.Add(CreateToolbarSeparator());
-            flow.Controls.Add(CreateToolbarButton("Timeline", "\uE81C", ShowTimeline_Click, "View registry keys by last modified time (Ctrl+T)"));
+            flow.Controls.Add(CreateToolbarButton("Timeline", "timeline", ShowTimeline_Click, "View registry keys by last modified time (Ctrl+T)"));
             
             _toolbarPanel.Controls.Add(flow);
         }
 
-        private Button CreateToolbarButton(string text, string icon, EventHandler onClick, string tooltip)
+        private Button CreateToolbarButton(string text, string iconKey, EventHandler onClick, string tooltip)
         {
             var btn = new Button
             {
@@ -1103,23 +1172,25 @@ namespace RegistryExpert
             btn.FlatAppearance.MouseDownBackColor = ModernTheme.AccentDark;
             btn.Click += onClick;
             
-            // Custom paint for icon and text
+            // Custom paint for icon image and text
             btn.Paint += (s, e) =>
             {
                 var g = e.Graphics;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                 
-                // Draw icon - font sizes in points are already DPI-aware, don't scale them
-                var iconFont = _iconFont13;
-                using var iconBrush = new SolidBrush(ModernTheme.Accent);
-                var iconSize = g.MeasureString(icon, iconFont);
                 var iconX = DpiHelper.Scale(10);
-                var iconY = (btn.Height - iconSize.Height) / 2;
-                g.DrawString(icon, iconFont, iconBrush, iconX, iconY);
+                
+                // Draw icon image
+                if (_toolbarIcons.TryGetValue(iconKey, out var iconImage))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    var iconY = (btn.Height - iconImage.Height) / 2;
+                    g.DrawImage(iconImage, iconX, iconY, iconImage.Width, iconImage.Height);
+                }
                 
                 // Draw text after icon with proper gap
+                var textX = iconX + DpiHelper.Scale(28) + DpiHelper.Scale(4);  // icon width + 4px gap
                 using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
-                var textX = iconX + iconSize.Width + DpiHelper.Scale(4);  // 4px gap after icon
                 var textY = (btn.Height - ModernTheme.RegularFont.Height) / 2;
                 g.DrawString(text, ModernTheme.RegularFont, textBrush, textX, textY);
             };
@@ -2392,7 +2463,9 @@ namespace RegistryExpert
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
                 Panel1MinSize = 50,
-                Panel2MinSize = 50
+                Panel2MinSize = 50,
+                AccessibleName = "Analyze Registry",
+                AccessibleRole = AccessibleRole.Pane
             };
             splitContainer.Panel1.BackColor = ModernTheme.Background;
             splitContainer.Panel2.BackColor = ModernTheme.Background;
@@ -2410,7 +2483,9 @@ namespace RegistryExpert
             {
                 Dock = DockStyle.Fill,
                 BackColor = ModernTheme.Background,
-                Padding = new Padding(0)
+                Padding = new Padding(0),
+                AccessibleName = "Category Panel",
+                AccessibleRole = AccessibleRole.Pane
             };
             themeData.LeftPanel = leftPanel;
 
@@ -2442,22 +2517,47 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 BorderStyle = BorderStyle.None,
                 ItemHeight = DpiHelper.Scale(48),
-                DrawMode = DrawMode.OwnerDrawFixed
+                DrawMode = DrawMode.OwnerDrawFixed,
+                AccessibleName = "Categories",
+                AccessibleRole = AccessibleRole.List
             };
             themeData.CategoryList = categoryList;
 
-            // Add categories with icons (using Segoe UI Symbol characters)
-            var categories = new (string icon, string text, string key)[]
+            // Add categories with PNG icons loaded from embedded resources
+            var categoryKeys = new (string text, string key)[]
             {
-                ("\uE770", "System", "System"),           // PC icon
-                ("\uE77B", "Profiles", "Profiles"),       // Contact icon
-                ("\uE15E", "Services", "Services"),       // Services icon
-                ("\uE74C", "Software", "Software"),       // Apps icon
-                ("\uEDA2", "Storage", "Storage"),         // Hard disk icon
-                ("\uE774", "Network", "Network"),         // Globe icon
-                ("\uE8AF", "RDP", "RDP"),                 // Remote Desktop icon
-                ("\uE895", "Update", "Update")            // Download/Update icon
+                ("System", "System"),
+                ("Profiles", "Profiles"),
+                ("Services", "Services"),
+                ("Software", "Software"),
+                ("Storage", "Storage"),
+                ("Network", "Network"),
+                ("RDP", "RDP"),
+                ("Update", "Update")
             };
+
+            // Load category icon images from embedded resources
+            var categoryIcons = new Dictionary<string, Image>();
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            int iconDisplaySize = DpiHelper.Scale(32);
+            foreach (var (text, key) in categoryKeys)
+            {
+                var resourceName = $"RegistryExpert.icons.category_{key.ToLowerInvariant()}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    var scaled = new Bitmap(iconDisplaySize, iconDisplaySize);
+                    using (var g = Graphics.FromImage(scaled))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+                        g.DrawImage(original, 0, 0, iconDisplaySize, iconDisplaySize);
+                    }
+                    categoryIcons[key] = scaled;
+                }
+            }
+            themeData.CategoryIcons = categoryIcons;
 
             // Determine which categories are available based on hive type
             var currentHiveType = _parser.CurrentHiveType;
@@ -2498,9 +2598,9 @@ namespace RegistryExpert
             // as the Analyze feature doesn't have specific support for these hive types
 
             // Add categories with enabled ones first, then disabled ones
-            var availableCats = new List<(string icon, string text, string key)>();
-            var unavailableCats = new List<(string icon, string text, string key)>();
-            foreach (var cat in categories)
+            var availableCats = new List<(string text, string key)>();
+            var unavailableCats = new List<(string text, string key)>();
+            foreach (var cat in categoryKeys)
             {
                 if (enabledCategories.Contains(cat.key))
                     availableCats.Add(cat);
@@ -2513,25 +2613,22 @@ namespace RegistryExpert
                 categoryList.Items.Add(cat);
 
             // Font point sizes are already DPI-aware, so don't scale them
-            var iconFont = new Font("Segoe MDL2 Assets", 16F);
             var textFont = new Font("Segoe UI Semibold", 10.5F);
-            themeData.CategoryIconFont = iconFont;
             themeData.CategoryTextFont = textFont;
 
             // Pre-calculate DPI-scaled values for drawing positions (to match scaled ItemHeight)
             int iconCenterXOffset = DpiHelper.Scale(32);
-            int iconCircleRadius = DpiHelper.Scale(16);
-            int iconCircleSize = DpiHelper.Scale(32);
+            int iconHalfSize = DpiHelper.Scale(16);
             int textXOffset = DpiHelper.Scale(60);
             int textRightPadding = DpiHelper.Scale(65);
             int accentBarWidth = DpiHelper.Scale(3);
             int accentBarPadding = DpiHelper.Scale(8);
 
-            // Custom draw for category items - modern card-like style
+            // Custom draw for category items - modern card-like style with PNG icons
             categoryList.DrawItem += (s, ev) =>
             {
                 if (ev.Index < 0) return;
-                var item = ((string icon, string text, string key))categoryList.Items[ev.Index];
+                var item = ((string text, string key))categoryList.Items[ev.Index];
                 bool isEnabled = enabledCategories.Contains(item.key);
                 
                 bool isSelected = (ev.State & DrawItemState.Selected) == DrawItemState.Selected;
@@ -2554,28 +2651,45 @@ namespace RegistryExpert
                 Color textColor = isEnabled 
                     ? (isSelected ? ModernTheme.Accent : ModernTheme.TextPrimary) 
                     : ModernTheme.TextDisabled;
-                Color iconColor = isEnabled 
-                    ? ModernTheme.Accent 
-                    : ModernTheme.TextDisabled;
 
-                // Draw icon in a subtle circle background
+                // Draw category icon image
                 var iconCenterX = ev.Bounds.X + iconCenterXOffset;
                 var iconCenterY = ev.Bounds.Y + ev.Bounds.Height / 2;
                 
-                if (isEnabled)
+                if (categoryIcons.TryGetValue(item.key, out var iconImage))
                 {
-                    using var circleBrush = new SolidBrush(Color.FromArgb(25, ModernTheme.Accent));
-                    ev.Graphics.FillEllipse(circleBrush, iconCenterX - iconCircleRadius, iconCenterY - iconCircleRadius, iconCircleSize, iconCircleSize);
+                    var iconX = iconCenterX - iconHalfSize;
+                    var iconY = iconCenterY - iconHalfSize;
+                    
+                    if (isEnabled)
+                    {
+                        ev.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        ev.Graphics.DrawImage(iconImage, iconX, iconY, iconDisplaySize, iconDisplaySize);
+                    }
+                    else
+                    {
+                        // Draw greyed-out icon for disabled categories
+                        using var grayAttributes = new System.Drawing.Imaging.ImageAttributes();
+                        var grayMatrix = new System.Drawing.Imaging.ColorMatrix(new float[][]
+                        {
+                            new float[] { 0.3f, 0.3f, 0.3f, 0, 0 },
+                            new float[] { 0.3f, 0.3f, 0.3f, 0, 0 },
+                            new float[] { 0.3f, 0.3f, 0.3f, 0, 0 },
+                            new float[] { 0, 0, 0, 0.4f, 0 },
+                            new float[] { 0, 0, 0, 0, 1 }
+                        });
+                        grayAttributes.SetColorMatrix(grayMatrix);
+                        ev.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        ev.Graphics.DrawImage(iconImage,
+                            new Rectangle(iconX, iconY, iconDisplaySize, iconDisplaySize),
+                            0, 0, iconImage.Width, iconImage.Height,
+                            GraphicsUnit.Pixel, grayAttributes);
+                    }
                 }
-
-                // Draw icon - center it in the circle
-                using var iconBrush = new SolidBrush(iconColor);
-                using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                var iconRect = new RectangleF(iconCenterX - iconCircleRadius, iconCenterY - iconCircleRadius, iconCircleSize, iconCircleSize);
-                ev.Graphics.DrawString(item.icon, iconFont, iconBrush, iconRect, sf);
 
                 // Draw text
                 using var textBrush = new SolidBrush(textColor);
+                using var sf = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
                 var textRect = new Rectangle(ev.Bounds.X + textXOffset, ev.Bounds.Y, ev.Bounds.Width - textRightPadding, ev.Bounds.Height);
                 ev.Graphics.DrawString(item.text, textFont, textBrush, textRect, sf);
             };
@@ -2585,13 +2699,13 @@ namespace RegistryExpert
             {
                 if (categoryList.SelectedIndex >= 0 && categoryList.SelectedItem != null)
                 {
-                    var selected = ((string icon, string text, string key))categoryList.SelectedItem;
+                    var selected = ((string text, string key))categoryList.SelectedItem;
                     if (!enabledCategories.Contains(selected.key))
                     {
                         // Find first enabled category
                         for (int i = 0; i < categoryList.Items.Count; i++)
                         {
-                            var item = ((string icon, string text, string key))categoryList.Items[i];
+                            var item = ((string text, string key))categoryList.Items[i];
                             if (enabledCategories.Contains(item.key))
                             {
                                 categoryList.SelectedIndex = i;
@@ -2637,7 +2751,7 @@ namespace RegistryExpert
                     lastHoveredIndex = index;
                     if (index >= 0 && index < categoryList.Items.Count)
                     {
-                        var item = ((string icon, string text, string key))categoryList.Items[index];
+                        var item = ((string text, string key))categoryList.Items[index];
                         if (!enabledCategories.Contains(item.key) && categoryHiveRequirements.TryGetValue(item.key, out var requiredHive))
                         {
                             categoryToolTip.SetToolTip(categoryList, $"This feature requires the {requiredHive} hive to be loaded");
@@ -2666,7 +2780,7 @@ namespace RegistryExpert
                 int index = categoryList.IndexFromPoint(ev.Location);
                 if (index >= 0 && index < categoryList.Items.Count)
                 {
-                    var item = ((string icon, string text, string key))categoryList.Items[index];
+                    var item = ((string text, string key))categoryList.Items[index];
                     if (!enabledCategories.Contains(item.key) && categoryHiveRequirements.TryGetValue(item.key, out var requiredHive))
                     {
                         MessageBox.Show(
@@ -2687,7 +2801,9 @@ namespace RegistryExpert
             {
                 Dock = DockStyle.Fill,
                 BackColor = ModernTheme.Background,
-                Padding = new Padding(0)
+                Padding = new Padding(0),
+                AccessibleName = "Content Panel",
+                AccessibleRole = AccessibleRole.Pane
             };
             themeData.RightPanel = rightPanel;
 
@@ -2725,7 +2841,9 @@ namespace RegistryExpert
                 BackColor = ModernTheme.Surface,
                 Padding = DpiHelper.ScalePadding(5, 10, 5, 10),
                 FlowDirection = FlowDirection.LeftToRight,
-                WrapContents = true
+                WrapContents = true,
+                AccessibleName = "Subcategory Tabs",
+                AccessibleRole = AccessibleRole.ToolBar
             };
             themeData.SubCategoryPanel = subCategoryPanel;
 
@@ -2745,7 +2863,7 @@ namespace RegistryExpert
             themeData.AppxFilterPanel = appxFilterPanel;
 
             // Main content area - DataGridView for better display
-            var contentGrid = new DataGridView { Dock = DockStyle.Fill };
+            var contentGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Analysis Results" };
             ModernTheme.ApplyTo(contentGrid);
             contentGrid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;  // Override
             contentGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
@@ -2785,7 +2903,9 @@ namespace RegistryExpert
                 Font = ModernTheme.RegularFont,
                 BorderStyle = BorderStyle.None,
                 ItemHeight = DpiHelper.Scale(32),
-                DrawMode = DrawMode.OwnerDrawFixed
+                DrawMode = DrawMode.OwnerDrawFixed,
+                AccessibleName = "Network Adapters",
+                AccessibleRole = AccessibleRole.List
             };
             themeData.NetworkAdaptersList = networkAdaptersList;
 
@@ -3130,7 +3250,8 @@ namespace RegistryExpert
                         Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
-                        Tag = filterKey
+                        Tag = filterKey,
+                        AccessibleName = StripEmojiPrefix(text)
                     };
                     btn.FlatAppearance.BorderColor = ModernTheme.Border;
                     btn.FlatAppearance.BorderSize = 1;
@@ -3210,7 +3331,8 @@ namespace RegistryExpert
                         Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
-                        Tag = filterKey
+                        Tag = filterKey,
+                        AccessibleName = StripEmojiPrefix(text)
                     };
                     btn.FlatAppearance.BorderColor = ModernTheme.Border;
                     btn.FlatAppearance.BorderSize = 1;
@@ -3269,7 +3391,8 @@ namespace RegistryExpert
                         Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
-                        Tag = viewKey
+                        Tag = viewKey,
+                        AccessibleName = viewLabel
                     };
                     btn.FlatAppearance.BorderColor = ModernTheme.Border;
                     btn.FlatAppearance.BorderSize = 1;
@@ -3725,7 +3848,8 @@ namespace RegistryExpert
                         Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
-                        Tag = filterKey
+                        Tag = filterKey,
+                        AccessibleName = label
                     };
                     btn.FlatAppearance.BorderColor = ModernTheme.Border;
                     btn.FlatAppearance.BorderSize = 1;
@@ -3770,7 +3894,8 @@ namespace RegistryExpert
                     Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                     Margin = DpiHelper.ScalePadding(2),
                     Cursor = isSoftware ? Cursors.Hand : Cursors.Default,
-                    Tag = "Extensions"
+                    Tag = "Extensions",
+                    AccessibleName = "Extensions"
                 };
                 extensionsBtn.FlatAppearance.BorderColor = isSoftware ? ModernTheme.Border : ModernTheme.TextDisabled;
                 extensionsBtn.FlatAppearance.BorderSize = 1;
@@ -4419,7 +4544,8 @@ namespace RegistryExpert
                             Font = ModernTheme.RegularFont,
                             Cursor = Cursors.Hand,
                             Margin = DpiHelper.ScalePadding(0, 0, 8, 0),
-                            Tag = profileKey
+                            Tag = profileKey,
+                            AccessibleName = $"{displayName}: {statusText}"
                         };
                         profileBtn.FlatAppearance.BorderColor = ModernTheme.Border;
                         profileBtn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
@@ -4730,7 +4856,8 @@ namespace RegistryExpert
                         Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = Cursors.Hand,
-                        Tag = filterKey
+                        Tag = filterKey,
+                        AccessibleName = StripEmojiPrefix(text)
                     };
                     btn.FlatAppearance.BorderColor = ModernTheme.Border;
                     btn.FlatAppearance.BorderSize = 1;
@@ -4780,7 +4907,8 @@ namespace RegistryExpert
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(20),
                 ReadOnly = true,
-                BorderStyle = BorderStyle.None
+                BorderStyle = BorderStyle.None,
+                AccessibleName = "Registry Path"
             };
             themeData.RegistryPathLabel = registryPathLabel;
 
@@ -4794,7 +4922,8 @@ namespace RegistryExpert
                 ReadOnly = true,
                 BorderStyle = BorderStyle.None,
                 WordWrap = true,
-                ScrollBars = RichTextBoxScrollBars.Vertical
+                ScrollBars = RichTextBoxScrollBars.Vertical,
+                AccessibleName = "Registry Value Details"
             };
             themeData.RegistryValueBox = registryValueBox;
 
@@ -5044,7 +5173,7 @@ namespace RegistryExpert
             categoryList.SelectedIndexChanged += (s, ev) =>
             {
                 if (categoryList.SelectedIndex < 0 || categoryList.SelectedItem == null) return;
-                var selected = ((string icon, string text, string key))categoryList.SelectedItem;
+                var selected = ((string text, string key))categoryList.SelectedItem;
                 var key = selected.key;
 
                 // Skip if category is disabled (MouseDown handler shows the message)
@@ -5196,7 +5325,8 @@ namespace RegistryExpert
                         AutoSize = false,
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = isAvailable ? Cursors.Hand : Cursors.Default,
-                        Tag = section
+                        Tag = section,
+                        AccessibleName = StripEmojiPrefix(section.Title)
                     };
                     
                     // Measure text to set button width
@@ -5275,7 +5405,8 @@ namespace RegistryExpert
                             AutoSize = false,
                             Margin = DpiHelper.ScalePadding(2),
                             Cursor = Cursors.Default,
-                            Tag = "SoftwareUpdateFeature"
+                            Tag = "SoftwareUpdateFeature",
+                            AccessibleName = StripEmojiPrefix(subcatTitle)
                         };
                         
                         // Measure text to set button width
@@ -5338,7 +5469,8 @@ namespace RegistryExpert
                         Size = DpiHelper.ScaleSize(110, 28),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = isSoftwareHive ? Cursors.Hand : Cursors.Default,
-                        Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null
+                        Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null,
+                        AccessibleName = "Activation"
                     };
                     activationBtn.FlatAppearance.BorderColor = isSoftwareHive ? ModernTheme.Border : grayedOutColor;
                     activationBtn.FlatAppearance.BorderSize = 1;
@@ -5414,7 +5546,8 @@ namespace RegistryExpert
                         Size = DpiHelper.ScaleSize(120, 28),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = isComponentsHive ? Cursors.Hand : Cursors.Default,
-                        Tag = "Components"
+                        Tag = "Components",
+                        AccessibleName = "Components"
                     };
                     componentsBtn.FlatAppearance.BorderColor = isComponentsHive ? ModernTheme.Border : grayedOutColor;
                     componentsBtn.FlatAppearance.BorderSize = 1;
@@ -5531,7 +5664,7 @@ namespace RegistryExpert
             int firstEnabledIndex = -1;
             for (int i = 0; i < categoryList.Items.Count; i++)
             {
-                var item = ((string icon, string text, string key))categoryList.Items[i];
+                var item = ((string text, string key))categoryList.Items[i];
                 if (enabledCategories.Contains(item.key))
                 {
                     firstEnabledIndex = i;
