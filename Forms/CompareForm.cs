@@ -69,6 +69,21 @@ namespace RegistryExpert
         private Label _progressLabel = null!;
         private ProgressBar _progressBar = null!;
         private ImageList? _valueImageList; // Track for disposal (value type icons)
+        
+        // Pre-computed diff status for every key path (lightweight — no Win32 controls)
+        private Dictionary<string, DiffInfo>? _leftDiffByPath;
+        private Dictionary<string, DiffInfo>? _rightDiffByPath;
+
+        // Status bar (bottom of form - progress during hive loading)
+        private Panel _statusPanel = null!;
+        private Panel _statusRightPanel = null!;
+        private string _statusText = "Ready";
+        private Color _statusForeColor;
+        private ProgressBar _loadProgressBar = null!;
+        private Panel _progressWrapper = null!;
+        private Button _cancelLoadButton = null!;
+        private Panel _cancelWrapper = null!;
+        private CancellationTokenSource? _loadCts;
 
         public CompareForm()
         {
@@ -98,9 +113,6 @@ namespace RegistryExpert
 
         private void CompareForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
-            // IMPORTANT: Hide form immediately so user sees instant close
-            this.Visible = false;
-            
             // Mark as disposed to prevent any further operations
             _isDisposed = true;
             
@@ -108,50 +120,54 @@ namespace RegistryExpert
             try
             {
                 _cancellationTokenSource?.Cancel();
+                _loadCts?.Cancel();
             }
             catch { }
             
-            // Unsubscribe from theme changes first (must be on UI thread)
+            // Unsubscribe from theme changes (must be on UI thread)
             if (_themeChangedHandler != null)
             {
                 ModernTheme.ThemeChanged -= _themeChangedHandler;
                 _themeChangedHandler = null;
             }
             
-            // NOTE: Do NOT call _leftTreeView.Nodes.Clear() or _rightTreeView.Nodes.Clear() here.
-            // Clearing hundreds of thousands of TreeNodes sends individual TVM_DELETEITEM Win32 messages
-            // for each node, blocking the UI thread for 15-20 seconds on large hives.
-            // Instead, let base.Dispose() destroy the native SysTreeView32 controls via DestroyWindow,
-            // which frees all items in a single bulk operation.
-            
             // Capture references for background disposal
             var leftParser = _leftParser;
             var rightParser = _rightParser;
             var cts = _cancellationTokenSource;
+            var loadCts = _loadCts;
             var leftKeys = _leftKeysByPath;
             var rightKeys = _rightKeysByPath;
             var leftNodes = _leftNodesByPath;
             var rightNodes = _rightNodesByPath;
+            var leftDiff = _leftDiffByPath;
+            var rightDiff = _rightDiffByPath;
             
             // Clear references immediately
             _leftParser = null;
             _rightParser = null;
             _cancellationTokenSource = null;
+            _loadCts = null;
             _leftKeysByPath = null;
             _rightKeysByPath = null;
             _leftNodesByPath = null;
             _rightNodesByPath = null;
+            _leftDiffByPath = null;
+            _rightDiffByPath = null;
             
             // Dispose heavy resources in background (no UI access)
             Task.Run(() =>
             {
                 try { cts?.Dispose(); } catch { }
+                try { loadCts?.Dispose(); } catch { }
                 try { leftParser?.Dispose(); } catch { }
                 try { rightParser?.Dispose(); } catch { }
                 leftKeys?.Clear();
                 rightKeys?.Clear();
                 leftNodes?.Clear();
                 rightNodes?.Clear();
+                leftDiff?.Clear();
+                rightDiff?.Clear();
             });
         }
 
@@ -176,7 +192,7 @@ namespace RegistryExpert
         /// </summary>
         public void SetLeftHive(string filePath)
         {
-            LoadHiveFile(filePath, isLeft: true);
+            _ = LoadHiveFileAsync(filePath, isLeft: true);
         }
 
         private void InitializeComponent()
@@ -255,8 +271,12 @@ namespace RegistryExpert
             };
             _centerButtonPanel.Controls.Add(_diffOnlyCheckbox);
 
+            // Status bar (bottom of form) — matches MainForm status bar design
+            CreateStatusBar();
+
             this.Controls.Add(_centerButtonPanel);
             this.Controls.Add(_mainSplit);
+            this.Controls.Add(_statusPanel); // Dock.Bottom added after Dock.Fill so it sits below
 
             // Bring center button to front
             _centerButtonPanel.BringToFront();
@@ -336,6 +356,122 @@ namespace RegistryExpert
             this.Controls.Add(_progressOverlay);
             _progressOverlay.BringToFront();
         }
+
+        private void CreateStatusBar()
+        {
+            _statusForeColor = ModernTheme.TextSecondary;
+            
+            _statusPanel = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+
+            // Owner-draw status text: enable double-buffering and paint handler
+            typeof(Panel).InvokeMember("DoubleBuffered",
+                System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, _statusPanel, new object[] { true });
+            _statusPanel.Paint += StatusPanel_Paint;
+            _statusPanel.AccessibleRole = AccessibleRole.StatusBar;
+            _statusPanel.AccessibleName = _statusText;
+
+            // Fixed-width right panel
+            _statusRightPanel = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(170),
+                BackColor = Color.Transparent,
+            };
+
+            // Progress bar inside a wrapper for vertical centering
+            _loadProgressBar = new ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 0,
+                Dock = DockStyle.Fill,
+                Style = ProgressBarStyle.Continuous,
+            };
+            _progressWrapper = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(100),
+                Padding = new Padding(0, DpiHelper.Scale(8), 0, DpiHelper.Scale(8)),
+                Visible = false,
+                BackColor = Color.Transparent,
+            };
+            _progressWrapper.Controls.Add(_loadProgressBar);
+
+            // Cancel button inside a wrapper for vertical centering
+            _cancelLoadButton = new Button
+            {
+                Text = "Cancel",
+                AccessibleName = "Cancel Loading",
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.SmallFont,
+                Cursor = Cursors.Hand,
+                Dock = DockStyle.Fill,
+            };
+            _cancelLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
+            _cancelLoadButton.FlatAppearance.BorderSize = 1;
+            _cancelLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            _cancelLoadButton.FlatAppearance.MouseDownBackColor = ModernTheme.SurfaceLight;
+            _cancelLoadButton.Click += CancelLoad_Click;
+            _cancelWrapper = new Panel
+            {
+                Dock = DockStyle.Right,
+                Width = DpiHelper.Scale(68),
+                Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4)),
+                Visible = false,
+                BackColor = Color.Transparent,
+            };
+            _cancelWrapper.Controls.Add(_cancelLoadButton);
+
+            // Dock.Right controls added after Dock.Fill (higher z-order, docked first)
+            _statusRightPanel.Controls.Add(_cancelWrapper);
+            _statusRightPanel.Controls.Add(_progressWrapper);
+
+            _statusPanel.Controls.Add(_statusRightPanel);
+        }
+
+        private void CancelLoad_Click(object? sender, EventArgs e)
+        {
+            _loadCts?.Cancel();
+            _cancelLoadButton.Enabled = false;
+            SetStatusText("Cancelling...");
+        }
+
+        private void SetStatusText(string text, Color? color = null)
+        {
+            _statusText = text;
+            _statusPanel.AccessibleName = text;
+            if (color.HasValue)
+                _statusForeColor = color.Value;
+            _statusPanel.Invalidate();
+        }
+
+        private void StatusPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            var padding = _statusPanel.Padding;
+            var textRect = new Rectangle(
+                padding.Left,
+                padding.Top,
+                _statusPanel.ClientSize.Width - _statusRightPanel.Width - padding.Left - padding.Right,
+                _statusPanel.ClientSize.Height - padding.Top - padding.Bottom);
+
+            TextRenderer.DrawText(
+                e.Graphics,
+                _statusText,
+                ModernTheme.RegularFont,
+                textRect,
+                _statusForeColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+
 
         private void CenterProgressOverlay()
         {
@@ -588,6 +724,7 @@ namespace RegistryExpert
             };
             ModernTheme.ApplyTo(treeView);
             treeView.DrawNode += TreeView_DrawNode;
+            treeView.BeforeExpand += TreeView_BeforeExpand;
 
             if (isLeft)
             {
@@ -674,7 +811,7 @@ namespace RegistryExpert
 
         private static string GetValueImageKey(string? valueType) => ModernTheme.GetValueImageKey(valueType);
 
-        private void LoadHive(bool isLeft)
+        private async void LoadHive(bool isLeft)
         {
             using var dialog = new OpenFileDialog
             {
@@ -685,16 +822,55 @@ namespace RegistryExpert
 
             if (dialog.ShowDialog() == DialogResult.OK)
             {
-                LoadHiveFile(dialog.FileName, isLeft);
+                await LoadHiveFileAsync(dialog.FileName, isLeft);
             }
         }
 
-        private void LoadHiveFile(string filePath, bool isLeft)
+        private async Task LoadHiveFileAsync(string filePath, bool isLeft)
         {
+            var side = isLeft ? "left" : "right";
             try
             {
+                // Cancel any previous load operation
+                _loadCts?.Cancel();
+                _loadCts?.Dispose();
+                _loadCts = new CancellationTokenSource();
+                var token = _loadCts.Token;
+
+                // Show progress UI
+                SetStatusText($"Loading {side} hive...", ModernTheme.Warning);
+                _loadProgressBar.Value = 0;
+                _progressWrapper.Visible = true;
+                _cancelWrapper.Visible = true;
+                _cancelLoadButton.Enabled = true;
+
+                // Disable load/compare buttons during loading
+                _leftLoadButton.Enabled = false;
+                _rightLoadButton.Enabled = false;
+                _compareButton.Enabled = false;
+
                 var parser = new OfflineRegistryParser();
-                parser.LoadHive(filePath);
+
+                var lastPhase = string.Empty;
+                var stageNumber = 0;
+
+                var progress = new Progress<(string phase, double percent)>(update =>
+                {
+                    if (update.phase != lastPhase)
+                    {
+                        lastPhase = update.phase;
+                        stageNumber++;
+                    }
+                    var phase = update.phase.TrimEnd('.');
+                    var newText = $"Stage {stageNumber}/2: {phase} {update.percent:P0}";
+                    if (_statusText != newText)
+                        SetStatusText(newText);
+                    var newValue = Math.Clamp((int)(update.percent * 100), 0, 100);
+                    if (_loadProgressBar.Value != newValue)
+                        _loadProgressBar.Value = newValue;
+                });
+
+                await Task.Run(() => parser.LoadHive(filePath, progress, token), token).ConfigureAwait(true);
 
                 if (isLeft)
                 {
@@ -721,6 +897,7 @@ namespace RegistryExpert
                             "Type Mismatch",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Warning);
+                        SetStatusText("Hive type mismatch", ModernTheme.Warning);
                         return;
                     }
 
@@ -737,11 +914,28 @@ namespace RegistryExpert
                     _rightLoadButton.FlatAppearance.BorderSize = 1;
                 }
 
+                SetStatusText($"Loaded: {System.IO.Path.GetFileName(filePath)}", ModernTheme.Success);
                 UpdateUI();
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatusText("Loading cancelled", ModernTheme.Warning);
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Error loading hive:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                SetStatusText($"Failed to load {side} hive", ModernTheme.Error);
+            }
+            finally
+            {
+                _progressWrapper.Visible = false;
+                _cancelWrapper.Visible = false;
+
+                // Re-enable buttons
+                _leftLoadButton.Enabled = true;
+                _compareButton.Enabled = true;
+                // Right load button state depends on left parser
+                UpdateUI();
             }
         }
 
@@ -816,42 +1010,53 @@ namespace RegistryExpert
 
                 // Update progress
                 _progressLabel.Text = "Analyzing differences...";
-                _progressLabel.Refresh();  // Force immediate repaint
+                _progressLabel.Refresh();
                 await Task.Delay(10, token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested) return;
 
-                // Populate trees (run on background thread to keep UI responsive)
-                TreeNode? leftRootNode = null;
-                TreeNode? rightRootNode = null;
+                // Pre-compute diff status for every key path (lightweight — no Win32 controls).
+                // This replaces the old recursive CreateTreeNode which built 500K+ TreeNodes.
+                var leftKeys = _leftKeysByPath;
+                var rightKeys = _rightKeysByPath;
                 
                 await Task.Run(() =>
                 {
-                    if (token.IsCancellationRequested) return;
+                    if (token.IsCancellationRequested || leftKeys == null || rightKeys == null) return;
+                    
+                    _leftDiffByPath = new Dictionary<string, DiffInfo>(StringComparer.OrdinalIgnoreCase);
+                    _rightDiffByPath = new Dictionary<string, DiffInfo>(StringComparer.OrdinalIgnoreCase);
+                    
                     var leftRoot = leftParser.GetRootKey();
                     var rightRoot = rightParser.GetRootKey();
                     
                     if (leftRoot != null && !token.IsCancellationRequested)
-                        leftRootNode = CreateTreeNode(leftRoot, "", isLeftTree: true);
+                        ComputeDiffRecursive(leftRoot, "", rightKeys, _leftDiffByPath, token);
                     if (rightRoot != null && !token.IsCancellationRequested)
-                        rightRootNode = CreateTreeNode(rightRoot, "", isLeftTree: false);
+                        ComputeDiffRecursive(rightRoot, "", leftKeys, _rightDiffByPath, token);
                 }, token).ConfigureAwait(true);
 
                 if (token.IsCancellationRequested) return;
 
-                // Switch progress to static "Rendering..." state before UI-blocking work
-                // (marquee freezes during UI-thread ops; a full bar looks intentional)
-                _progressLabel.Text = "Rendering...";
-                _progressBar.Style = ProgressBarStyle.Continuous;
-                _progressBar.Value = 100;
-                _progressOverlay.Refresh();
+                // Create root nodes lazily (just root + first-level children with dummies).
+                // With lazy-load, adding nodes is instant — no rendering delay.
+                _leftNodesByPath = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
+                _rightNodesByPath = new Dictionary<string, TreeNode>(StringComparer.OrdinalIgnoreCase);
+                
+                TreeNode? leftRootNode = null;
+                TreeNode? rightRootNode = null;
+                
+                var leftRootKey = leftParser.GetRootKey();
+                var rightRootKey = rightParser.GetRootKey();
+                
+                if (leftRootKey != null)
+                    leftRootNode = CreateLazyNode(leftRootKey, leftRootKey.KeyName, isLeftTree: true);
+                if (rightRootKey != null)
+                    rightRootNode = CreateLazyNode(rightRootKey, rightRootKey.KeyName, isLeftTree: false);
 
-                // Add nodes to tree views on UI thread (overlay hides intermediate state)
+                // Add nodes to tree views on UI thread
                 _leftTreeView.BeginUpdate();
                 _rightTreeView.BeginUpdate();
-                
-                _leftTreeView.Nodes.Clear();
-                _rightTreeView.Nodes.Clear();
                 
                 if (leftRootNode != null)
                 {
@@ -867,7 +1072,7 @@ namespace RegistryExpert
                 _leftTreeView.EndUpdate();
                 _rightTreeView.EndUpdate();
 
-                // Switch to comparison view (still behind overlay)
+                // Switch to comparison view
                 _comparisonDone = true;
                 _centerButtonPanel.Visible = false;
                 _leftLandingPanel.Visible = false;
@@ -904,8 +1109,13 @@ namespace RegistryExpert
             _leftLandingPanel.Visible = true;
             _rightLandingPanel.Visible = true;
             
-            _leftTreeView.Nodes.Clear();
-            _rightTreeView.Nodes.Clear();
+            // Replace tree views instead of calling Nodes.Clear() — clearing sends
+            // individual TVM_DELETEITEM messages per node and freezes the UI for 15-20s
+            // on large hives. Replacing the control is instant; old ones are disposed
+            // asynchronously via BeginInvoke so the heavy DestroyWindow happens later.
+            ReplaceTreeView(ref _leftTreeView, isLeft: true);
+            ReplaceTreeView(ref _rightTreeView, isLeft: false);
+            
             _leftValuesGrid.Rows.Clear();
             _rightValuesGrid.Rows.Clear();
             _leftPathBox.Text = "";
@@ -914,8 +1124,62 @@ namespace RegistryExpert
             // Clear node lookup dictionaries
             _leftNodesByPath?.Clear();
             _rightNodesByPath?.Clear();
+            _leftDiffByPath?.Clear();
+            _rightDiffByPath?.Clear();
 
             UpdateUI();
+        }
+
+        /// <summary>
+        /// Replace a TreeView with a fresh empty one.
+        /// With lazy-load, trees have very few nodes so disposal is instant.
+        /// </summary>
+        private void ReplaceTreeView(ref TreeView treeView, bool isLeft)
+        {
+            var parent = treeView.Parent;
+            if (parent == null) return;
+            
+            var oldTree = treeView;
+            
+            // Create replacement with identical configuration
+            var newTree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                DrawMode = TreeViewDrawMode.OwnerDrawText,
+                HideSelection = false,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                Font = ModernTheme.DataFont,
+                AccessibleName = isLeft ? "Left Hive Keys" : "Right Hive Keys"
+            };
+            ModernTheme.ApplyTo(newTree);
+            newTree.DrawNode += TreeView_DrawNode;
+            newTree.BeforeExpand += TreeView_BeforeExpand;
+            
+            if (isLeft)
+            {
+                newTree.AfterSelect += LeftTreeView_AfterSelect;
+                newTree.AfterExpand += LeftTreeView_AfterExpand;
+                newTree.AfterCollapse += LeftTreeView_AfterCollapse;
+            }
+            else
+            {
+                newTree.AfterSelect += RightTreeView_AfterSelect;
+                newTree.AfterExpand += RightTreeView_AfterExpand;
+                newTree.AfterCollapse += RightTreeView_AfterCollapse;
+            }
+            
+            // Swap: add new, remove old
+            parent.SuspendLayout();
+            parent.Controls.Add(newTree);
+            parent.Controls.Remove(oldTree);
+            parent.ResumeLayout();
+            
+            treeView = newTree;
+            
+            // With lazy-load, trees have very few nodes — dispose is instant
+            oldTree.Dispose();
         }
 
         private Dictionary<string, RegistryKey> BuildKeyIndex(RegistryKey? key, string parentPath)
@@ -942,100 +1206,168 @@ namespace RegistryExpert
             }
         }
 
-        private TreeNode? CreateTreeNode(RegistryKey key, string parentPath, bool isLeftTree)
+        /// <summary>
+        /// Pre-compute diff status for every key path in a hive.
+        /// Mirrors the GREEN/RED logic from the old recursive CreateTreeNode,
+        /// but only walks RegistryKey objects — no TreeNodes or Win32 controls.
+        /// </summary>
+        private void ComputeDiffRecursive(RegistryKey key, string parentPath,
+            Dictionary<string, RegistryKey> otherIndex,
+            Dictionary<string, DiffInfo> result,
+            CancellationToken token)
         {
+            token.ThrowIfCancellationRequested();
+            
             var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
             
-            var otherIndex = isLeftTree ? _rightKeysByPath : _leftKeysByPath;
+            bool isUnique = !otherIndex.ContainsKey(path);
+            bool hasValueDiff = false;
             
-            bool existsInOther = otherIndex != null && otherIndex.ContainsKey(path);
-            bool hasValueDifferences = false;
+            if (!isUnique && otherIndex.TryGetValue(path, out var otherKey))
+                hasValueDiff = HasValueDifferences(key, otherKey);
             
-            if (existsInOther)
-            {
-                hasValueDifferences = HasValueDifferences(key, otherIndex[path]);
-            }
-
-            var nodeTag = new NodeTag 
-            { 
-                Path = path, 
-                Key = key, 
-                HasDifference = false,
-                IsUniqueToThisHive = false,
-                HasValueDifference = false
-            };
-            var node = new TreeNode(key.KeyName)
-            {
-                Tag = nodeTag
-            };
-
-            // Add child nodes first and track their difference states
-            bool childHasDifference = false;
-            bool allChildrenAreUnique = true;  // Track if ALL children are 100% unique
+            bool anyChildHasDiff = false;
+            bool allChildrenUnique = true;
             
             if (key.SubKeys != null)
             {
-                foreach (var subKey in key.SubKeys.OrderBy(k => k.KeyName, StringComparer.OrdinalIgnoreCase))
+                foreach (var sub in key.SubKeys)
                 {
-                    var childNode = CreateTreeNode(subKey, path, isLeftTree);
-                    if (childNode != null)
+                    ComputeDiffRecursive(sub, path, otherIndex, result, token);
+                    var childPath = $"{path}\\{sub.KeyName}";
+                    if (result.TryGetValue(childPath, out var childDiff) && childDiff.HasDifference)
                     {
-                        node.Nodes.Add(childNode);
-                        var childTag = childNode.Tag as NodeTag;
-                        if (childTag?.HasDifference == true)
-                        {
-                            childHasDifference = true;
-                            // If any child is NOT purely unique (has value diff or mixed), then not all children are unique
-                            if (!childTag.IsUniqueToThisHive || childTag.HasValueDifference)
-                            {
-                                allChildrenAreUnique = false;
-                            }
-                        }
+                        anyChildHasDiff = true;
+                        if (!childDiff.IsUniqueToThisHive)
+                            allChildrenUnique = false;
                     }
                 }
             }
-
-            // Determine the color for this node:
-            // GREEN = This key doesn't exist in other hive AND all children are also 100% unique (or no children)
-            // RED = Any other difference (value diff, key exists but children differ, mixed situation)
             
-            bool thisKeyIsUnique = !existsInOther;
-            bool hasDifference = thisKeyIsUnique || hasValueDifferences || childHasDifference;
+            bool hasDiff = isUnique || hasValueDiff || anyChildHasDiff;
+            bool nodeIsUnique = false;
+            bool nodeHasValueDiff = false;
             
-            if (hasDifference)
+            if (hasDiff)
             {
-                nodeTag.HasDifference = true;
-                
-                if (thisKeyIsUnique && !childHasDifference)
-                {
-                    // Key is unique and has no children with differences -> GREEN
-                    nodeTag.IsUniqueToThisHive = true;
-                }
-                else if (thisKeyIsUnique && childHasDifference && allChildrenAreUnique)
-                {
-                    // Key is unique AND all children are also purely unique -> GREEN
-                    nodeTag.IsUniqueToThisHive = true;
-                }
+                if (isUnique && (!anyChildHasDiff || allChildrenUnique))
+                    nodeIsUnique = true;
                 else
-                {
-                    // All other cases -> RED:
-                    // - Key exists in both but has value differences
-                    // - Key is unique but some children have value differences (mixed)
-                    // - Key exists in both and children have differences
-                    nodeTag.HasValueDifference = true;
-                }
+                    nodeHasValueDiff = true;
             }
+            
+            result[path] = new DiffInfo(hasDiff, nodeIsUnique, nodeHasValueDiff);
+        }
 
+        /// <summary>
+        /// Create a single tree node using pre-computed diff info.
+        /// Non-recursive — children are populated lazily via BeforeExpand.
+        /// If the key has visible children, a dummy sentinel node (Tag == null)
+        /// is added to show the [+] expand indicator.
+        /// </summary>
+        private TreeNode? CreateLazyNode(RegistryKey key, string path, bool isLeftTree)
+        {
+            var diffIndex = isLeftTree ? _leftDiffByPath : _rightDiffByPath;
+            var nodeIndex = isLeftTree ? _leftNodesByPath : _rightNodesByPath;
+            
+            // Get pre-computed diff info
+            DiffInfo diffInfo = default;
+            diffIndex?.TryGetValue(path, out diffInfo);
+            
             // In differences-only mode, skip nodes with no differences
-            if (_showDifferencesOnly && !nodeTag.HasDifference)
+            if (_showDifferencesOnly && !diffInfo.HasDifference)
                 return null;
-
-            // Register node in lookup dictionary for O(1) finding
-            var nodeLookup = isLeftTree ? _leftNodesByPath : _rightNodesByPath;
-            if (nodeLookup != null)
-                nodeLookup[path] = node;
-
+            
+            var nodeTag = new NodeTag
+            {
+                Path = path,
+                Key = key,
+                HasDifference = diffInfo.HasDifference,
+                IsUniqueToThisHive = diffInfo.IsUniqueToThisHive,
+                HasValueDifference = diffInfo.HasValueDifference
+            };
+            var node = new TreeNode(key.KeyName) { Tag = nodeTag };
+            
+            // Add dummy child if this node has expandable children
+            if (HasVisibleChildren(key, path, isLeftTree))
+                node.Nodes.Add(new TreeNode()); // Dummy sentinel (Tag == null)
+            
+            // Register in lookup dictionary for O(1) finding
+            if (nodeIndex != null)
+                nodeIndex[path] = node;
+            
             return node;
+        }
+
+        /// <summary>
+        /// Check if a key has any children that should be shown in the tree.
+        /// In normal mode, any subkeys count. In differences-only mode,
+        /// only subkeys with differences (or descendant differences) count.
+        /// </summary>
+        private bool HasVisibleChildren(RegistryKey key, string parentPath, bool isLeftTree)
+        {
+            if (key.SubKeys == null || key.SubKeys.Count == 0)
+                return false;
+            
+            if (!_showDifferencesOnly)
+                return true;
+            
+            var diffIndex = isLeftTree ? _leftDiffByPath : _rightDiffByPath;
+            if (diffIndex == null) return false;
+            
+            foreach (var sub in key.SubKeys)
+            {
+                var subPath = $"{parentPath}\\{sub.KeyName}";
+                if (diffIndex.TryGetValue(subPath, out var diff) && diff.HasDifference)
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Create child nodes for a node being expanded.
+        /// Called from BeforeExpand handler when lazy sentinel is detected.
+        /// </summary>
+        private void PopulateChildren(TreeNode parentNode, bool isLeftTree)
+        {
+            var tag = parentNode.Tag as NodeTag;
+            if (tag == null) return;
+            
+            var key = tag.Key;
+            var parentPath = tag.Path;
+            
+            if (key.SubKeys == null) return;
+            
+            foreach (var subKey in key.SubKeys.OrderBy(k => k.KeyName, StringComparer.OrdinalIgnoreCase))
+            {
+                var path = $"{parentPath}\\{subKey.KeyName}";
+                var childNode = CreateLazyNode(subKey, path, isLeftTree);
+                if (childNode != null)
+                    parentNode.Nodes.Add(childNode);
+            }
+        }
+
+        private void TreeView_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
+        {
+            if (e.Node == null) return;
+            
+            // Check for dummy sentinel (Tag == null on first child)
+            if (e.Node.Nodes.Count != 1 || e.Node.Nodes[0].Tag != null)
+                return; // Already populated
+            
+            bool isLeft = (sender == _leftTreeView);
+            
+            var tree = sender as TreeView;
+            tree?.BeginUpdate();
+            try
+            {
+                e.Node.Nodes.Clear(); // Remove dummy (1 node, instant)
+                PopulateChildren(e.Node, isLeft);
+            }
+            finally
+            {
+                tree?.EndUpdate();
+            }
         }
 
         private bool HasValueDifferences(RegistryKey left, RegistryKey right)
@@ -1283,9 +1615,63 @@ namespace RegistryExpert
 
         private TreeNode? FindNodeByPath(TreeView tree, string path)
         {
-            // O(1) lookup using dictionary
-            var nodeLookup = tree == _leftTreeView ? _leftNodesByPath : _rightNodesByPath;
-            return nodeLookup != null && nodeLookup.TryGetValue(path, out var node) ? node : null;
+            bool isLeft = (tree == _leftTreeView);
+            var nodeIndex = isLeft ? _leftNodesByPath : _rightNodesByPath;
+            
+            // Fast path: check dictionary cache
+            if (nodeIndex != null && nodeIndex.TryGetValue(path, out var cached))
+                return cached;
+            
+            // Check if the path even exists in this tree's key index
+            var keyIndex = isLeft ? _leftKeysByPath : _rightKeysByPath;
+            if (keyIndex == null || !keyIndex.ContainsKey(path))
+                return null;
+            
+            // Also check if it should be visible (in differences-only mode)
+            if (_showDifferencesOnly)
+            {
+                var diffIndex = isLeft ? _leftDiffByPath : _rightDiffByPath;
+                if (diffIndex == null || !diffIndex.TryGetValue(path, out var diff) || !diff.HasDifference)
+                    return null;
+            }
+            
+            // Slow path: walk from root, expanding as needed to create lazy nodes
+            if (tree.Nodes.Count == 0) return null;
+            var current = tree.Nodes[0];
+            var rootTag = current.Tag as NodeTag;
+            if (rootTag == null) return null;
+            
+            if (string.Equals(path, rootTag.Path, StringComparison.OrdinalIgnoreCase))
+                return current;
+            
+            if (!path.StartsWith(rootTag.Path + "\\", StringComparison.OrdinalIgnoreCase))
+                return null;
+            
+            var remaining = path.Substring(rootTag.Path.Length + 1);
+            var segments = remaining.Split('\\');
+            
+            foreach (var segment in segments)
+            {
+                // Ensure node is populated (expand if it has dummy child)
+                if (current.Nodes.Count == 1 && current.Nodes[0].Tag == null)
+                    current.Expand(); // triggers BeforeExpand, populates children
+                
+                // Find child matching this segment
+                TreeNode? found = null;
+                foreach (TreeNode child in current.Nodes)
+                {
+                    if (child.Text.Equals(segment, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = child;
+                        break;
+                    }
+                }
+                
+                if (found == null) return null;
+                current = found;
+            }
+            
+            return current;
         }
 
         private void LeftTreeView_AfterExpand(object? sender, TreeViewEventArgs e)
@@ -1362,6 +1748,15 @@ namespace RegistryExpert
 
             _diffOnlyCheckbox.ForeColor = ModernTheme.TextPrimary;
 
+            // Status bar
+            _statusPanel.BackColor = ModernTheme.Surface;
+            _statusForeColor = ModernTheme.TextSecondary;
+            _statusPanel.Invalidate();
+            _cancelLoadButton.ForeColor = ModernTheme.TextSecondary;
+            _cancelLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
+            _cancelLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            _cancelLoadButton.FlatAppearance.MouseDownBackColor = ModernTheme.SurfaceLight;
+
             ApplyThemeToGrid(_leftValuesGrid);
             ApplyThemeToGrid(_rightValuesGrid);
         }
@@ -1381,8 +1776,6 @@ namespace RegistryExpert
 
         protected override void Dispose(bool disposing)
         {
-            // Most cleanup is already done in FormClosing (async)
-            // This is just a safety net for any remaining resources
             if (_isDisposed)
             {
                 base.Dispose(disposing);
@@ -1400,10 +1793,6 @@ namespace RegistryExpert
                     _themeChangedHandler = null;
                 }
                 
-                // Note: TreeView nodes are NOT explicitly cleared - Nodes.Clear() is extremely slow
-                // on large hives (15-20s) due to per-node TVM_DELETEITEM Win32 messages.
-                // base.Dispose() destroys the native controls via DestroyWindow which handles
-                // bulk item cleanup without blocking the UI thread.
                 _valueImageList?.Dispose();
             }
             base.Dispose(disposing);
@@ -1417,5 +1806,15 @@ namespace RegistryExpert
             public bool IsUniqueToThisHive { get; set; } = false;  // GREEN - only exists in this hive
             public bool HasValueDifference { get; set; } = false;   // RED - exists in both but values differ
         }
+
+        /// <summary>
+        /// Pre-computed diff status for a registry key path.
+        /// Computed once during comparison, used by lazy tree node creation.
+        /// </summary>
+        private record struct DiffInfo(
+            bool HasDifference,          // This key or any descendant has a difference
+            bool IsUniqueToThisHive,     // GREEN: unique AND all descendants unique
+            bool HasValueDifference      // RED: value diff, mixed descendants, or child diffs
+        );
     }
 }
