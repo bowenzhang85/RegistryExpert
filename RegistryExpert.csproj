@@ -29,6 +29,48 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>registry.png</Link>
     </Content>
+    <EmbeddedResource Include="Assets\registry_icon_system.png">
+      <LogicalName>RegistryExpert.icons.category_system.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_profiles.png">
+      <LogicalName>RegistryExpert.icons.category_profiles.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_services.png">
+      <LogicalName>RegistryExpert.icons.category_services.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_software.png">
+      <LogicalName>RegistryExpert.icons.category_software.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_storage.png">
+      <LogicalName>RegistryExpert.icons.category_storage.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_network.png">
+      <LogicalName>RegistryExpert.icons.category_network.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_rdp.png">
+      <LogicalName>RegistryExpert.icons.category_rdp.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_update.png">
+      <LogicalName>RegistryExpert.icons.category_update.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_open.png">
+      <LogicalName>RegistryExpert.icons.toolbar_open.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_search.png">
+      <LogicalName>RegistryExpert.icons.toolbar_search.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_analyze.png">
+      <LogicalName>RegistryExpert.icons.toolbar_analyze.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_statistics.png">
+      <LogicalName>RegistryExpert.icons.toolbar_statistics.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_compare.png">
+      <LogicalName>RegistryExpert.icons.toolbar_compare.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_timeline.png">
+      <LogicalName>RegistryExpert.icons.toolbar_timeline.png</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="docs\images\reg_bin.png">
       <LogicalName>RegistryExpert.icons.reg_bin.png</LogicalName>
     </EmbeddedResource>
