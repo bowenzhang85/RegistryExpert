@@ -105,7 +105,8 @@ namespace RegistryExpert
             {
                 Size = DpiHelper.ScaleSize(550, 28),
                 Font = ModernTheme.RegularFont,
-                Margin = new Padding(0, 0, 10, 0)
+                Margin = new Padding(0, 0, 10, 0),
+                AccessibleName = "Search for"
             };
             ModernTheme.ApplyTo(_searchBox);
             _searchBox.KeyDown += async (s, e) => { if (e.KeyCode == Keys.Enter) await SearchAsync(); };
@@ -213,7 +214,8 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.MonoFont,
                 BorderStyle = BorderStyle.FixedSingle,
-                DetectUrls = false
+                DetectUrls = false,
+                AccessibleName = "Registry Value Preview"
             };
 
             _previewPanel.Controls.Add(_previewValueBox);
@@ -249,7 +251,7 @@ namespace RegistryExpert
             resultsHeader.Controls.Add(border);
 
             // Results DataGridView for better column handling
-            _resultsGrid = new DataGridView { Dock = DockStyle.Fill };
+            _resultsGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Search Results" };
             ModernTheme.ApplyTo(_resultsGrid);
 
 

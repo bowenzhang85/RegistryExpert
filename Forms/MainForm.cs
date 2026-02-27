@@ -79,6 +79,7 @@ namespace RegistryExpert
         private SearchForm? _searchForm; // Track the search window for theme changes
         private Form? _statisticsForm; // Track the statistics window for theme changes
         private CompareForm? _compareForm; // Track the compare window for disposal
+        private Thread? _compareThread; // CompareForm runs on its own STA thread
         private Form? _timelineForm; // Track the timeline window for theme changes
         private ImageList? _imageList; // Track for disposal
         private ImageList? _valueImageList; // Track for disposal (value type icons)
@@ -90,7 +91,6 @@ namespace RegistryExpert
 
         // Cached icon fonts for Paint handlers (avoid allocating on every paint)
         private static readonly Font _iconFont12 = new Font("Segoe MDL2 Assets", 12F);
-        private static readonly Font _iconFont13 = new Font("Segoe MDL2 Assets", 13F);
         private static readonly Font _iconFont16 = new Font("Segoe MDL2 Assets", 16F);
         private static readonly Font _iconFont10 = new Font("Segoe MDL2 Assets", 10F);
         
@@ -169,7 +169,10 @@ namespace RegistryExpert
                 _analyzeForm?.Dispose();
                 _statisticsForm?.Dispose();
                 _searchForm?.Dispose();
-                _compareForm?.Dispose();
+                // CompareForm runs on its own STA thread and disposes itself
+                // via Application.Run returning - don't cross-thread dispose it
+                _compareForm = null;
+                _compareThread = null;
                 _timelineForm?.Dispose();
                 _sharedToolTip?.Dispose();
                 _customIcon?.Dispose();
@@ -1723,24 +1726,50 @@ namespace RegistryExpert
 
         private void ShowCompare_Click(object? sender, EventArgs e)
         {
-            // Close existing compare form if open
+            // If already open, bring to front
             if (_compareForm != null && !_compareForm.IsDisposed)
             {
-                _compareForm.Close();
+                try { _compareForm.BeginInvoke(() => _compareForm.Activate()); } catch { }
+                return;
             }
             
-            _compareForm = new CompareForm();
-            _compareForm.Icon = this.Icon;
-            _compareForm.FormClosed += (s, ev) => { _compareForm = null; };
+            // Capture data needed by the new thread (can't access UI controls cross-thread)
+            string? hivePath = (_parser != null && _parser.IsLoaded && !string.IsNullOrEmpty(_currentHivePath))
+                ? _currentHivePath : null;
+            Icon? iconCopy = this.Icon != null ? (Icon)this.Icon.Clone() : null;
             
-            // If a hive is already loaded, pre-load it as the left (base) hive
-            if (_parser != null && _parser.IsLoaded && !string.IsNullOrEmpty(_currentHivePath))
+            // Run CompareForm on its own STA thread so its heavy cleanup
+            // (destroying 500K+ TreeView nodes) never blocks the main UI thread
+            _compareThread = new Thread(() =>
             {
-                _compareForm.SetLeftHive(_currentHivePath);
-            }
-            
-            // Show as non-modal so user can still interact with main form
-            _compareForm.Show();
+                var form = new CompareForm();
+                if (iconCopy != null) form.Icon = iconCopy;
+                
+                form.FormClosed += (s, ev) =>
+                {
+                    // Marshal back to main thread to clear reference
+                    try { this.BeginInvoke(() => { _compareForm = null; _compareThread = null; }); }
+                    catch { _compareForm = null; _compareThread = null; }
+                };
+                
+                _compareForm = form;
+                
+                // Pre-load left hive if one is loaded in main form
+                if (hivePath != null)
+                {
+                    form.SetLeftHive(hivePath);
+                }
+                
+                // Run the message pump for this form on this thread
+                Application.Run(form);
+                
+                // Clean up cloned icon after form is done
+                iconCopy?.Dispose();
+            });
+            _compareThread.SetApartmentState(ApartmentState.STA);
+            _compareThread.IsBackground = true;
+            _compareThread.Name = "CompareFormThread";
+            _compareThread.Start();
         }
 
         private void ShowTimeline_Click(object? sender, EventArgs e)
@@ -1811,11 +1840,13 @@ namespace RegistryExpert
             // Summary labels in header
             var titleLabel = new Label
             {
-                Text = "\uE9D9  Registry Statistics",
+                Text = "Registry Statistics",
                 Font = ModernTheme.HeaderFont,
                 ForeColor = ModernTheme.TextPrimary,
                 Location = DpiHelper.ScalePoint(20, 15),
-                AutoSize = true
+                AutoSize = true,
+                Padding = new Padding(DpiHelper.Scale(22), 0, 0, 0),
+                AccessibleName = "Registry Statistics"
             };
             titleLabel.Paint += (s, ev) =>
             {
@@ -1844,7 +1875,8 @@ namespace RegistryExpert
             var tabControl = new TabControl
             {
                 Dock = DockStyle.Fill,
-                Font = ModernTheme.RegularFont
+                Font = ModernTheme.RegularFont,
+                AccessibleName = "Statistics Views"
             };
             ModernTheme.ApplyTo(tabControl);
 
@@ -1975,7 +2007,8 @@ namespace RegistryExpert
                 ShowRootLines = true,
                 FullRowSelect = true,
                 ItemHeight = DpiHelper.Scale(26),
-                DrawMode = TreeViewDrawMode.OwnerDrawText
+                DrawMode = TreeViewDrawMode.OwnerDrawText,
+                AccessibleName = $"Registry Key Statistics - {valueLabel}"
             };
 
             // Store value info for custom drawing
@@ -2284,7 +2317,9 @@ namespace RegistryExpert
             {
                 Size = DpiHelper.ScaleSize(180, 45),  // Increased height for DPI scaling
                 Margin = DpiHelper.ScalePadding(0, 0, 15, 0),
-                BackColor = Color.Transparent
+                BackColor = Color.Transparent,
+                AccessibleName = $"{label}: {value}",
+                AccessibleRole = AccessibleRole.StaticText
             };
             
             panel.Paint += (s, e) =>
@@ -6633,8 +6668,13 @@ namespace RegistryExpert
                 _statisticsForm?.Close();
                 _statisticsForm = null;
                 
-                _compareForm?.Close();  // CompareForm has its own cleanup in FormClosing
+                // CompareForm runs on its own STA thread - marshal Close() to its thread
+                if (_compareForm != null && !_compareForm.IsDisposed)
+                {
+                    try { _compareForm.BeginInvoke(() => _compareForm.Close()); } catch { }
+                }
                 _compareForm = null;
+                _compareThread = null;
                 
                 _timelineForm?.Close();
                 _timelineForm = null;

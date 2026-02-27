@@ -19,12 +19,12 @@ namespace RegistryExpert
         private OfflineRegistryParser? _rightParser;
         
         // Lookup dictionaries for fast path-based comparison (built sequentially, only read afterward)
-        private Dictionary<string, RegistryKey> _leftKeysByPath = new(StringComparer.OrdinalIgnoreCase);
-        private Dictionary<string, RegistryKey> _rightKeysByPath = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, RegistryKey>? _leftKeysByPath = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, RegistryKey>? _rightKeysByPath = new(StringComparer.OrdinalIgnoreCase);
         
         // Lookup dictionaries for O(1) node finding (instead of O(n) tree traversal)
-        private Dictionary<string, TreeNode> _leftNodesByPath = new(StringComparer.OrdinalIgnoreCase);
-        private Dictionary<string, TreeNode> _rightNodesByPath = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, TreeNode>? _leftNodesByPath = new(StringComparer.OrdinalIgnoreCase);
+        private Dictionary<string, TreeNode>? _rightNodesByPath = new(StringComparer.OrdinalIgnoreCase);
 
         // Landing panels (shown before comparison)
         private Panel _leftLandingPanel = null!;
@@ -76,7 +76,20 @@ namespace RegistryExpert
             ApplyTheme();
             
             // Subscribe to theme changes with a stored handler so we can unsubscribe
-            _themeChangedHandler = (s, e) => ApplyTheme();
+            // Theme changes fire on the main UI thread, but this form may run on its own
+            // STA thread, so marshal the call to this form's thread.
+            _themeChangedHandler = (s, e) =>
+            {
+                if (_isDisposed) return;
+                try
+                {
+                    if (this.IsHandleCreated && this.InvokeRequired)
+                        this.BeginInvoke(() => { if (!_isDisposed) ApplyTheme(); });
+                    else if (!_isDisposed)
+                        ApplyTheme();
+                }
+                catch (ObjectDisposedException) { }
+            };
             ModernTheme.ThemeChanged += _themeChangedHandler;
             
             // Ensure proper cleanup when form is closing (before it closes)
@@ -105,31 +118,29 @@ namespace RegistryExpert
                 _themeChangedHandler = null;
             }
             
-            // Clear UI controls on UI thread (safe)
-            try
-            {
-                _leftTreeView?.Nodes.Clear();
-                _rightTreeView?.Nodes.Clear();
-                _leftValuesGrid?.Rows.Clear();
-                _rightValuesGrid?.Rows.Clear();
-            }
-            catch { }
-            
-            // Clear dictionaries (thread-safe, no UI)
-            _leftKeysByPath?.Clear();
-            _rightKeysByPath?.Clear();
-            _leftNodesByPath?.Clear();
-            _rightNodesByPath?.Clear();
+            // NOTE: Do NOT call _leftTreeView.Nodes.Clear() or _rightTreeView.Nodes.Clear() here.
+            // Clearing hundreds of thousands of TreeNodes sends individual TVM_DELETEITEM Win32 messages
+            // for each node, blocking the UI thread for 15-20 seconds on large hives.
+            // Instead, let base.Dispose() destroy the native SysTreeView32 controls via DestroyWindow,
+            // which frees all items in a single bulk operation.
             
             // Capture references for background disposal
             var leftParser = _leftParser;
             var rightParser = _rightParser;
             var cts = _cancellationTokenSource;
+            var leftKeys = _leftKeysByPath;
+            var rightKeys = _rightKeysByPath;
+            var leftNodes = _leftNodesByPath;
+            var rightNodes = _rightNodesByPath;
             
             // Clear references immediately
             _leftParser = null;
             _rightParser = null;
             _cancellationTokenSource = null;
+            _leftKeysByPath = null;
+            _rightKeysByPath = null;
+            _leftNodesByPath = null;
+            _rightNodesByPath = null;
             
             // Dispose heavy resources in background (no UI access)
             Task.Run(() =>
@@ -137,6 +148,10 @@ namespace RegistryExpert
                 try { cts?.Dispose(); } catch { }
                 try { leftParser?.Dispose(); } catch { }
                 try { rightParser?.Dispose(); } catch { }
+                leftKeys?.Clear();
+                rightKeys?.Clear();
+                leftNodes?.Clear();
+                rightNodes?.Clear();
             });
         }
 
@@ -516,7 +531,8 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextPrimary,
                 Size = new Size(32, 32),
                 Location = new Point(2, 2),
-                Cursor = Cursors.Hand
+                Cursor = Cursors.Hand,
+                AccessibleName = "Back"
             };
             backButton.FlatAppearance.BorderSize = 0;
             backButton.FlatAppearance.MouseOverBackColor = ModernTheme.SurfaceHover;
@@ -544,7 +560,8 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 BorderStyle = BorderStyle.None,
                 Font = ModernTheme.SmallFont,
-                Text = ""
+                Text = "",
+                AccessibleName = isLeft ? "Left Hive Path" : "Right Hive Path"
             };
 
             // Split container for tree and values
@@ -566,7 +583,8 @@ namespace RegistryExpert
                 ShowLines = true,
                 ShowPlusMinus = true,
                 ShowRootLines = true,
-                Font = ModernTheme.DataFont
+                Font = ModernTheme.DataFont,
+                AccessibleName = isLeft ? "Left Hive Keys" : "Right Hive Keys"
             };
             ModernTheme.ApplyTo(treeView);
             treeView.DrawNode += TreeView_DrawNode;
@@ -585,7 +603,7 @@ namespace RegistryExpert
             }
 
             // Values grid
-            valuesGrid = CreateValuesGrid();
+            valuesGrid = CreateValuesGrid(isLeft ? "Left" : "Right");
 
             splitContainer.Panel1.Controls.Add(treeView);
             splitContainer.Panel2.Controls.Add(valuesGrid);
@@ -597,9 +615,9 @@ namespace RegistryExpert
             return panel;
         }
 
-        private DataGridView CreateValuesGrid()
+        private DataGridView CreateValuesGrid(string side)
         {
-            var grid = new DataGridView { Dock = DockStyle.Fill };
+            var grid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = $"{side} Hive Values" };
             ModernTheme.ApplyTo(grid);
             
             // CompareForm-specific overrides
@@ -894,8 +912,8 @@ namespace RegistryExpert
             _rightPathBox.Text = "";
             
             // Clear node lookup dictionaries
-            _leftNodesByPath.Clear();
-            _rightNodesByPath.Clear();
+            _leftNodesByPath?.Clear();
+            _rightNodesByPath?.Clear();
 
             UpdateUI();
         }
@@ -930,7 +948,7 @@ namespace RegistryExpert
             
             var otherIndex = isLeftTree ? _rightKeysByPath : _leftKeysByPath;
             
-            bool existsInOther = otherIndex.ContainsKey(path);
+            bool existsInOther = otherIndex != null && otherIndex.ContainsKey(path);
             bool hasValueDifferences = false;
             
             if (existsInOther)
@@ -1014,7 +1032,8 @@ namespace RegistryExpert
 
             // Register node in lookup dictionary for O(1) finding
             var nodeLookup = isLeftTree ? _leftNodesByPath : _rightNodesByPath;
-            nodeLookup[path] = node;
+            if (nodeLookup != null)
+                nodeLookup[path] = node;
 
             return node;
         }
@@ -1184,7 +1203,7 @@ namespace RegistryExpert
             Dictionary<string, KeyValue>? otherValues = null;
             
             var otherIndex = isLeftGrid ? _rightKeysByPath : _leftKeysByPath;
-            if (otherIndex.TryGetValue(path, out var otherKey) && otherKey.Values != null)
+            if (otherIndex != null && otherIndex.TryGetValue(path, out var otherKey) && otherKey.Values != null)
             {
                 otherValues = new Dictionary<string, KeyValue>(StringComparer.OrdinalIgnoreCase);
                 foreach (var v in otherKey.Values)
@@ -1266,7 +1285,7 @@ namespace RegistryExpert
         {
             // O(1) lookup using dictionary
             var nodeLookup = tree == _leftTreeView ? _leftNodesByPath : _rightNodesByPath;
-            return nodeLookup.TryGetValue(path, out var node) ? node : null;
+            return nodeLookup != null && nodeLookup.TryGetValue(path, out var node) ? node : null;
         }
 
         private void LeftTreeView_AfterExpand(object? sender, TreeViewEventArgs e)
@@ -1381,8 +1400,10 @@ namespace RegistryExpert
                     _themeChangedHandler = null;
                 }
                 
-                // Note: Don't clear nodes here - it's slow and already done in FormClosing
-                // Just let base.Dispose handle the control disposal
+                // Note: TreeView nodes are NOT explicitly cleared - Nodes.Clear() is extremely slow
+                // on large hives (15-20s) due to per-node TVM_DELETEITEM Win32 messages.
+                // base.Dispose() destroys the native controls via DestroyWindow which handles
+                // bulk item cleanup without blocking the UI thread.
                 _valueImageList?.Dispose();
             }
             base.Dispose(disposing);
