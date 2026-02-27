@@ -195,7 +195,8 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 BackColor = ModernTheme.Surface,
                 BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(0, 0, 0, 0)
+                Margin = new Padding(0, 0, 0, 0),
+                AccessibleName = "Search key path"
             };
             _searchBox.GotFocus += (s, e) =>
             {
@@ -322,7 +323,7 @@ namespace RegistryExpert
             statusPanel.Controls.Add(_progressBar);
 
             // Timeline grid
-            _timelineGrid = new DataGridView { Dock = DockStyle.Fill };
+            _timelineGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Timeline Results" };
             ModernTheme.ApplyTo(_timelineGrid);
             _timelineGrid.BackgroundColor = ModernTheme.Background;  // Override: use Background instead of Surface
             _timelineGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);  // Override default padding
