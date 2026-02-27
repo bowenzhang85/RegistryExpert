@@ -1729,9 +1729,15 @@ namespace RegistryExpert
             // If already open, bring to front
             if (_compareForm != null && !_compareForm.IsDisposed)
             {
-                try { _compareForm.BeginInvoke(() => _compareForm.Activate()); } catch { }
+                var cf = _compareForm;
+                try { cf.BeginInvoke(() => cf.Activate()); } catch { }
                 return;
             }
+            // Only block if thread is spinning up a new form (form ref still valid).
+            // If form is null/disposed but thread is alive, it's just doing cleanup
+            // (e.g. DestroyWindow on old TreeViews) — safe to start a new thread.
+            if (_compareThread != null && _compareThread.IsAlive && _compareForm != null)
+                return;
             
             // Capture data needed by the new thread (can't access UI controls cross-thread)
             string? hivePath = (_parser != null && _parser.IsLoaded && !string.IsNullOrEmpty(_currentHivePath))
@@ -1754,10 +1760,13 @@ namespace RegistryExpert
                 
                 _compareForm = form;
                 
-                // Pre-load left hive if one is loaded in main form
+                // Pre-load left hive if one is loaded in main form.
+                // Must be deferred to Shown event — SetLeftHive fires async loading
+                // that needs a SynchronizationContext (established by Application.Run),
+                // and the form must be fully painted first to avoid rendering issues.
                 if (hivePath != null)
                 {
-                    form.SetLeftHive(hivePath);
+                    form.Shown += (s, ev) => form.SetLeftHive(hivePath);
                 }
                 
                 // Run the message pump for this form on this thread
@@ -6669,9 +6678,11 @@ namespace RegistryExpert
                 _statisticsForm = null;
                 
                 // CompareForm runs on its own STA thread - marshal Close() to its thread
-                if (_compareForm != null && !_compareForm.IsDisposed)
+                // Capture local to avoid null field access when the async lambda executes
+                var cf = _compareForm;
+                if (cf != null && !cf.IsDisposed)
                 {
-                    try { _compareForm.BeginInvoke(() => _compareForm.Close()); } catch { }
+                    try { cf.BeginInvoke(() => cf.Close()); } catch { }
                 }
                 _compareForm = null;
                 _compareThread = null;
