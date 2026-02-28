@@ -53,6 +53,17 @@ namespace RegistryExpert
         public DataGridView? FirewallRulesGrid { get; set; }
         public List<Button> FirewallProfileButtons { get; set; } = new();
         public Action? RefreshFirewallDisplay { get; set; }
+        // Device Manager panel controls
+        public SplitContainer? DeviceManagerSplit { get; set; }
+        public TreeView? DeviceManagerTree { get; set; }
+        public Panel? DeviceManagerTreeHeader { get; set; }
+        public Label? DeviceManagerTreeLabel { get; set; }
+        public Panel? DeviceManagerDetailsHeader { get; set; }
+        public Label? DeviceManagerDetailsLabel { get; set; }
+        public DataGridView? DeviceManagerDetailsGrid { get; set; }
+        public List<Button> DeviceManagerDetailButtons { get; set; } = new();
+        public FlowLayoutPanel? DeviceManagerButtonPanel { get; set; }
+        public DataGridView? DeviceManagerDriverGrid { get; set; }
         // Fonts used in drawing (need explicit disposal)
         public Font? CategoryTextFont { get; set; }
         public ToolTip? CategoryToolTip { get; set; }
@@ -93,6 +104,10 @@ namespace RegistryExpert
         private static readonly Font _iconFont12 = new Font("Segoe MDL2 Assets", 12F);
         private static readonly Font _iconFont16 = new Font("Segoe MDL2 Assets", 16F);
         private static readonly Font _iconFont10 = new Font("Segoe MDL2 Assets", 10F);
+
+        // Cached Device Manager TreeView fonts (avoid GDI leak from creating on every render)
+        private readonly Font _deviceManagerParentFont = new Font("Segoe UI Semibold", 10F);
+        private readonly Font _deviceManagerChildFont = new Font("Segoe UI", 9F);
         
         // UI Controls
         private MenuStrip _menuStrip = null!;
@@ -180,6 +195,8 @@ namespace RegistryExpert
                 foreach (var img in _toolbarIcons.Values)
                     img.Dispose();
                 _toolbarIcons.Clear();
+                _deviceManagerParentFont?.Dispose();
+                _deviceManagerChildFont?.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -3215,6 +3232,184 @@ namespace RegistryExpert
                 }
             };
 
+            // ==================== Device Manager Panel ====================
+            var deviceManagerSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            deviceManagerSplit.Panel1.BackColor = ModernTheme.Background;
+            deviceManagerSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.DeviceManagerSplit = deviceManagerSplit;
+
+            // Set splitter distance when visible
+            deviceManagerSplit.VisibleChanged += (s, ev) =>
+            {
+                if (deviceManagerSplit.Visible && deviceManagerSplit.Width > 300)
+                {
+                    try { deviceManagerSplit.SplitterDistance = DpiHelper.Scale(280); } catch { }
+                }
+            };
+
+            // Device classes tree (left)
+            var deviceManagerTree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                BorderStyle = BorderStyle.None,
+                FullRowSelect = true,
+                HideSelection = false,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                ItemHeight = DpiHelper.Scale(24),
+                AccessibleName = "Device Manager Tree",
+                AccessibleRole = AccessibleRole.Outline
+            };
+            themeData.DeviceManagerTree = deviceManagerTree;
+
+            var deviceManagerTreeHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.DeviceManagerTreeHeader = deviceManagerTreeHeader;
+            var deviceManagerTreeLabel = new Label
+            {
+                Text = "Device Classes",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            deviceManagerTreeHeader.Controls.Add(deviceManagerTreeLabel);
+            themeData.DeviceManagerTreeLabel = deviceManagerTreeLabel;
+
+            deviceManagerSplit.Panel1.Controls.Add(deviceManagerTree);
+            deviceManagerSplit.Panel1.Controls.Add(deviceManagerTreeHeader);
+
+            // Device details panel (right)
+            var deviceManagerDetailsPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+
+            var deviceManagerDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.DeviceManagerDetailsHeader = deviceManagerDetailsHeader;
+            var deviceManagerDetailsLabel = new Label
+            {
+                Text = "Device Details",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            deviceManagerDetailsHeader.Controls.Add(deviceManagerDetailsLabel);
+            themeData.DeviceManagerDetailsLabel = deviceManagerDetailsLabel;
+
+            var deviceManagerDetailsGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(deviceManagerDetailsGrid);
+            themeData.DeviceManagerDetailsGrid = deviceManagerDetailsGrid;
+
+            // Driver details grid (toggled via buttons)
+            var deviceManagerDriverGrid = new DataGridView { Dock = DockStyle.Fill, Visible = false };
+            ModernTheme.ApplyTo(deviceManagerDriverGrid);
+            themeData.DeviceManagerDriverGrid = deviceManagerDriverGrid;
+
+            // Button bar for switching between Device Properties and Driver Details
+            var deviceManagerButtonPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = DpiHelper.ScaleSize(0, 0),
+                BackColor = ModernTheme.TreeViewBack,
+                Padding = DpiHelper.ScalePadding(10, 5, 5, 5),
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = true,
+            };
+            themeData.DeviceManagerButtonPanel = deviceManagerButtonPanel;
+
+            string activeDeviceDetailTab = "Properties";
+            var deviceManagerDetailButtons = new List<Button>();
+            themeData.DeviceManagerDetailButtons = deviceManagerDetailButtons;
+
+            // Action to switch tabs
+            Action<string> switchDeviceDetailTab = (tab) =>
+            {
+                activeDeviceDetailTab = tab;
+                deviceManagerDetailsGrid.Visible = tab == "Properties";
+                deviceManagerDriverGrid.Visible = tab == "Driver";
+
+                foreach (var btn in deviceManagerDetailButtons)
+                {
+                    var btnTab = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnTab == tab ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnTab == tab ? Color.White : ModernTheme.TextPrimary;
+                }
+            };
+
+            // Create toggle buttons
+            var detailTabs = new[]
+            {
+                ("Device Properties", "Properties"),
+                ("Driver Details", "Driver")
+            };
+
+            foreach (var (text, tabKey) in detailTabs)
+            {
+                var btn = new Button
+                {
+                    Text = text,
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = tabKey == "Properties" ? ModernTheme.Accent : ModernTheme.Surface,
+                    ForeColor = tabKey == "Properties" ? Color.White : ModernTheme.TextPrimary,
+                    Font = ModernTheme.RegularFont,
+                    Height = DpiHelper.Scale(28),
+                    AutoSize = true,
+                    Padding = DpiHelper.ScalePadding(8, 0, 8, 0),
+                    Margin = DpiHelper.ScalePadding(2),
+                    Cursor = Cursors.Hand,
+                    Tag = tabKey,
+                    AccessibleName = text
+                };
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.BorderSize = 1;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                btn.Click += (sender, args) => switchDeviceDetailTab(tabKey);
+
+                deviceManagerDetailButtons.Add(btn);
+                deviceManagerButtonPanel.Controls.Add(btn);
+            }
+
+            // Add controls to details panel (order matters for Dock stacking)
+            deviceManagerDetailsPanel.Controls.Add(deviceManagerDetailsGrid);
+            deviceManagerDetailsPanel.Controls.Add(deviceManagerDriverGrid);
+            deviceManagerDetailsPanel.Controls.Add(deviceManagerButtonPanel);
+            deviceManagerDetailsPanel.Controls.Add(deviceManagerDetailsHeader);
+
+            deviceManagerSplit.Panel2.Controls.Add(deviceManagerDetailsPanel);
+
+            // Device Manager state
+            DeviceItem? selectedDevice = null;
+
             // Cache for network adapters
             List<NetworkAdapterItem> networkAdaptersCache = new();
             NetworkAdapterItem? selectedNetworkAdapter = null;
@@ -3775,6 +3970,7 @@ namespace RegistryExpert
                 contentGrid.Visible = true;
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
 
                 switch (viewKey)
                 {
@@ -3801,6 +3997,7 @@ namespace RegistryExpert
                 contentGrid.Rows.Clear();
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
                 contentGrid.Visible = true;
 
                 // Create CBS sub-buttons
@@ -4005,6 +4202,7 @@ namespace RegistryExpert
                     contentGrid.Visible = true;
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
                     
                     // Keep appxFilterPanel visible for sub-tabs
                     // appxFilterPanel.Visible = true; // Already visible from createGuestAgentSubButtons
@@ -4050,6 +4248,7 @@ namespace RegistryExpert
                 contentGrid.Visible = false;
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
                 appxFilterPanel.Visible = false;
                 currentSection = null;
                 
@@ -4237,6 +4436,7 @@ namespace RegistryExpert
                 contentGrid.Rows.Clear();
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
                 contentGrid.Visible = true;
                 appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
@@ -4349,6 +4549,7 @@ namespace RegistryExpert
                 contentGrid.Rows.Clear();
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
                 contentGrid.Visible = true;
                 appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
@@ -4459,6 +4660,7 @@ namespace RegistryExpert
                 // Hide special panels when showing other sections
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
                 appxFilterPanel.Visible = false;
                 contentGrid.Visible = true;
                 
@@ -4546,6 +4748,130 @@ namespace RegistryExpert
                     return;
                 }
 
+                // Special handling for Device Manager - use tree + detail view
+                if (section.Title.Contains("Device Manager"))
+                {
+                    contentGrid.Visible = false;
+                    deviceManagerSplit.Visible = true;
+
+                    // Populate device tree (fresh state)
+                    deviceManagerTree.Nodes.Clear();
+                    selectedDevice = null;
+
+                    // Set TreeView font to the larger parent font so width calculations are correct,
+                    // then set child device nodes to a smaller regular font for visual hierarchy
+                    deviceManagerTree.Font = _deviceManagerParentFont;
+
+                    foreach (var classItem in section.Items)
+                    {
+                        // Create class node (parent) - inherits TreeView's larger font
+                        var classNode = new TreeNode(classItem.Name);
+                        var deviceClassData = new DeviceClassItem
+                        {
+                            ClassName = classItem.Name,
+                            ClassGuid = classItem.Value ?? "",
+                            RegistryPath = classItem.RegistryPath ?? "",
+                            Devices = new List<DeviceItem>()
+                        };
+
+                        if (classItem.SubItems != null)
+                        {
+                            foreach (var deviceAnalysis in classItem.SubItems)
+                            {
+                                var deviceData = new DeviceItem
+                                {
+                                    DisplayName = deviceAnalysis.Name,
+                                    RegistryPath = deviceAnalysis.RegistryPath ?? ""
+                                };
+
+                                if (deviceAnalysis.SubItems != null)
+                                {
+                                    foreach (var prop in deviceAnalysis.SubItems)
+                                    {
+                                        // Check for driver details marker
+                                        if (prop.Name == "__DriverDetails__" && prop.SubItems != null)
+                                        {
+                                            deviceData.DriverRegistryPath = prop.RegistryPath ?? "";
+                                            foreach (var driverProp in prop.SubItems)
+                                            {
+                                                deviceData.DriverProperties.Add(new DevicePropertyItem
+                                                {
+                                                    Name = driverProp.Name,
+                                                    Value = driverProp.Value ?? "",
+                                                    RegistryValueName = driverProp.RegistryValue ?? driverProp.Name,
+                                                    RegistryPath = driverProp.RegistryPath ?? prop.RegistryPath ?? ""
+                                                });
+                                            }
+                                        }
+                                        else
+                                        {
+                                            deviceData.Properties.Add(new DevicePropertyItem
+                                            {
+                                                Name = prop.Name,
+                                                Value = prop.Value ?? "",
+                                                RegistryValueName = prop.RegistryValue ?? prop.Name,
+                                                RegistryPath = prop.RegistryPath ?? deviceAnalysis.RegistryPath ?? ""
+                                            });
+                                        }
+                                    }
+                                }
+
+                                deviceClassData.Devices.Add(deviceData);
+
+                                // Create device node (child)
+                                var deviceNode = new TreeNode(deviceData.DisplayName)
+                                {
+                                    Tag = deviceData,
+                                    NodeFont = _deviceManagerChildFont
+                                };
+
+                                // Show status indicator for disabled devices
+                                var status = deviceData.Properties.FirstOrDefault(p => p.Name == "Status")?.Value;
+                                if (status == "Disabled")
+                                {
+                                    deviceNode.ForeColor = ModernTheme.TextDisabled;
+                                }
+
+                                classNode.Nodes.Add(deviceNode);
+                            }
+                        }
+
+                        classNode.Tag = deviceClassData;
+                        deviceManagerTree.Nodes.Add(classNode);
+                    }
+
+                    // Expand all class nodes for visibility
+                    // (Only expand if <= 30 classes to avoid overwhelming UI, otherwise collapse)
+                    if (deviceManagerTree.Nodes.Count <= 30)
+                    {
+                        deviceManagerTree.ExpandAll();
+                    }
+
+                    // Select first device node if available
+                    if (deviceManagerTree.Nodes.Count > 0)
+                    {
+                        var firstClass = deviceManagerTree.Nodes[0];
+                        if (firstClass.Nodes.Count > 0)
+                        {
+                            deviceManagerTree.SelectedNode = firstClass.Nodes[0];
+                        }
+                        else
+                        {
+                            deviceManagerTree.SelectedNode = firstClass;
+                        }
+                        deviceManagerDetailsGrid.ClearSelection();
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
                 // Special handling for Windows Firewall - use profile-based view
                 if (section.Title.Contains("Windows Firewall"))
                 {
@@ -4624,6 +4950,7 @@ namespace RegistryExpert
                     contentGrid.Visible = true;
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
 
                     // Create filter buttons in the subcategory panel
                     createAppxFilterButtons();
@@ -4647,6 +4974,7 @@ namespace RegistryExpert
                     contentGrid.Visible = true;
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
 
                     // Reset cache to reload fresh data
                     cbsPackagesSections = null;
@@ -4670,6 +4998,7 @@ namespace RegistryExpert
                     contentGrid.Visible = true;
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
 
                     // Create filter buttons
                     createStorageFilterButtons();
@@ -4693,6 +5022,7 @@ namespace RegistryExpert
                     contentGrid.Visible = true;
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
 
                     cachedProfilesSection = section;
                     createProfileFilterButtons();
@@ -5046,6 +5376,121 @@ namespace RegistryExpert
                 }
             };
 
+            // Handle device tree node selection
+            deviceManagerTree.AfterSelect += (s, ev) =>
+            {
+                if (ev.Node?.Tag is DeviceItem device)
+                {
+                    selectedDevice = device;
+                    deviceManagerDetailsLabel.Text = $"Details - {device.DisplayName}";
+
+                    // Populate Device Properties tab
+                    deviceManagerDetailsGrid.Columns.Clear();
+                    deviceManagerDetailsGrid.Rows.Clear();
+
+                    deviceManagerDetailsGrid.Columns.Add("property", "Property");
+                    deviceManagerDetailsGrid.Columns.Add("value", "Value");
+                    deviceManagerDetailsGrid.Columns["property"]!.FillWeight = 30;
+                    deviceManagerDetailsGrid.Columns["value"]!.FillWeight = 70;
+
+                    foreach (var prop in device.Properties)
+                    {
+                        deviceManagerDetailsGrid.Rows.Add(prop.Name, prop.Value);
+                    }
+
+                    // Populate Driver Details grid
+                    deviceManagerDriverGrid.Columns.Clear();
+                    deviceManagerDriverGrid.Rows.Clear();
+
+                    deviceManagerDriverGrid.Columns.Add("property", "Property");
+                    deviceManagerDriverGrid.Columns.Add("value", "Value");
+                    deviceManagerDriverGrid.Columns["property"]!.FillWeight = 30;
+                    deviceManagerDriverGrid.Columns["value"]!.FillWeight = 70;
+
+                    if (device.DriverProperties.Count > 0)
+                    {
+                        foreach (var prop in device.DriverProperties)
+                        {
+                            deviceManagerDriverGrid.Rows.Add(prop.Name, prop.Value);
+                        }
+                    }
+                    else
+                    {
+                        var rowIndex = deviceManagerDriverGrid.Rows.Add("No driver information", "");
+                        deviceManagerDriverGrid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                    }
+
+                    // Show button panel and switch to Device Properties view
+                    deviceManagerButtonPanel.Visible = true;
+                    switchDeviceDetailTab("Properties");
+
+                    registryPathLabel.Text = $"Registry Path: {device.RegistryPath}";
+                    registryValueBox.Text = "Select a property to view registry details";
+                }
+                else if (ev.Node?.Tag is DeviceClassItem classItem)
+                {
+                    selectedDevice = null;
+                    deviceManagerDetailsLabel.Text = $"{classItem.ClassName} - {classItem.Devices.Count} device(s)";
+
+                    // Hide button panel and driver grid for class nodes
+                    deviceManagerButtonPanel.Visible = false;
+                    deviceManagerDriverGrid.Visible = false;
+                    deviceManagerDetailsGrid.Visible = true;
+
+                    // Show class overview
+                    deviceManagerDetailsGrid.Columns.Clear();
+                    deviceManagerDetailsGrid.Rows.Clear();
+
+                    deviceManagerDetailsGrid.Columns.Add("device", "Device");
+                    deviceManagerDetailsGrid.Columns.Add("status", "Status");
+                    deviceManagerDetailsGrid.Columns["device"]!.FillWeight = 70;
+                    deviceManagerDetailsGrid.Columns["status"]!.FillWeight = 30;
+
+                    foreach (var dev in classItem.Devices)
+                    {
+                        var status = dev.Properties.FirstOrDefault(p => p.Name == "Status")?.Value ?? "Unknown";
+                        deviceManagerDetailsGrid.Rows.Add(dev.DisplayName, status);
+                    }
+
+                    // Clear Driver Details grid
+                    deviceManagerDriverGrid.Columns.Clear();
+                    deviceManagerDriverGrid.Rows.Clear();
+
+                    registryPathLabel.Text = $"Registry Path: {classItem.RegistryPath}";
+                    registryValueBox.Text = $"Class = {classItem.ClassName} | ClassGUID = {classItem.ClassGuid}";
+                }
+            };
+
+            // Handle device details grid selection
+            deviceManagerDetailsGrid.SelectionChanged += (s, ev) =>
+            {
+                if (deviceManagerDetailsGrid.SelectedRows.Count > 0 && selectedDevice != null)
+                {
+                    var rowIndex = deviceManagerDetailsGrid.SelectedRows[0].Index;
+                    if (rowIndex >= 0 && rowIndex < selectedDevice.Properties.Count)
+                    {
+                        var prop = selectedDevice.Properties[rowIndex];
+                        registryPathLabel.Text = $"Registry Path: {prop.RegistryPath}";
+                        registryValueBox.Text = $"{prop.Name} = {prop.Value} | Registry Value: {prop.RegistryValueName}";
+                    }
+                }
+            };
+
+            // Handle driver details grid selection
+            deviceManagerDriverGrid.SelectionChanged += (s, ev) =>
+            {
+                if (deviceManagerDriverGrid.SelectedRows.Count > 0 && selectedDevice != null)
+                {
+                    var rowIndex = deviceManagerDriverGrid.SelectedRows[0].Index;
+                    if (rowIndex >= 0 && rowIndex < selectedDevice.DriverProperties.Count)
+                    {
+                        var prop = selectedDevice.DriverProperties[rowIndex];
+                        registryPathLabel.Text = $"Registry Path: {prop.RegistryPath}";
+                        registryValueBox.Text = $"{prop.Name} = {prop.Value} | Registry Value: {prop.RegistryValueName}";
+                    }
+                }
+            };
+
             // Track current category
             string currentCategory = "";
 
@@ -5200,6 +5645,7 @@ namespace RegistryExpert
             };
 
             // Add content controls to Panel1 of the split container
+            contentDetailSplit.Panel1.Controls.Add(deviceManagerSplit);
             contentDetailSplit.Panel1.Controls.Add(firewallPanel);
             contentDetailSplit.Panel1.Controls.Add(networkSplitContainer);
             contentDetailSplit.Panel1.Controls.Add(contentGrid);
@@ -5243,6 +5689,7 @@ namespace RegistryExpert
                     
                     // Hide network panel and show content grid
                     networkSplitContainer.Visible = false;
+                    deviceManagerSplit.Visible = false;
                     contentGrid.Visible = true;
                     
                     if (allServicesCache.Count == 0)
@@ -5288,7 +5735,8 @@ namespace RegistryExpert
                 var softwareHiveSubcategories = new HashSet<string> { "🪟 Build Information" };
                 var systemHiveSubcategories = new HashSet<string> { 
                     "💻 Computer Information", "🔄 CPU Hyper-Threading", 
-                    "💥 Crash Dump Configuration", "🕐 System Time Config"
+                    "💥 Crash Dump Configuration", "🕐 System Time Config",
+                    "\U0001f5a5\ufe0f Device Manager"
                 };
                 var bothHiveSubcategories = new HashSet<string> { "📁 Hive Information", "☁️ Guest Agent" };
                 
@@ -6052,6 +6500,76 @@ namespace RegistryExpert
             // Refresh firewall display to re-apply row colors
             themeData.RefreshFirewallDisplay?.Invoke();
 
+            // Update Device Manager panel
+            if (themeData.DeviceManagerSplit != null)
+            {
+                themeData.DeviceManagerSplit.BackColor = ModernTheme.Border;
+                themeData.DeviceManagerSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.DeviceManagerSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+            if (themeData.DeviceManagerTree != null)
+            {
+                themeData.DeviceManagerTree.BackColor = ModernTheme.TreeViewBack;
+                themeData.DeviceManagerTree.ForeColor = ModernTheme.TextPrimary;
+                themeData.DeviceManagerTree.LineColor = ModernTheme.Border;
+                themeData.DeviceManagerTree.Invalidate();
+            }
+            if (themeData.DeviceManagerTreeHeader != null) themeData.DeviceManagerTreeHeader.BackColor = ModernTheme.Surface;
+            if (themeData.DeviceManagerTreeLabel != null) themeData.DeviceManagerTreeLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.DeviceManagerDetailsHeader != null) themeData.DeviceManagerDetailsHeader.BackColor = ModernTheme.Surface;
+            if (themeData.DeviceManagerDetailsLabel != null) themeData.DeviceManagerDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+
+            if (themeData.DeviceManagerDetailsGrid != null)
+            {
+                var grid = themeData.DeviceManagerDetailsGrid;
+                grid.BackgroundColor = ModernTheme.Surface;
+                grid.ForeColor = ModernTheme.TextPrimary;
+                grid.GridColor = ModernTheme.Border;
+                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            }
+
+            // Update Device Manager toggle buttons
+            if (themeData.DeviceManagerButtonPanel != null)
+                themeData.DeviceManagerButtonPanel.BackColor = ModernTheme.TreeViewBack;
+
+            foreach (var btn in themeData.DeviceManagerDetailButtons)
+            {
+                bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
+                if (!isActive)
+                {
+                    btn.BackColor = ModernTheme.Surface;
+                    btn.ForeColor = ModernTheme.TextPrimary;
+                }
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update Driver Details grid (same pattern as Device grid)
+            if (themeData.DeviceManagerDriverGrid != null)
+            {
+                var grid = themeData.DeviceManagerDriverGrid;
+                grid.BackgroundColor = ModernTheme.Surface;
+                grid.ForeColor = ModernTheme.TextPrimary;
+                grid.GridColor = ModernTheme.Border;
+                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
+                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            }
+
             form.Invalidate(true);
         }
 
@@ -6801,6 +7319,35 @@ namespace RegistryExpert
     }
 
     public class NetworkPropertyItem
+    {
+        public string Name { get; set; } = "";
+        public string Value { get; set; } = "";
+        public string RegistryValueName { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+    }
+
+    public class DeviceClassItem
+    {
+        public string ClassName { get; set; } = "";
+        public string ClassGuid { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public List<DeviceItem> Devices { get; set; } = new();
+
+        public override string ToString() => ClassName;
+    }
+
+    public class DeviceItem
+    {
+        public string DisplayName { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public List<DevicePropertyItem> Properties { get; set; } = new();
+        public List<DevicePropertyItem> DriverProperties { get; set; } = new();
+        public string DriverRegistryPath { get; set; } = "";
+
+        public override string ToString() => DisplayName;
+    }
+
+    public class DevicePropertyItem
     {
         public string Name { get; set; } = "";
         public string Value { get; set; } = "";
