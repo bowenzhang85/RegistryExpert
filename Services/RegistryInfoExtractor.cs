@@ -717,6 +717,214 @@ namespace RegistryExpert
             // System Time Configuration (SYSTEM hive) - Windows Time Service (w32time)
             sections.Add(GetSystemTimeAnalysis());
 
+            // Device Manager (SYSTEM hive)
+            sections.AddRange(GetDeviceManagerAnalysis());
+
+            return sections;
+        }
+
+        /// <summary>
+        /// Get Device Manager analysis - devices grouped by device class from SYSTEM hive
+        /// </summary>
+        public List<AnalysisSection> GetDeviceManagerAnalysis()
+        {
+            var sections = new List<AnalysisSection>();
+            var section = new AnalysisSection { Title = "\U0001f5a5\ufe0f Device Manager" };
+
+            var enumKey = _parser.GetKey(@"ControlSet001\Enum");
+            if (enumKey?.SubKeys == null)
+            {
+                sections.Add(section);
+                return sections;
+            }
+
+            // Collect all devices grouped by ClassGUID
+            var devicesByClass = new Dictionary<string, List<(string DisplayName, string RegistryPath, List<(string Name, string Value, string ValueName)> Properties, string DriverRegistryPath, List<(string Name, string Value, string ValueName)> DriverProperties)>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var busType in enumKey.SubKeys)
+            {
+                if (busType.SubKeys == null) continue;
+                foreach (var device in busType.SubKeys)
+                {
+                    if (device.SubKeys == null) continue;
+                    foreach (var instance in device.SubKeys)
+                    {
+                        var classGuid = instance.Values.FirstOrDefault(v => v.ValueName == "ClassGUID")?.ValueData?.ToString();
+                        var deviceDesc = instance.Values.FirstOrDefault(v => v.ValueName == "DeviceDesc")?.ValueData?.ToString();
+                        var driverValue = instance.Values.FirstOrDefault(v => v.ValueName == "Driver")?.ValueData?.ToString();
+
+                        // Determine if this is an "unknown" device (missing ClassGUID or Driver)
+                        bool isUnknown = string.IsNullOrEmpty(classGuid) || string.IsNullOrEmpty(driverValue);
+
+                        // Skip devices that have no display info at all (no FriendlyName and no DeviceDesc)
+                        var friendlyName = instance.Values.FirstOrDefault(v => v.ValueName == "FriendlyName")?.ValueData?.ToString();
+                        if (string.IsNullOrEmpty(deviceDesc) && string.IsNullOrEmpty(friendlyName))
+                            continue;
+
+                        // Use "__unknown__" as the grouping key for unknown devices
+                        var groupKey = isUnknown ? "__unknown__" : classGuid!;
+
+                        // Extract display name: prefer FriendlyName, fall back to DeviceDesc, then instance key name
+                        string displayName;
+                        if (!string.IsNullOrEmpty(friendlyName))
+                        {
+                            var lastSemi = friendlyName.LastIndexOf(';');
+                            displayName = lastSemi >= 0 ? friendlyName.Substring(lastSemi + 1) : friendlyName;
+                        }
+                        else if (!string.IsNullOrEmpty(deviceDesc))
+                        {
+                            var lastSemi = deviceDesc.LastIndexOf(';');
+                            displayName = lastSemi >= 0 ? deviceDesc.Substring(lastSemi + 1) : deviceDesc;
+                        }
+                        else
+                        {
+                            displayName = instance.KeyName;
+                        }
+
+                        var registryPath = $@"ControlSet001\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
+
+                        // Collect device properties
+                        var properties = new List<(string Name, string Value, string ValueName)>();
+                        var propertyNames = new[] { "DeviceDesc", "FriendlyName", "ClassGUID", "Class", "Driver", "Service", "Mfg", "HardwareID", "CompatibleIDs", "ConfigFlags", "ContainerID", "LocationInformation" };
+                        foreach (var propName in propertyNames)
+                        {
+                            var val = instance.Values.FirstOrDefault(v => v.ValueName == propName)?.ValueData?.ToString();
+                            if (!string.IsNullOrEmpty(val))
+                            {
+                                // Clean up localized resource strings for display
+                                var displayVal = val;
+                                if (propName == "DeviceDesc" || propName == "FriendlyName" || propName == "Mfg")
+                                {
+                                    var semi = displayVal.LastIndexOf(';');
+                                    if (semi >= 0) displayVal = displayVal.Substring(semi + 1);
+                                }
+                                properties.Add((propName, displayVal, propName));
+                            }
+                        }
+
+                        // Add enabled/disabled status from ConfigFlags
+                        var configFlags = instance.Values.FirstOrDefault(v => v.ValueName == "ConfigFlags")?.ValueData?.ToString();
+                        bool isEnabled = true;
+                        if (!string.IsNullOrEmpty(configFlags) && int.TryParse(configFlags, out int flags))
+                        {
+                            isEnabled = (flags & 0x01) == 0;
+                        }
+                        properties.Add(("Status", isEnabled ? "Enabled" : "Disabled", "ConfigFlags"));
+                        properties.Add(("Device Instance Path", $@"{busType.KeyName}\{device.KeyName}\{instance.KeyName}", ""));
+
+                        // Collect driver class details from ControlSet001\Control\Class\{Driver}
+                        var driverProperties = new List<(string Name, string Value, string ValueName)>();
+                        string driverRegistryPath = "";
+                        if (!string.IsNullOrEmpty(driverValue))
+                        {
+                            var driverKeyPath = $@"ControlSet001\Control\Class\{driverValue}";
+                            var driverKey = GetCachedKey(driverKeyPath);
+                            if (driverKey?.Values != null)
+                            {
+                                driverRegistryPath = driverKeyPath;
+                                foreach (var val in driverKey.Values.OrderBy(v => v.ValueName))
+                                {
+                                    var valName = val.ValueName;
+                                    if (string.IsNullOrEmpty(valName)) valName = "(Default)";
+                                    var valData = val.ValueData?.ToString() ?? "";
+                                    driverProperties.Add((valName, valData, valName));
+                                }
+                            }
+                        }
+
+                        if (!devicesByClass.ContainsKey(groupKey))
+                            devicesByClass[groupKey] = new();
+                        devicesByClass[groupKey].Add((displayName, registryPath, properties, driverRegistryPath, driverProperties));
+                    }
+                }
+            }
+
+            // Look up class names and build hierarchical section items
+            var classItems = new List<(string ClassName, AnalysisItem Item)>();
+            foreach (var kvp in devicesByClass)
+            {
+                var groupKey = kvp.Key;
+                var devices = kvp.Value;
+
+                string className;
+                string classKeyPath;
+                string classGuidDisplay;
+
+                if (groupKey == "__unknown__")
+                {
+                    className = "Unknown Devices";
+                    classKeyPath = "";
+                    classGuidDisplay = "N/A";
+                }
+                else
+                {
+                    // Look up class display name from ControlSet001\Control\Class\{ClassGUID}
+                    classKeyPath = $@"ControlSet001\Control\Class\{groupKey}";
+                    className = GetValue(classKeyPath, "Class") ?? groupKey;
+                    classGuidDisplay = groupKey;
+                }
+
+                var classItem = new AnalysisItem
+                {
+                    Name = $"{className} ({devices.Count})",
+                    Value = classGuidDisplay,
+                    IsSubSection = true,
+                    RegistryPath = classKeyPath,
+                    RegistryValue = $"Class = {className}",
+                    SubItems = new List<AnalysisItem>()
+                };
+
+                foreach (var dev in devices.OrderBy(d => d.DisplayName))
+                {
+                    var deviceItem = new AnalysisItem
+                    {
+                        Name = dev.DisplayName,
+                        Value = "",
+                        RegistryPath = dev.RegistryPath,
+                        RegistryValue = string.Join(" | ", dev.Properties.Select(p => $"{p.Name} = {p.Value}")),
+                        IsSubSection = true,
+                        SubItems = dev.Properties.Select(p => new AnalysisItem
+                        {
+                            Name = p.Name,
+                            Value = p.Value,
+                            RegistryPath = dev.RegistryPath,
+                            RegistryValue = p.ValueName
+                        }).ToList()
+                    };
+
+                    // Add driver class details as a special marker sub-item
+                    if (dev.DriverProperties.Count > 0)
+                    {
+                        var driverSection = new AnalysisItem
+                        {
+                            Name = "__DriverDetails__",
+                            Value = "",
+                            RegistryPath = dev.DriverRegistryPath,
+                            IsSubSection = true,
+                            SubItems = dev.DriverProperties.Select(p => new AnalysisItem
+                            {
+                                Name = p.Name,
+                                Value = p.Value,
+                                RegistryPath = dev.DriverRegistryPath,
+                                RegistryValue = p.ValueName
+                            }).ToList()
+                        };
+                        deviceItem.SubItems!.Add(driverSection);
+                    }
+
+                    classItem.SubItems.Add(deviceItem);
+                }
+
+                classItems.Add((className, classItem));
+            }
+
+            // Sort classes alphabetically
+            foreach (var ci in classItems.OrderBy(c => c.ClassName))
+            {
+                section.Items.Add(ci.Item);
+            }
+
+            sections.Add(section);
             return sections;
         }
 
