@@ -20,6 +20,14 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
   </PropertyGroup>
 
+  <!-- Exclude local dev tools from main project compilation -->
+  <ItemGroup>
+    <Compile Remove="DevTools\**" />
+    <Content Remove="DevTools\**" />
+    <EmbeddedResource Remove="DevTools\**" />
+    <None Remove="DevTools\**" />
+  </ItemGroup>
+
   <ItemGroup>
     <Content Include="Assets\registry_fixed.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

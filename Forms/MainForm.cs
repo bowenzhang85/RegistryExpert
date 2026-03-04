@@ -55,6 +55,11 @@ namespace RegistryExpert
         public Action? RefreshFirewallDisplay { get; set; }
         // Device Manager panel controls
         public SplitContainer? DeviceManagerSplit { get; set; }
+        // Disk/Partition split pane controls
+        public SplitContainer? DiskPartitionSplit { get; set; }
+        public DataGridView? DiskPartitionList { get; set; }
+        public DataGridView? DiskPartitionDetails { get; set; }
+        public Label? DiskPartitionDetailsLabel { get; set; }
         public TreeView? DeviceManagerTree { get; set; }
         public Panel? DeviceManagerTreeHeader { get; set; }
         public Label? DeviceManagerTreeLabel { get; set; }
@@ -3407,6 +3412,127 @@ namespace RegistryExpert
 
             deviceManagerSplit.Panel2.Controls.Add(deviceManagerDetailsPanel);
 
+            // ===== Disk/Partition Split Pane =====
+            var diskPartitionSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            diskPartitionSplit.Panel1.BackColor = ModernTheme.Background;
+            diskPartitionSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.DiskPartitionSplit = diskPartitionSplit;
+
+            // Set splitter distance when visible (deferred pattern)
+            diskPartitionSplit.VisibleChanged += (s, ev) =>
+            {
+                if (diskPartitionSplit.Visible && diskPartitionSplit.Width > 300)
+                {
+                    try { diskPartitionSplit.SplitterDistance = DpiHelper.Scale(260); } catch { }
+                }
+            };
+
+            // Left pane: Mounted Devices list
+            var diskPartitionHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(8, 0, 0, 0)
+            };
+            var diskPartitionLabel = new Label
+            {
+                Text = "Mounted Devices",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI Semibold", 9F),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoSize = false
+            };
+            diskPartitionHeader.Controls.Add(diskPartitionLabel);
+
+            var diskPartitionList = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BorderStyle = BorderStyle.None,
+                BackgroundColor = ModernTheme.Background,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                ColumnHeadersHeight = DpiHelper.Scale(32),
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                RowTemplate = { Height = DpiHelper.Scale(28) },
+                Font = ModernTheme.RegularFont
+            };
+            diskPartitionList.Columns.Add("mount", "Mount Point");
+            diskPartitionList.Columns.Add("device", "Device");
+            diskPartitionList.Columns["mount"]!.FillWeight = 30;
+            diskPartitionList.Columns["device"]!.FillWeight = 70;
+            ModernTheme.ApplyTo(diskPartitionList);
+            themeData.DiskPartitionList = diskPartitionList;
+
+            diskPartitionSplit.Panel1.Controls.Add(diskPartitionList);
+            diskPartitionSplit.Panel1.Controls.Add(diskPartitionHeader);
+
+            // Right pane: Device Details
+            var diskPartitionDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(8, 0, 0, 0)
+            };
+            var diskPartitionDetailsLabel = new Label
+            {
+                Text = "Device Details",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI Semibold", 9F),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoSize = false
+            };
+            diskPartitionDetailsHeader.Controls.Add(diskPartitionDetailsLabel);
+            themeData.DiskPartitionDetailsLabel = diskPartitionDetailsLabel;
+
+            var diskPartitionDetails = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BorderStyle = BorderStyle.None,
+                BackgroundColor = ModernTheme.Background,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                ColumnHeadersHeight = DpiHelper.Scale(32),
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                RowTemplate = { Height = DpiHelper.Scale(28) },
+                Font = ModernTheme.RegularFont
+            };
+            diskPartitionDetails.Columns.Add("property", "Property");
+            diskPartitionDetails.Columns.Add("value", "Value");
+            diskPartitionDetails.Columns["property"]!.FillWeight = 35;
+            diskPartitionDetails.Columns["value"]!.FillWeight = 65;
+            ModernTheme.ApplyTo(diskPartitionDetails);
+            themeData.DiskPartitionDetails = diskPartitionDetails;
+
+            diskPartitionSplit.Panel2.Controls.Add(diskPartitionDetails);
+            diskPartitionSplit.Panel2.Controls.Add(diskPartitionDetailsHeader);
+
             // Device Manager state
             DeviceItem? selectedDevice = null;
 
@@ -3519,19 +3645,56 @@ namespace RegistryExpert
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
 
-                contentGrid.Columns.Add("name", "Property");
-                contentGrid.Columns.Add("value", "Value");
-                contentGrid.Columns["name"].FillWeight = 30;
-                contentGrid.Columns["value"].FillWeight = 70;
-
-                var items = filter == "Disk" 
-                    ? _infoExtractor.GetDiskFilters() 
-                    : _infoExtractor.GetVolumeFilters();
-
-                foreach (var item in items)
+                if (filter == "Partition")
                 {
-                    var rowIndex = contentGrid.Rows.Add(item.Name, item.Value);
-                    contentGrid.Rows[rowIndex].Tag = item;
+                    // Populate disk partition split pane list
+                    diskPartitionList.Rows.Clear();
+                    diskPartitionDetails.Rows.Clear();
+                    diskPartitionDetailsLabel.Text = "Device Details";
+
+                    var mountedDevices = _infoExtractor.GetMountedDevices();
+                    foreach (var device in mountedDevices)
+                    {
+                        var deviceDisplay = !string.IsNullOrEmpty(device.FriendlyName) 
+                            ? device.FriendlyName 
+                            : !string.IsNullOrEmpty(device.DeviceClass) 
+                                ? device.DeviceClass 
+                                : "";
+                        if (device.StaleStatus == "Stale")
+                            deviceDisplay = !string.IsNullOrEmpty(deviceDisplay)
+                                ? $"{deviceDisplay} [Stale]"
+                                : "[Stale]";
+                        var rowIndex = diskPartitionList.Rows.Add(
+                            device.MountPoint, deviceDisplay);
+                        diskPartitionList.Rows[rowIndex].Tag = device;
+                    }
+
+                    // Auto-select first row
+                    if (diskPartitionList.Rows.Count > 0)
+                    {
+                        diskPartitionList.ClearSelection();
+                        diskPartitionList.Rows[0].Selected = true;
+                        diskPartitionList.CurrentCell = diskPartitionList.Rows[0].Cells[0];
+                    }
+                    return;
+                }
+                else
+                {
+                    // 2-column layout for Disk/Volume filters
+                    contentGrid.Columns.Add("name", "Property");
+                    contentGrid.Columns.Add("value", "Value");
+                    contentGrid.Columns["name"]!.FillWeight = 30;
+                    contentGrid.Columns["value"]!.FillWeight = 70;
+
+                    var items = filter == "Disk" 
+                        ? _infoExtractor.GetDiskFilters() 
+                        : _infoExtractor.GetVolumeFilters();
+
+                    foreach (var item in items)
+                    {
+                        var rowIndex = contentGrid.Rows.Add(item.Name, item.Value);
+                        contentGrid.Rows[rowIndex].Tag = item;
+                    }
                 }
 
                 // Update filter button states
@@ -3971,6 +4134,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
 
                 switch (viewKey)
                 {
@@ -3998,6 +4162,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
                 contentGrid.Visible = true;
 
                 // Create CBS sub-buttons
@@ -4203,6 +4368,7 @@ namespace RegistryExpert
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
                     
                     // Keep appxFilterPanel visible for sub-tabs
                     // appxFilterPanel.Visible = true; // Already visible from createGuestAgentSubButtons
@@ -4249,6 +4415,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
                 appxFilterPanel.Visible = false;
                 currentSection = null;
                 
@@ -4437,6 +4604,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
                 contentGrid.Visible = true;
                 appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
@@ -4550,6 +4718,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
                 contentGrid.Visible = true;
                 appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
@@ -4661,6 +4830,7 @@ namespace RegistryExpert
                 networkSplitContainer.Visible = false;
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
                 appxFilterPanel.Visible = false;
                 contentGrid.Visible = true;
                 
@@ -4951,6 +5121,7 @@ namespace RegistryExpert
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
 
                     // Create filter buttons in the subcategory panel
                     createAppxFilterButtons();
@@ -4975,6 +5146,7 @@ namespace RegistryExpert
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
 
                     // Reset cache to reload fresh data
                     cbsPackagesSections = null;
@@ -4999,12 +5171,36 @@ namespace RegistryExpert
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
 
                     // Create filter buttons
                     createStorageFilterButtons();
                     
                     // Display Disk filters by default
                     displayStorageWithFilter("Disk");
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Storage Disk/Partition - show split pane
+                if (section.Title == "💿 Disk/Partition")
+                {
+                    contentGrid.Visible = false;
+                    networkSplitContainer.Visible = false;
+                    firewallPanel.Visible = false;
+                    deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = true;
+                    appxFilterPanel.Visible = false;
+
+                    // Display partition data directly (no secondary filter buttons needed)
+                    displayStorageWithFilter("Partition");
 
                     // Update subcategory button states
                     foreach (var btn in subCategoryButtons)
@@ -5023,6 +5219,7 @@ namespace RegistryExpert
                     networkSplitContainer.Visible = false;
                     firewallPanel.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
 
                     cachedProfilesSection = section;
                     createProfileFilterButtons();
@@ -5548,6 +5745,89 @@ namespace RegistryExpert
                 }
             };
 
+            // Handle disk partition list selection for detail view
+            diskPartitionList.SelectionChanged += (s, ev) =>
+            {
+                if (diskPartitionList.SelectedRows.Count == 0) return;
+                var selectedRow = diskPartitionList.SelectedRows[0];
+                if (selectedRow.Tag is not MountedDeviceEntry device) return;
+
+                // Update header
+                diskPartitionDetailsLabel.Text = $"Details — {device.MountPoint}";
+
+                // Update bottom detail pane
+                var pathText = $"Registry Path: {device.RegistryPath}";
+                if (!string.IsNullOrEmpty(device.EnumPath))
+                    pathText += $"  |  Enum: {device.EnumPath}";
+                registryPathLabel.Text = pathText;
+                registryValueBox.Text = $"Mount: {device.MountPoint} | Style: {device.PartitionStyle} | {device.Identifier}";
+
+                // Populate right-side detail grid
+                diskPartitionDetails.Rows.Clear();
+
+                Action<string, string> addRow = (prop, val) =>
+                {
+                    if (!string.IsNullOrEmpty(val))
+                        diskPartitionDetails.Rows.Add(prop, val);
+                };
+
+                // Mount Info
+                addRow("Value Name", device.RegistryValueName);
+                addRow("Mount Point", device.MountPoint);
+                addRow("Type", device.MountType);
+
+                // Partition
+                addRow("Partition Style", device.PartitionStyle);
+                addRow("Disk Signature", device.DiskSignature);
+                addRow("Partition Offset", device.PartitionOffset);
+                addRow("Partition GUID", device.PartitionGuid);
+                addRow("Disk ID", device.DiskId);
+
+                // Device Path
+                addRow("Bus Type", device.BusType);
+                addRow("Vendor", device.Vendor);
+                addRow("Product", device.Product);
+                addRow("Serial", device.Serial);
+                addRow("Device Path", device.DevicePath);
+
+                // Enum Device Info
+                addRow("Friendly Name", device.FriendlyName);
+                addRow("Device Class", device.DeviceClass);
+                addRow("Service", device.DeviceService);
+                addRow("Manufacturer", device.Manufacturer);
+                addRow("Location", device.LocationInfo);
+                addRow("Status", device.DeviceStatus);
+                addRow("Enum Path", device.EnumPath);
+
+                // Disk Status
+                if (!string.IsNullOrEmpty(device.StaleStatus))
+                {
+                    var statusDesc = device.StaleStatus switch
+                    {
+                        "Active" => "Active — disk has current STORAGE\\Volume registrations",
+                        "Stale" => "Stale — no active STORAGE\\Volume registrations found (disk may have been detached)",
+                        "Unknown" => "Unknown — could not determine parent disk for this partition",
+                        _ => device.StaleStatus
+                    };
+                    addRow("Volume Status", statusDesc);
+                }
+
+                // Raw Data
+                addRow("Data Length", $"{device.DataLength} bytes");
+            };
+
+            // Handle detail grid selection to update bottom pane
+            diskPartitionDetails.SelectionChanged += (s, ev) =>
+            {
+                if (diskPartitionDetails.SelectedRows.Count == 0) return;
+                var selectedRow = diskPartitionDetails.SelectedRows[0];
+                var prop = selectedRow.Cells[0].Value?.ToString() ?? "";
+                var val = selectedRow.Cells[1].Value?.ToString() ?? "";
+
+                if (!string.IsNullOrEmpty(val))
+                    registryValueBox.Text = $"{prop}: {val}";
+            };
+
             // Handle grid selection to show registry path
             contentGrid.SelectionChanged += (s, ev) =>
             {
@@ -5645,6 +5925,7 @@ namespace RegistryExpert
             };
 
             // Add content controls to Panel1 of the split container
+            contentDetailSplit.Panel1.Controls.Add(diskPartitionSplit);
             contentDetailSplit.Panel1.Controls.Add(deviceManagerSplit);
             contentDetailSplit.Panel1.Controls.Add(firewallPanel);
             contentDetailSplit.Panel1.Controls.Add(networkSplitContainer);
@@ -5690,6 +5971,7 @@ namespace RegistryExpert
                     // Hide network panel and show content grid
                     networkSplitContainer.Visible = false;
                     deviceManagerSplit.Visible = false;
+                    diskPartitionSplit.Visible = false;
                     contentGrid.Visible = true;
                     
                     if (allServicesCache.Count == 0)
@@ -7353,5 +7635,35 @@ namespace RegistryExpert
         public string Value { get; set; } = "";
         public string RegistryValueName { get; set; } = "";
         public string RegistryPath { get; set; } = "";
+    }
+
+    public class MountedDeviceEntry
+    {
+        public string MountPoint { get; set; } = "";
+        public string MountType { get; set; } = "";
+        public string PartitionStyle { get; set; } = "";
+        public string Identifier { get; set; } = "";
+        public string DiskSignature { get; set; } = "";
+        public string PartitionOffset { get; set; } = "";
+        public string PartitionGuid { get; set; } = "";
+        public string DevicePath { get; set; } = "";
+        public string BusType { get; set; } = "";
+        public string Vendor { get; set; } = "";
+        public string Product { get; set; } = "";
+        public string Serial { get; set; } = "";
+        public string RegistryPath { get; set; } = "MountedDevices";
+        public string RegistryValueName { get; set; } = "";
+        public int DataLength { get; set; }
+
+        // Enum-enriched properties (from ControlSet001\Enum\{Bus}\{Device}\{Instance})
+        public string FriendlyName { get; set; } = "";
+        public string DeviceClass { get; set; } = "";
+        public string DeviceService { get; set; } = "";
+        public string Manufacturer { get; set; } = "";
+        public string LocationInfo { get; set; } = "";
+        public string DeviceStatus { get; set; } = "";
+        public string EnumPath { get; set; } = "";
+        public string DiskId { get; set; } = "";
+        public string StaleStatus { get; set; } = "";
     }
 }
