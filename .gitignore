@@ -37,3 +37,6 @@ Desktop.ini
 # AI assistant config
 .opencode/
 AGENTS.md
+
+# Local dev tools (not for CI/GitHub)
+DevTools/

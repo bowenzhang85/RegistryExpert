@@ -18,6 +18,10 @@ namespace RegistryExpert
         private readonly ConcurrentDictionary<string, RegistryKey?> _keyCache = new();
         private readonly ConcurrentDictionary<string, string?> _valueCache = new();
 
+        // Lazy-cached disk partition registry and active storage volume DiskIds
+        private List<DiskPartitionInfo>? _diskPartitionRegistry;
+        private HashSet<string>? _activeStorageVolumeDiskIds;
+
         public RegistryInfoExtractor(OfflineRegistryParser parser)
         {
             _parser = parser;
@@ -4997,6 +5001,15 @@ namespace RegistryExpert
             });
             sections.Add(filtersSection);
 
+            // Disk/Partition section (placeholder - actual data loaded via GetMountedDevices)
+            var partitionSection = new AnalysisSection { Title = "💿 Disk/Partition" };
+            partitionSection.Items.Add(new AnalysisItem
+            {
+                Name = "Mounted Devices",
+                Value = "Displays MBR signatures, GPT partition GUIDs, and device paths from MountedDevices"
+            });
+            sections.Add(partitionSection);
+
             return sections;
         }
 
@@ -5252,6 +5265,737 @@ namespace RegistryExpert
                             .ToArray();
 
             return parts.Length > 1 ? string.Join(", ", parts) : value.Trim();
+        }
+
+        /// <summary>
+        /// Get mounted devices information from SYSTEM\MountedDevices key.
+        /// Parses MBR disk signatures, GPT partition GUIDs, and device paths.
+        /// </summary>
+        public List<MountedDeviceEntry> GetMountedDevices()
+        {
+            var entries = new List<MountedDeviceEntry>();
+
+            var mountedDevicesKey = _parser.GetKey("MountedDevices");
+            if (mountedDevicesKey?.Values == null)
+                return entries;
+
+            // Build disk partition registry for cross-referencing (GPT + MBR)
+            var diskRegistry = BuildDiskPartitionRegistry();
+
+            // Collect MBR entries for deferred cross-referencing (needs all entries first)
+            var mbrEntries = new List<MountedDeviceEntry>();
+
+            foreach (var value in mountedDevicesKey.Values)
+            {
+                var valueName = value.ValueName;
+                if (string.IsNullOrEmpty(valueName))
+                    continue;
+
+                var entry = new MountedDeviceEntry
+                {
+                    RegistryValueName = valueName
+                };
+
+                // Determine mount point and type from value name
+                if (valueName.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase))
+                {
+                    entry.MountPoint = valueName.Substring(@"\DosDevices\".Length);
+                    entry.MountType = "Drive Letter";
+                }
+                else if (valueName.StartsWith(@"\??\Volume", StringComparison.OrdinalIgnoreCase))
+                {
+                    var guidPart = valueName.Substring(@"\??\Volume".Length);
+                    entry.MountPoint = $"Volume{guidPart}";
+                    entry.MountType = "Volume GUID";
+                }
+                else
+                {
+                    entry.MountPoint = valueName;
+                    entry.MountType = "Other";
+                }
+
+                // Get raw binary data
+                byte[]? rawData = value.ValueDataRaw;
+                if (rawData == null || rawData.Length == 0)
+                {
+                    entry.PartitionStyle = "Empty";
+                    entry.Identifier = "(no data)";
+                    entries.Add(entry);
+                    continue;
+                }
+
+                entry.DataLength = rawData.Length;
+                // Parse based on data format
+                if (rawData.Length == 12)
+                {
+                    // MBR: 4-byte disk signature + 8-byte partition byte offset
+                    entry.PartitionStyle = "MBR";
+                    uint diskSig = BitConverter.ToUInt32(rawData, 0);
+                    long partOffset = BitConverter.ToInt64(rawData, 4);
+                    long lbaSector = partOffset / 512;
+
+                    entry.DiskSignature = $"0x{diskSig:X8}";
+                    entry.PartitionOffset = $"{partOffset:N0} bytes (LBA {lbaSector:N0})";
+                    entry.Identifier = $"Sig: 0x{diskSig:X8}, Offset: LBA {lbaSector:N0}";
+
+                    // Collect for deferred cross-referencing after all entries are parsed
+                    mbrEntries.Add(entry);
+                }
+                else if (rawData.Length == 24 && rawData[0] == 0x44 && rawData[1] == 0x4D &&
+                         rawData[2] == 0x49 && rawData[3] == 0x4F && rawData[4] == 0x3A &&
+                         rawData[5] == 0x49 && rawData[6] == 0x44 && rawData[7] == 0x3A)
+                {
+                    // GPT: "DMIO:ID:" (8 bytes) + 16-byte partition GUID
+                    entry.PartitionStyle = "GPT";
+                    var guidBytes = new byte[16];
+                    Array.Copy(rawData, 8, guidBytes, 0, 16);
+                    var partGuid = new Guid(guidBytes);
+
+                    entry.PartitionGuid = partGuid.ToString("B");
+                    entry.Identifier = partGuid.ToString("B");
+
+                    // Cross-reference partition GUID against disk PartitionTableCache blobs
+                    var matchedDisk = FindDiskForPartitionGuid(partGuid, diskRegistry);
+                    if (matchedDisk != null)
+                    {
+                        entry.DiskId = matchedDisk.DiskId;
+                        EnrichFromEnumPath(entry, matchedDisk.EnumPath);
+
+                        // Update identifier to FriendlyName if available
+                        if (!string.IsNullOrEmpty(entry.FriendlyName))
+                            entry.Identifier = entry.FriendlyName;
+                    }
+                }
+                else
+                {
+                    // Variable-length: likely UTF-16LE device path string
+                    entry.PartitionStyle = "Device Path";
+
+                    try
+                    {
+                        string devicePath = System.Text.Encoding.Unicode.GetString(rawData).TrimEnd('\0');
+                        entry.DevicePath = devicePath;
+
+                        ParseDevicePath(entry, devicePath);
+
+                        // Enrich with data from ControlSet001\Enum
+                        EnrichFromEnum(entry);
+
+                        // Build concise identifier — prefer FriendlyName from Enum
+                        if (!string.IsNullOrEmpty(entry.FriendlyName))
+                        {
+                            entry.Identifier = entry.FriendlyName;
+                        }
+                        else if (!string.IsNullOrEmpty(entry.Vendor) || !string.IsNullOrEmpty(entry.Product))
+                        {
+                            var parts = new List<string>();
+                            if (!string.IsNullOrEmpty(entry.BusType)) parts.Add(entry.BusType);
+                            if (!string.IsNullOrEmpty(entry.Vendor)) parts.Add(entry.Vendor);
+                            if (!string.IsNullOrEmpty(entry.Product)) parts.Add(entry.Product);
+                            entry.Identifier = string.Join(" | ", parts);
+                        }
+                        else if (!string.IsNullOrEmpty(entry.BusType))
+                        {
+                            entry.Identifier = entry.BusType;
+                        }
+                        else
+                        {
+                            entry.Identifier = devicePath.Length > 80
+                                ? devicePath.Substring(0, 77) + "..."
+                                : devicePath;
+                        }
+                    }
+                    catch
+                    {
+                        entry.Identifier = $"Binary ({rawData.Length} bytes)";
+                    }
+                }
+
+                entries.Add(entry);
+            }
+
+            // MBR cross-referencing: map disk signatures to DiskIds via STORAGE\Volume offsets
+            if (mbrEntries.Count > 0)
+            {
+                // Collect DiskIds already matched by GPT entries so they can be excluded from MBR candidates
+                var gptMatchedDiskIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var entry in entries)
+                {
+                    if (entry.PartitionStyle == "GPT" && !string.IsNullOrEmpty(entry.DiskId))
+                    {
+                        var id = entry.DiskId.Trim();
+                        if (!id.StartsWith("{")) id = "{" + id + "}";
+                        gptMatchedDiskIds.Add(id);
+                    }
+                }
+
+                var mbrSigToDisk = BuildMbrSignatureToDiskMap(mbrEntries, diskRegistry, gptMatchedDiskIds);
+                foreach (var entry in mbrEntries)
+                {
+                    if (string.IsNullOrEmpty(entry.DiskSignature)) continue;
+                    if (!uint.TryParse(entry.DiskSignature.Replace("0x", ""),
+                        System.Globalization.NumberStyles.HexNumber, null, out uint sig))
+                        continue;
+
+                    if (mbrSigToDisk.TryGetValue(sig, out var matchedDisk))
+                    {
+                        entry.DiskId = matchedDisk.DiskId;
+                        entry.EnumPath = matchedDisk.EnumPath;
+                        EnrichFromEnumPath(entry, matchedDisk.EnumPath);
+
+                        // Update identifier to FriendlyName if available
+                        if (!string.IsNullOrEmpty(entry.FriendlyName))
+                            entry.Identifier = entry.FriendlyName;
+                    }
+                }
+            }
+
+            // Orphan/stale detection: compare DiskIds against active STORAGE\Volume registrations
+            var activeDiskIds = BuildActiveStorageVolumeDiskIds();
+
+            foreach (var entry in entries)
+            {
+                if (entry.PartitionStyle == "GPT")
+                {
+                    if (!string.IsNullOrEmpty(entry.DiskId))
+                    {
+                        // Extract just the GUID from DiskId (it may have braces already)
+                        var diskIdGuid = entry.DiskId.Trim();
+                        if (!diskIdGuid.StartsWith("{"))
+                            diskIdGuid = "{" + diskIdGuid + "}";
+                        entry.StaleStatus = activeDiskIds.Contains(diskIdGuid) ? "Active" : "Stale";
+                    }
+                    else
+                    {
+                        entry.StaleStatus = "Unknown";
+                    }
+                }
+                else if (entry.PartitionStyle == "MBR")
+                {
+                    if (!string.IsNullOrEmpty(entry.DiskId))
+                    {
+                        var diskIdGuid = entry.DiskId.Trim();
+                        if (!diskIdGuid.StartsWith("{"))
+                            diskIdGuid = "{" + diskIdGuid + "}";
+                        entry.StaleStatus = activeDiskIds.Contains(diskIdGuid) ? "Active" : "Stale";
+                    }
+                    // MBR entries without DiskId: leave StaleStatus as "" (no cross-reference found)
+                }
+                else if (entry.PartitionStyle == "Device Path")
+                {
+                    if (!string.IsNullOrEmpty(entry.EnumPath))
+                    {
+                        var enumKey = GetCachedKey(entry.EnumPath);
+                        entry.StaleStatus = enumKey != null ? "Active" : "Stale";
+                    }
+                }
+            }
+
+            // Sort: drive letters first (alphabetical), then volume GUIDs
+            return entries
+                .OrderBy(e => e.MountType == "Drive Letter" ? 0 : e.MountType == "Volume GUID" ? 1 : 2)
+                .ThenBy(e => e.MountPoint)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Parse device path string to extract bus type, vendor, product, and serial number.
+        /// Handles paths like \??\SCSI#Disk&amp;Ven_Samsung&amp;Prod_SSD#serial#{guid}
+        /// and \??\USBSTOR#Disk&amp;Ven_SanDisk&amp;Prod_Ultra&amp;Rev_1.00#SERIAL#{guid}
+        /// </summary>
+        private static void ParseDevicePath(MountedDeviceEntry entry, string devicePath)
+        {
+            var path = devicePath;
+            if (path.StartsWith(@"\??\"))
+                path = path.Substring(4);
+
+            // Split by # to get segments: [BusAndDevice, DeviceId, InstanceId, InterfaceGuid]
+            var segments = path.Split('#');
+            if (segments.Length < 2)
+                return;
+
+            var firstSegment = segments[0];
+
+            // Extract bus type (before first backslash)
+            var busSlash = firstSegment.IndexOf('\\');
+            if (busSlash >= 0)
+            {
+                entry.BusType = firstSegment.Substring(0, busSlash);
+            }
+            else
+            {
+                entry.BusType = firstSegment;
+            }
+
+            // Parse Ven_ and Prod_ - check both first and second segments
+            // Standard Windows device paths put Ven_/Prod_ in segments[1]:
+            //   \??\SCSI#CdRom&Ven_Msft&Prod_Virtual_DVD-ROM#serial#{guid}
+            //   \??\USBSTOR#Disk&Ven_SanDisk&Prod_Ultra&Rev_1.00#serial#{guid}
+            // But some may have them in segments[0] if joined by backslash:
+            //   \??\SCSI\Disk&Ven_Samsung&Prod_SSD#serial#{guid}
+            var searchSegment = firstSegment;
+            if (segments.Length >= 2 && firstSegment.IndexOf("Ven_", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                searchSegment = segments[1];
+            }
+
+            var venIndex = searchSegment.IndexOf("Ven_", StringComparison.OrdinalIgnoreCase);
+            if (venIndex >= 0)
+            {
+                var venStart = venIndex + 4;
+                var venEnd = searchSegment.IndexOf('&', venStart);
+                entry.Vendor = venEnd >= 0
+                    ? searchSegment.Substring(venStart, venEnd - venStart).Replace('_', ' ').Trim()
+                    : searchSegment.Substring(venStart).Replace('_', ' ').Trim();
+            }
+
+            var prodIndex = searchSegment.IndexOf("Prod_", StringComparison.OrdinalIgnoreCase);
+            if (prodIndex >= 0)
+            {
+                var prodStart = prodIndex + 5;
+                var prodEnd = searchSegment.IndexOf('&', prodStart);
+                entry.Product = prodEnd >= 0
+                    ? searchSegment.Substring(prodStart, prodEnd - prodStart).Replace('_', ' ').Trim()
+                    : searchSegment.Substring(prodStart).Replace('_', ' ').Trim();
+            }
+
+            // Serial number is typically in the third segment (index 2)
+            // Skip segments that look like GUIDs or contain Ven_/Prod_ device descriptors
+            if (segments.Length >= 3 && !string.IsNullOrEmpty(segments[2])
+                && !segments[2].StartsWith("{"))
+            {
+                entry.Serial = segments[2].Trim();
+            }
+        }
+
+        /// <summary>
+        /// Enrich a MountedDeviceEntry with data from ControlSet001\Enum\{Bus}\{Device}\{Instance}
+        /// Parses the device path to construct the enum path, then delegates to EnrichFromEnumPath.
+        /// </summary>
+        private void EnrichFromEnum(MountedDeviceEntry entry)
+        {
+            if (string.IsNullOrEmpty(entry.DevicePath))
+                return;
+
+            // Build Enum path from device path segments
+            var path = entry.DevicePath;
+            if (path.StartsWith(@"\??\"))
+                path = path.Substring(4);
+
+            var segments = path.Split('#');
+            if (segments.Length < 3)
+                return;
+
+            // Construct: ControlSet001\Enum\SCSI\CdRom&Ven_Msft&Prod_Virtual_DVD-ROM\5&394b69d0&0&000002
+            var enumPath = $@"ControlSet001\Enum\{segments[0]}\{segments[1]}\{segments[2]}";
+            EnrichFromEnumPath(entry, enumPath);
+        }
+
+        /// <summary>
+        /// Enrich a MountedDeviceEntry with data from a known Enum path.
+        /// Reads FriendlyName, DeviceDesc, Class, Service, Mfg, LocationInformation, ConfigFlags.
+        /// </summary>
+        private void EnrichFromEnumPath(MountedDeviceEntry entry, string enumPath)
+        {
+            entry.EnumPath = enumPath;
+
+            var enumKey = GetCachedKey(enumPath);
+            if (enumKey?.Values == null)
+                return;
+
+            // Helper to read and clean localized strings (strips "@resource;Display Name" → "Display Name")
+            string? ReadAndClean(string valueName, bool clean = false)
+            {
+                var val = enumKey.Values.FirstOrDefault(v => v.ValueName == valueName)?.ValueData?.ToString();
+                if (clean && val != null)
+                {
+                    var semi = val.LastIndexOf(';');
+                    if (semi >= 0) val = val.Substring(semi + 1);
+                }
+                return val;
+            }
+
+            var friendlyName = ReadAndClean("FriendlyName", clean: true);
+            if (!string.IsNullOrEmpty(friendlyName))
+                entry.FriendlyName = friendlyName;
+
+            var deviceDesc = ReadAndClean("DeviceDesc", clean: true);
+            // Use DeviceDesc as fallback FriendlyName if FriendlyName is empty
+            if (string.IsNullOrEmpty(entry.FriendlyName) && !string.IsNullOrEmpty(deviceDesc))
+                entry.FriendlyName = deviceDesc;
+
+            var deviceClass = ReadAndClean("Class");
+            if (!string.IsNullOrEmpty(deviceClass))
+                entry.DeviceClass = deviceClass;
+
+            var service = ReadAndClean("Service");
+            if (!string.IsNullOrEmpty(service))
+                entry.DeviceService = service;
+
+            var mfg = ReadAndClean("Mfg", clean: true);
+            if (!string.IsNullOrEmpty(mfg))
+                entry.Manufacturer = mfg;
+
+            var location = ReadAndClean("LocationInformation");
+            if (!string.IsNullOrEmpty(location))
+                entry.LocationInfo = location;
+
+            // ConfigFlags: bit 0 = disabled
+            var configFlags = ReadAndClean("ConfigFlags");
+            if (!string.IsNullOrEmpty(configFlags))
+            {
+                if (int.TryParse(configFlags.Split(' ')[0], out int flags))
+                {
+                    entry.DeviceStatus = (flags & 1) == 1 ? "Disabled" : "Enabled";
+                }
+            }
+            // If ConfigFlags is absent, leave DeviceStatus empty (unknown)
+        }
+
+        /// <summary>
+        /// Internal class holding disk partition registry info for cross-referencing.
+        /// </summary>
+        private class DiskPartitionInfo
+        {
+            public string EnumPath { get; set; } = "";
+            public string DiskId { get; set; } = "";
+            public byte[] PartitionTableCache { get; set; } = Array.Empty<byte>();
+        }
+
+        /// <summary>
+        /// Build a registry of all disk devices with their DiskId and optional PartitionTableCache.
+        /// Iterates ControlSet001\Enum\*\*\* filtering by Service=disk.
+        /// MBR disks may not have PartitionTableCache; they are still collected for DiskId-based matching.
+        /// Results are lazy-cached for reuse.
+        /// </summary>
+        private List<DiskPartitionInfo> BuildDiskPartitionRegistry()
+        {
+            if (_diskPartitionRegistry != null)
+                return _diskPartitionRegistry;
+
+            _diskPartitionRegistry = new List<DiskPartitionInfo>();
+
+            var enumKey = GetCachedKey(@"ControlSet001\Enum");
+            if (enumKey?.SubKeys == null)
+                return _diskPartitionRegistry;
+
+            // Three-level walk: bus → device → instance
+            foreach (var busType in enumKey.SubKeys)
+            {
+                if (busType.SubKeys == null) continue;
+                foreach (var device in busType.SubKeys)
+                {
+                    if (device.SubKeys == null) continue;
+                    foreach (var instance in device.SubKeys)
+                    {
+                        // Filter by Service == "disk"
+                        var serviceVal = instance.Values?.FirstOrDefault(v =>
+                            string.Equals(v.ValueName, "Service", StringComparison.OrdinalIgnoreCase))?.ValueData?.ToString();
+                        if (!string.Equals(serviceVal, "disk", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Navigate to Device Parameters\Partmgr via SubKeys
+                        var deviceParams = instance.SubKeys?.FirstOrDefault(s =>
+                            string.Equals(s.KeyName, "Device Parameters", StringComparison.OrdinalIgnoreCase));
+                        var partmgr = deviceParams?.SubKeys?.FirstOrDefault(s =>
+                            string.Equals(s.KeyName, "Partmgr", StringComparison.OrdinalIgnoreCase));
+                        if (partmgr?.Values == null)
+                            continue;
+
+                        var diskIdVal = partmgr.Values.FirstOrDefault(v =>
+                            string.Equals(v.ValueName, "DiskId", StringComparison.OrdinalIgnoreCase))?.ValueData?.ToString();
+
+                        // DiskId is required; PartitionTableCache is optional (MBR disks may not have it)
+                        if (string.IsNullOrEmpty(diskIdVal))
+                            continue;
+
+                        var cacheVal = partmgr.Values.FirstOrDefault(v =>
+                            string.Equals(v.ValueName, "PartitionTableCache", StringComparison.OrdinalIgnoreCase));
+
+                        var enumPath = $@"ControlSet001\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
+
+                        _diskPartitionRegistry.Add(new DiskPartitionInfo
+                        {
+                            EnumPath = enumPath,
+                            DiskId = diskIdVal,
+                            PartitionTableCache = cacheVal?.ValueDataRaw ?? Array.Empty<byte>()
+                        });
+                    }
+                }
+            }
+
+            return _diskPartitionRegistry;
+        }
+
+        /// <summary>
+        /// Find which disk contains a given partition GUID by byte-searching PartitionTableCache blobs.
+        /// Uses Guid.ToByteArray() (mixed-endian) for the 16-byte search pattern.
+        /// </summary>
+        private static DiskPartitionInfo? FindDiskForPartitionGuid(Guid partitionGuid, List<DiskPartitionInfo> diskRegistry)
+        {
+            var guidBytes = partitionGuid.ToByteArray(); // 16 bytes, mixed-endian
+
+            foreach (var disk in diskRegistry)
+            {
+                var cache = disk.PartitionTableCache;
+                if (cache.Length < 16)
+                    continue;
+
+                // Brute-force byte search for the 16-byte GUID pattern
+                for (int i = 0; i <= cache.Length - 16; i++)
+                {
+                    bool match = true;
+                    for (int j = 0; j < 16; j++)
+                    {
+                        if (cache[i + j] != guidBytes[j])
+                        {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match)
+                        return disk;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Build a set of DiskIds that have active STORAGE\Volume registrations.
+        /// Parses subkey names under ControlSet001\Enum\STORAGE\Volume (format: {DiskId}#PartitionByteOffset).
+        /// Results are lazy-cached for reuse.
+        /// </summary>
+        private HashSet<string> BuildActiveStorageVolumeDiskIds()
+        {
+            if (_activeStorageVolumeDiskIds != null)
+                return _activeStorageVolumeDiskIds;
+
+            _activeStorageVolumeDiskIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var volumeKey = GetCachedKey(@"ControlSet001\Enum\STORAGE\Volume");
+            if (volumeKey?.SubKeys == null)
+                return _activeStorageVolumeDiskIds;
+
+            foreach (var subKey in volumeKey.SubKeys)
+            {
+                var name = subKey.KeyName;
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                // Format: _??_USBSTOR#Disk&Ven_...#Serial#{DiskId}#PartOffset
+                // or simpler: {DiskId}#PartOffset
+                // The DiskId is a GUID in braces — find it
+                var hashIndex = name.LastIndexOf('#');
+                if (hashIndex > 0)
+                {
+                    var beforeHash = name.Substring(0, hashIndex);
+                    // Find the last GUID-like segment before the final #
+                    // Look for a '{' that starts a GUID
+                    var braceStart = beforeHash.LastIndexOf('{');
+                    if (braceStart >= 0)
+                    {
+                        var braceEnd = beforeHash.IndexOf('}', braceStart);
+                        if (braceEnd > braceStart)
+                        {
+                            var diskId = beforeHash.Substring(braceStart, braceEnd - braceStart + 1);
+                            _activeStorageVolumeDiskIds.Add(diskId);
+                        }
+                    }
+                }
+            }
+
+            return _activeStorageVolumeDiskIds;
+        }
+
+        /// <summary>
+        /// Build a mapping of MBR disk signatures to DiskIds by cross-referencing
+        /// MBR entries from MountedDevices against disk partition data.
+        /// 
+        /// Algorithm:
+        /// 0. Direct match: scan PartitionTableCache blobs for MBR partition style (bytes[0..3]==0)
+        ///    and extract the embedded MBR disk signature from bytes[8..11]
+        /// 1. Fallback: parse STORAGE\Volume subkeys to build (DiskId, Offset) pairs
+        /// 2. Group MBR entries by disk signature, collecting their partition offsets
+        /// 3. For each signature, find DiskIds whose volume offsets contain all of the signature's offsets
+        /// 4. Resolve unique matches first, then disambiguate remaining via elimination
+        /// </summary>
+        private Dictionary<uint, DiskPartitionInfo> BuildMbrSignatureToDiskMap(
+            List<MountedDeviceEntry> mbrEntries, List<DiskPartitionInfo> diskRegistry,
+            HashSet<string> excludedDiskIds)
+        {
+            var result = new Dictionary<uint, DiskPartitionInfo>();
+
+            // Step 0: Direct MBR signature matching via PartitionTableCache
+            // MBR disks with PartitionTableCache have: bytes[0..3] == 0 (MBR style),
+            // bytes[8..11] = MBR disk signature (uint32 little-endian)
+            var directMbrMap = new Dictionary<uint, DiskPartitionInfo>();
+            foreach (var disk in diskRegistry)
+            {
+                var cache = disk.PartitionTableCache;
+                if (cache == null || cache.Length < 12)
+                    continue;
+
+                // Check partition style: bytes 0-3 == 0 means MBR
+                if (cache[0] != 0 || cache[1] != 0 || cache[2] != 0 || cache[3] != 0)
+                    continue;
+
+                uint mbrSig = BitConverter.ToUInt32(cache, 8);
+                if (mbrSig != 0)
+                    directMbrMap.TryAdd(mbrSig, disk);
+            }
+
+            // Apply direct matches immediately
+            foreach (var (sig, disk) in directMbrMap)
+            {
+                result[sig] = disk;
+            }
+
+            if (mbrEntries.Count == 0 || diskRegistry.Count == 0)
+                return result;
+
+            // Step 1: Parse STORAGE\Volume subkeys → (DiskId, Offset) pairs
+            // Format: {DiskId}#PartitionByteOffsetHex
+            var volumeKey = GetCachedKey(@"ControlSet001\Enum\STORAGE\Volume");
+            if (volumeKey?.SubKeys == null)
+                return result;
+
+            // Build lookup: offset → set of DiskIds that have a volume at that offset
+            var offsetToDiskIds = new Dictionary<long, HashSet<string>>();
+            foreach (var subKey in volumeKey.SubKeys)
+            {
+                var name = subKey.KeyName;
+                if (string.IsNullOrEmpty(name))
+                    continue;
+
+                var hashIdx = name.LastIndexOf('#');
+                if (hashIdx <= 0) continue;
+
+                var beforeHash = name.Substring(0, hashIdx);
+                var offsetHex = name.Substring(hashIdx + 1);
+
+                // Extract DiskId GUID from before the hash
+                var braceStart = beforeHash.LastIndexOf('{');
+                if (braceStart < 0) continue;
+                var braceEnd = beforeHash.IndexOf('}', braceStart);
+                if (braceEnd <= braceStart) continue;
+                var diskIdStr = beforeHash.Substring(braceStart, braceEnd - braceStart + 1);
+
+                if (long.TryParse(offsetHex, System.Globalization.NumberStyles.HexNumber, null, out long offset))
+                {
+                    if (!offsetToDiskIds.TryGetValue(offset, out var diskIdSet))
+                    {
+                        diskIdSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        offsetToDiskIds[offset] = diskIdSet;
+                    }
+                    diskIdSet.Add(diskIdStr);
+                }
+            }
+
+            // Step 2: Group MBR entries by disk signature → collect partition offsets per signature
+            var sigToOffsets = new Dictionary<uint, HashSet<long>>();
+            foreach (var entry in mbrEntries)
+            {
+                if (string.IsNullOrEmpty(entry.DiskSignature)) continue;
+                // Parse "0xHHHHHHHH" back to uint
+                if (!uint.TryParse(entry.DiskSignature.Replace("0x", ""),
+                    System.Globalization.NumberStyles.HexNumber, null, out uint sig))
+                    continue;
+
+                if (!sigToOffsets.TryGetValue(sig, out var offsets))
+                {
+                    offsets = new HashSet<long>();
+                    sigToOffsets[sig] = offsets;
+                }
+
+                // Parse partition offset from entry (format: "NNN bytes (LBA NNN)")
+                if (!string.IsNullOrEmpty(entry.PartitionOffset))
+                {
+                    var spaceIdx = entry.PartitionOffset.IndexOf(' ');
+                    if (spaceIdx > 0)
+                    {
+                        var bytesStr = entry.PartitionOffset.Substring(0, spaceIdx).Replace(",", "");
+                        if (long.TryParse(bytesStr, out long offsetVal))
+                            offsets.Add(offsetVal);
+                    }
+                }
+            }
+
+            // Build DiskId → DiskPartitionInfo lookup from disk registry
+            var diskIdToInfo = new Dictionary<string, DiskPartitionInfo>(StringComparer.OrdinalIgnoreCase);
+            foreach (var disk in diskRegistry)
+            {
+                var key = disk.DiskId.Trim();
+                if (!key.StartsWith("{")) key = "{" + key + "}";
+                if (!diskIdToInfo.ContainsKey(key))
+                    diskIdToInfo[key] = disk;
+            }
+
+            // Step 3: For each signature, find candidate DiskIds
+            var sigToCandidates = new Dictionary<uint, HashSet<string>>();
+            foreach (var (sig, offsets) in sigToOffsets)
+            {
+                HashSet<string>? candidates = null;
+                foreach (var offset in offsets)
+                {
+                    if (offsetToDiskIds.TryGetValue(offset, out var diskIdsAtOffset))
+                    {
+                        if (candidates == null)
+                            candidates = new HashSet<string>(diskIdsAtOffset, StringComparer.OrdinalIgnoreCase);
+                        else
+                            candidates.IntersectWith(diskIdsAtOffset);
+                    }
+                    else
+                    {
+                        // No volume at this offset — no candidates
+                        candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        break;
+                    }
+                }
+                sigToCandidates[sig] = candidates ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            // Step 4: Resolve unique matches first
+            // Seed with GPT-matched DiskIds and direct-matched DiskIds to exclude from STORAGE\Volume candidates
+            var matchedDiskIds = new HashSet<string>(excludedDiskIds, StringComparer.OrdinalIgnoreCase);
+            foreach (var (_, disk) in directMbrMap)
+            {
+                var id = disk.DiskId.Trim();
+                if (!id.StartsWith("{")) id = "{" + id + "}";
+                matchedDiskIds.Add(id);
+            }
+            foreach (var (sig, candidates) in sigToCandidates)
+            {
+                if (result.ContainsKey(sig)) continue; // Skip sigs already resolved by direct match
+                if (candidates.Count == 1)
+                {
+                    var diskIdStr = candidates.First();
+                    if (diskIdToInfo.TryGetValue(diskIdStr, out var info))
+                    {
+                        result[sig] = info;
+                        matchedDiskIds.Add(diskIdStr);
+                    }
+                }
+            }
+
+            // Step 5: Disambiguate remaining via elimination of already-matched DiskIds
+            foreach (var (sig, candidates) in sigToCandidates)
+            {
+                if (result.ContainsKey(sig)) continue;
+                var remaining = new HashSet<string>(candidates, StringComparer.OrdinalIgnoreCase);
+                remaining.ExceptWith(matchedDiskIds);
+                if (remaining.Count == 1)
+                {
+                    var diskIdStr = remaining.First();
+                    if (diskIdToInfo.TryGetValue(diskIdStr, out var info))
+                    {
+                        result[sig] = info;
+                        matchedDiskIds.Add(diskIdStr);
+                    }
+                }
+            }
+
+            return result;
         }
 
         #endregion
