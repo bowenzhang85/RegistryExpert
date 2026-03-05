@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace RegistryExpert
@@ -196,13 +197,19 @@ namespace RegistryExpert
         /// </summary>
         public static void SetTheme(ThemeType theme)
         {
+            bool changed = false;
             lock (_themeLock)
             {
                 if (_currentTheme != theme)
                 {
                     _currentTheme = theme;
-                    ThemeChanged?.Invoke(null, EventArgs.Empty);
+                    changed = true;
                 }
+            }
+            // Raise event outside the lock to prevent deadlock on re-entrancy
+            if (changed)
+            {
+                ThemeChanged?.Invoke(null, EventArgs.Empty);
             }
         }
 
@@ -568,17 +575,68 @@ namespace RegistryExpert
             return btn;
         }
 
+        // P/Invoke for native Windows shell folder icons
+        private const uint SHGFI_ICON = 0x000000100;
+        private const uint SHGFI_SMALLICON = 0x000000001;
+        private const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
+        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct SHFILEINFO
+        {
+            public IntPtr hIcon;
+            public int iIcon;
+            public uint dwAttributes;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string szDisplayName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+            public string szTypeName;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes,
+            ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyIcon(IntPtr hIcon);
+
+        /// <summary>
+        /// Extracts the native shell folder icon as a Bitmap using SHGetFileInfo.
+        /// Returns null if the icon cannot be extracted.
+        /// </summary>
+        public static Bitmap? GetNativeFolderIcon()
+        {
+            var shfi = new SHFILEINFO();
+            uint flags = SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES;
+
+            var result = SHGetFileInfo("folder", FILE_ATTRIBUTE_DIRECTORY,
+                ref shfi, (uint)Marshal.SizeOf(typeof(SHFILEINFO)), flags);
+
+            if (result == IntPtr.Zero || shfi.hIcon == IntPtr.Zero)
+                return null;
+
+            try
+            {
+                using var icon = System.Drawing.Icon.FromHandle(shfi.hIcon);
+                return icon.ToBitmap();
+            }
+            finally
+            {
+                DestroyIcon(shfi.hIcon);
+            }
+        }
+
         /// <summary>
         /// Create folder icon for tree view
         /// </summary>
-        public static Bitmap CreateFolderIcon(bool isOpen = false)
+        public static Bitmap CreateFolderIcon()
         {
             var bmp = new Bitmap(18, 18);
             using var g = Graphics.FromImage(bmp);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             
-            var color = isOpen ? Color.FromArgb(255, 213, 79) : Color.FromArgb(255, 193, 7);
-            using var brush = new SolidBrush(color);
+            using var brush = new SolidBrush(Color.FromArgb(255, 193, 7));
             
             // Folder shape
             var points = new Point[]
@@ -661,6 +719,55 @@ namespace RegistryExpert
                 "REGDWORD" or "REGQWORD" => "reg_num",
                 _ => "reg_str"
             };
+        }
+
+        /// <summary>
+        /// Creates an ImageList containing folder + registry value type icons.
+        /// Used by SearchForm for search result icons.
+        /// </summary>
+        public static ImageList CreateSearchImageList()
+        {
+            var iconSize = DpiHelper.Scale(16);
+            var imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = new Size(iconSize, iconSize)
+            };
+
+            // Folder icon (native shell icon with fallback)
+            Bitmap? folderIcon = null;
+            try
+            {
+                folderIcon = GetNativeFolderIcon();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to load native folder icon: {ex.Message}");
+            }
+
+            var folder = folderIcon ?? CreateFolderIcon();
+            var scaledFolder = new Bitmap(folder, new Size(iconSize, iconSize));
+            // Dispose the source bitmap (whether from native icon or CreateFolderIcon) if it's not the same as scaled
+            if (folder != scaledFolder) folder.Dispose();
+            imageList.Images.Add("folder", scaledFolder);
+
+            // Value type icons from embedded resources
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var iconNames = new[] { "reg_bin", "reg_num", "reg_str" };
+
+            foreach (var name in iconNames)
+            {
+                var resourceName = $"RegistryExpert.icons.{name}.png";
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    using var original = Image.FromStream(stream);
+                    var scaled = new Bitmap(original, new Size(iconSize, iconSize));
+                    imageList.Images.Add(name, scaled);
+                }
+            }
+
+            return imageList;
         }
     }
 

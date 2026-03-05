@@ -46,27 +46,39 @@ namespace RegistryExpert
 
             try
             {
-                // Dispose previous hive if it implements IDisposable
-                (_hive as IDisposable)?.Dispose();
+                // Dispose previous hive
+                _hive?.Dispose();
                 _hive = null;
 
-                _filePath = filePath;
                 var newHive = new RegistryHive(filePath);
-                
+
                 if (!newHive.ParseHive(progress, cancellationToken))
                 {
                     // Dispose the new hive if parsing failed
-                    (newHive as IDisposable)?.Dispose();
-                    throw new Exception("Failed to parse hive file");
+                    newHive.Dispose();
+                    throw new InvalidOperationException("Failed to parse hive file");
                 }
 
                 _hive = newHive;
+                _filePath = filePath;
                 _hiveType = DetectHiveType(filePath, _hive);
                 return true;
             }
+            catch (InvalidOperationException)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (IOException ex)
+            {
+                throw new IOException($"Failed to load registry hive: {ex.Message}", ex);
+            }
             catch (Exception ex)
             {
-                throw new Exception($"Failed to load registry hive: {ex.Message}", ex);
+                throw new InvalidOperationException($"Failed to load registry hive: {ex.Message}", ex);
             }
         }
 
@@ -172,7 +184,7 @@ namespace RegistryExpert
 
                 // Check key name
                 bool keyNameMatch = wholeWord
-                    ? IsWholeWordMatch(key.KeyName, pattern)
+                    ? IsWholeWordMatch(key.KeyName, pattern, comparison)
                     : key.KeyName.Contains(pattern, comparison);
 
                 if (keyNameMatch)
@@ -189,7 +201,7 @@ namespace RegistryExpert
                 foreach (var value in key.Values)
                 {
                     bool nameMatch = wholeWord
-                        ? IsWholeWordMatch(value.ValueName, pattern)
+                        ? IsWholeWordMatch(value.ValueName, pattern, comparison)
                         : value.ValueName.Contains(pattern, comparison);
 
                     if (nameMatch)
@@ -205,7 +217,7 @@ namespace RegistryExpert
 
                     var valueData = value.ValueData?.ToString() ?? "";
                     bool dataMatch = wholeWord
-                        ? IsWholeWordMatch(valueData, pattern)
+                        ? IsWholeWordMatch(valueData, pattern, comparison)
                         : valueData.Contains(pattern, comparison);
 
                     if (dataMatch)
@@ -228,23 +240,27 @@ namespace RegistryExpert
                     }
                 }
             }
-            catch
+            catch (OperationCanceledException)
             {
-                // Silently skip keys that fail to enumerate - continue searching remaining keys
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Log and skip keys that fail to enumerate - continue searching remaining keys
+                System.Diagnostics.Debug.WriteLine($"Error enumerating key: {ex.Message}");
             }
         }
 
         /// <summary>
         /// Checks if searchTerm exists in text as a whole word (bounded by non-word characters or string boundaries).
-        /// Always case-insensitive.
         /// </summary>
-        private static bool IsWholeWordMatch(string text, string searchTerm)
+        private static bool IsWholeWordMatch(string text, string searchTerm, StringComparison comparison = StringComparison.OrdinalIgnoreCase)
         {
             if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(searchTerm))
                 return false;
 
             int index = 0;
-            while ((index = text.IndexOf(searchTerm, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+            while ((index = text.IndexOf(searchTerm, index, comparison)) >= 0)
             {
                 bool startBoundary = index == 0 || !char.IsLetterOrDigit(text[index - 1]);
                 int endPos = index + searchTerm.Length;
@@ -277,8 +293,10 @@ namespace RegistryExpert
             return stats;
         }
 
-        private void CountRecursive(RegistryKey key, HiveStatistics stats)
+        private void CountRecursive(RegistryKey key, HiveStatistics stats, int depth = 0)
         {
+            if (depth > MaxSearchDepth) return;
+
             stats.TotalKeys++;
             stats.TotalValues += key.Values.Count;
 
@@ -286,7 +304,7 @@ namespace RegistryExpert
             {
                 foreach (var subKey in key.SubKeys)
                 {
-                    CountRecursive(subKey, stats);
+                    CountRecursive(subKey, stats, depth + 1);
                 }
             }
         }
@@ -324,8 +342,8 @@ namespace RegistryExpert
             {
                 if (disposing)
                 {
-                    // Release managed resources - dispose hive if it's disposable
-                    (_hive as IDisposable)?.Dispose();
+                    // Release managed resources
+                    _hive?.Dispose();
                     _hive = null;
                     _filePath = null;
                 }
@@ -334,10 +352,6 @@ namespace RegistryExpert
             }
         }
 
-        ~OfflineRegistryParser()
-        {
-            Dispose(false);
-        }
     }
 
     /// <summary>

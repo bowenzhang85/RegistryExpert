@@ -47,6 +47,16 @@ namespace RegistryExpert
         private TextBox _leftPathBox = null!;
         private TextBox _rightPathBox = null!;
 
+        // Header panels and children (for theme updates)
+        private Panel _leftHeaderPanel = null!;
+        private Panel _rightHeaderPanel = null!;
+        private Button _leftBackButton = null!;
+        private Button _rightBackButton = null!;
+        private Label _leftFileLabel = null!;
+        private Label _rightFileLabel = null!;
+        private SplitContainer _leftInnerSplit = null!;
+        private SplitContainer _rightInnerSplit = null!;
+
         // Trees and grids
         private TreeView _leftTreeView = null!;
         private TreeView _rightTreeView = null!;
@@ -57,8 +67,10 @@ namespace RegistryExpert
         private SplitContainer _mainSplit = null!;
 
         // State
-        private volatile bool _isSyncing = false;
+        private bool _isSyncing = false;
         private bool _comparisonDone = false;
+        // Intentionally separate from base IsDisposed property: this form runs on its own
+        // STA thread and the base property may not be reliable cross-thread.
         private bool _isDisposed = false;
         private bool _showDifferencesOnly = false;
         private CancellationTokenSource? _cancellationTokenSource;
@@ -192,7 +204,13 @@ namespace RegistryExpert
         /// </summary>
         public void SetLeftHive(string filePath)
         {
-            _ = LoadHiveFileAsync(filePath, isLeft: true);
+            LoadHiveFileAsync(filePath, isLeft: true).ContinueWith(t =>
+            {
+                if (t.IsFaulted && t.Exception != null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error loading hive: {t.Exception.InnerException?.Message}");
+                }
+            }, TaskScheduler.Default);
         }
 
         private void InitializeComponent()
@@ -686,6 +704,20 @@ namespace RegistryExpert
             headerPanel.Controls.Add(backButton);
             headerPanel.Controls.Add(fileLabel);
 
+            // Store references for theme updates
+            if (isLeft)
+            {
+                _leftHeaderPanel = headerPanel;
+                _leftBackButton = backButton;
+                _leftFileLabel = fileLabel;
+            }
+            else
+            {
+                _rightHeaderPanel = headerPanel;
+                _rightBackButton = backButton;
+                _rightFileLabel = fileLabel;
+            }
+
             // Path display
             pathBox = new TextBox
             {
@@ -723,8 +755,11 @@ namespace RegistryExpert
                 AccessibleName = isLeft ? "Left Hive Keys" : "Right Hive Keys"
             };
             ModernTheme.ApplyTo(treeView);
+            treeView.FullRowSelect = false;  // Prevent system selection color mismatch with owner-drawn selection
             treeView.DrawNode += TreeView_DrawNode;
             treeView.BeforeExpand += TreeView_BeforeExpand;
+            // Allow clicking anywhere on the row to select (not just the text)
+            treeView.MouseDown += TreeView_MouseDown;
 
             if (isLeft)
             {
@@ -744,6 +779,12 @@ namespace RegistryExpert
 
             splitContainer.Panel1.Controls.Add(treeView);
             splitContainer.Panel2.Controls.Add(valuesGrid);
+
+            // Store split container reference for theme updates
+            if (isLeft)
+                _leftInnerSplit = splitContainer;
+            else
+                _rightInnerSplit = splitContainer;
 
             panel.Controls.Add(splitContainer);
             panel.Controls.Add(pathBox);
@@ -1187,7 +1228,7 @@ namespace RegistryExpert
             var result = new Dictionary<string, RegistryKey>(StringComparer.OrdinalIgnoreCase);
             if (key == null) return result;
 
-            // Use non-recursive approach with stack to avoid dictionary merging overhead
+            // Use recursive approach to build the index
             BuildKeyIndexRecursive(key, parentPath, result);
             return result;
         }
@@ -1220,10 +1261,10 @@ namespace RegistryExpert
             
             var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
             
-            bool isUnique = !otherIndex.ContainsKey(path);
+            bool isUnique = !otherIndex.TryGetValue(path, out var otherKey);
             bool hasValueDiff = false;
-            
-            if (!isUnique && otherIndex.TryGetValue(path, out var otherKey))
+
+            if (!isUnique && otherKey != null)
                 hasValueDiff = HasValueDifferences(key, otherKey);
             
             bool anyChildHasDiff = false;
@@ -1404,6 +1445,16 @@ namespace RegistryExpert
             return false;
         }
 
+        private void TreeView_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (sender is TreeView tv)
+            {
+                var node = tv.GetNodeAt(e.X, e.Y);
+                if (node != null)
+                    tv.SelectedNode = node;
+            }
+        }
+
         private void TreeView_DrawNode(object? sender, DrawTreeNodeEventArgs e)
         {
             if (e.Node == null) return;
@@ -1436,11 +1487,16 @@ namespace RegistryExpert
                 foreColor = ModernTheme.TextPrimary;  // Normal - no difference
             }
 
+            // Always paint background (required for correct theme switching)
+            var bgColor = (e.State & TreeNodeStates.Selected) != 0
+                ? ModernTheme.SelectionActive
+                : (e.Node.TreeView?.BackColor ?? ModernTheme.Background);
+            using var bgBrush = new SolidBrush(bgColor);
+            e.Graphics.FillRectangle(bgBrush, bounds);
+
+            // White text on blue selection for contrast
             if ((e.State & TreeNodeStates.Selected) != 0)
-            {
-                using var selBrush = new SolidBrush(ModernTheme.Selection);
-                e.Graphics.FillRectangle(selBrush, bounds);
-            }
+                foreColor = Color.White;
 
             TextRenderer.DrawText(e.Graphics, e.Node.Text, ModernTheme.DataFont, bounds, foreColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
@@ -1578,9 +1634,15 @@ namespace RegistryExpert
 
                 var rowIndex = grid.Rows.Add(name, type, data);
                 if (isUnique)
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffAdded;    // GREEN - unique to this hive
+                {
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffAdded;
+                    grid.Rows[rowIndex].DefaultCellStyle.SelectionForeColor = ModernTheme.DiffAdded;
+                }
                 else if (isValueDiff)
-                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffRemoved;  // RED - value differs
+                {
+                    grid.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.DiffRemoved;
+                    grid.Rows[rowIndex].DefaultCellStyle.SelectionForeColor = ModernTheme.DiffRemoved;
+                }
                 // else: identical value — default TextPrimary color
             }
         }
@@ -1737,14 +1799,35 @@ namespace RegistryExpert
         private void ApplyTheme()
         {
             this.BackColor = ModernTheme.Background;
-            
+
+            // Header panels
+            _leftHeaderPanel.BackColor = ModernTheme.Surface;
+            _rightHeaderPanel.BackColor = ModernTheme.Surface;
+            _leftBackButton.BackColor = ModernTheme.Surface;
+            _leftBackButton.ForeColor = ModernTheme.TextPrimary;
+            _leftBackButton.FlatAppearance.MouseOverBackColor = ModernTheme.SurfaceHover;
+            _rightBackButton.BackColor = ModernTheme.Surface;
+            _rightBackButton.ForeColor = ModernTheme.TextPrimary;
+            _rightBackButton.FlatAppearance.MouseOverBackColor = ModernTheme.SurfaceHover;
+            _leftFileLabel.ForeColor = ModernTheme.TextPrimary;
+            _rightFileLabel.ForeColor = ModernTheme.TextPrimary;
+
+            // Path boxes
             _leftPathBox.BackColor = ModernTheme.Surface;
             _leftPathBox.ForeColor = ModernTheme.TextSecondary;
             _rightPathBox.BackColor = ModernTheme.Surface;
             _rightPathBox.ForeColor = ModernTheme.TextSecondary;
 
+            // Trees
             _leftTreeView.BackColor = ModernTheme.Background;
             _rightTreeView.BackColor = ModernTheme.Background;
+            _leftTreeView.Invalidate();
+            _rightTreeView.Invalidate();
+
+            // Split containers (splitter color)
+            _mainSplit.BackColor = ModernTheme.Border;
+            _leftInnerSplit.BackColor = ModernTheme.Border;
+            _rightInnerSplit.BackColor = ModernTheme.Border;
 
             _diffOnlyCheckbox.ForeColor = ModernTheme.TextPrimary;
 
@@ -1769,9 +1852,11 @@ namespace RegistryExpert
             grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
             grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
             grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+            grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
             grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;
             grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
             grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+            grid.Invalidate();
         }
 
         protected override void Dispose(bool disposing)

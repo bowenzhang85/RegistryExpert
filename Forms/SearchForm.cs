@@ -20,7 +20,7 @@ namespace RegistryExpert
         private CheckBox _matchWholeWordCheckBox = null!;
         private DataGridView _resultsGrid = null!;
         private Label _statusLabel = null!;
-        private Panel _previewPanel = null!;
+        private SplitContainer _splitContainer = null!;
         private Label _previewPathLabel = null!;
         private RichTextBox _previewValueBox = null!;
         private List<SearchResult> _searchResults = new();
@@ -29,6 +29,7 @@ namespace RegistryExpert
         private CancellationTokenSource? _searchCts;
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
+        private ImageList? _searchIconList;
         private const int PageSize = 1000;
         private int _displayedMatchCount;
 
@@ -70,6 +71,10 @@ namespace RegistryExpert
             _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
             _loadMoreButton.MinimumSize = DpiHelper.ScaleSize(120, 28);
             _loadMorePanel.Height = DpiHelper.Scale(40);
+            
+            // Rescale SplitContainer min sizes for new DPI
+            _splitContainer.Panel1MinSize = DpiHelper.Scale(100);
+            _splitContainer.Panel2MinSize = DpiHelper.Scale(80);
         }
 
         private void InitializeComponent()
@@ -178,11 +183,10 @@ namespace RegistryExpert
             };
             statusPanel.Controls.Add(_statusLabel);
 
-            // Preview panel at bottom
-            _previewPanel = new Panel
+            // Preview panel contents
+            var previewPanel = new Panel
             {
-                Dock = DockStyle.Bottom,
-                Height = DpiHelper.Scale(120),
+                Dock = DockStyle.Fill,
                 BackColor = ModernTheme.TreeViewBack,
                 Padding = new Padding(10)
             };
@@ -218,9 +222,9 @@ namespace RegistryExpert
                 AccessibleName = "Registry Value Preview"
             };
 
-            _previewPanel.Controls.Add(_previewValueBox);
-            _previewPanel.Controls.Add(_previewPathLabel);
-            _previewPanel.Controls.Add(previewHeader);
+            previewPanel.Controls.Add(_previewValueBox);
+            previewPanel.Controls.Add(_previewPathLabel);
+            previewPanel.Controls.Add(previewHeader);
 
             // Results header
             var resultsHeader = new Panel
@@ -254,6 +258,8 @@ namespace RegistryExpert
             _resultsGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Search Results" };
             ModernTheme.ApplyTo(_resultsGrid);
 
+            // Create icon ImageList for search result type icons
+            _searchIconList = ModernTheme.CreateSearchImageList();
 
             // Add columns with proper sizing
             _resultsGrid.Columns.Add("keyPath", "Key Path");
@@ -265,8 +271,13 @@ namespace RegistryExpert
             _resultsGrid.Columns["matchType"].FillWeight = 10;
             _resultsGrid.Columns["data"].FillWeight = 35;
 
+            // Reserve left padding in Key Path column for the icon
+            var iconPadding = _searchIconList.ImageSize.Width + 4;
+            _resultsGrid.Columns["keyPath"].DefaultCellStyle.Padding = new Padding(iconPadding, 0, 0, 0);
+
             _resultsGrid.SelectionChanged += ResultsGrid_SelectionChanged;
             _resultsGrid.CellDoubleClick += ResultsGrid_DoubleClick;
+            _resultsGrid.CellPainting += ResultsGrid_CellPainting;
 
             // Add context menu for right-click options
             var contextMenu = new ContextMenuStrip();
@@ -306,11 +317,38 @@ namespace RegistryExpert
                 }
             };
 
+            // SplitContainer for resizable results/preview layout
+            _splitContainer = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = DpiHelper.Scale(100),
+                Panel2MinSize = DpiHelper.Scale(80),
+                SplitterWidth = 3
+            };
+            _splitContainer.Panel1.BackColor = ModernTheme.Background;
+            _splitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Panel1: results header + load more + grid
+            _splitContainer.Panel1.Controls.Add(_resultsGrid);
+            _splitContainer.Panel1.Controls.Add(_loadMorePanel);
+            _splitContainer.Panel1.Controls.Add(resultsHeader);
+
+            // Panel2: preview
+            _splitContainer.Panel2.Controls.Add(previewPanel);
+
+            // Set initial splitter distance: preview pane gets 25%, results grid gets 75%
+            _splitContainer.VisibleChanged += (s, e) =>
+            {
+                if (_splitContainer.Visible && _splitContainer.Height > 0)
+                {
+                    try { _splitContainer.SplitterDistance = _splitContainer.Height * 3 / 4; } catch { }
+                }
+            };
+
             // Add controls
-            this.Controls.Add(_resultsGrid);
-            this.Controls.Add(_loadMorePanel);
-            this.Controls.Add(resultsHeader);
-            this.Controls.Add(_previewPanel);
+            this.Controls.Add(_splitContainer);
             this.Controls.Add(topPanel);
             this.Controls.Add(statusPanel);
 
@@ -412,66 +450,75 @@ namespace RegistryExpert
         {
             var searchTerm = _currentSearchTerm;
 
-            var matchesToProcess = _allMatches
-                .Skip(_displayedMatchCount)
-                .Take(PageSize)
-                .ToList();
+            // Use index-based access instead of Skip() for O(1) slicing
+            int startIndex = _displayedMatchCount;
+            int endIndex = Math.Min(startIndex + PageSize, _allMatches.Count);
 
             int count = 0;
 
-            foreach (var match in matchesToProcess)
+            _resultsGrid.SuspendLayout();
+            try
             {
-                if (token.IsCancellationRequested) break;
-
-                var searchResult = new SearchResult { KeyPath = match.Key.KeyPath };
-
-                if (match.MatchKind == "Key")
+                for (int i = startIndex; i < endIndex; i++)
                 {
-                    // Key name match
-                    searchResult.MatchType = "Key";
-                    searchResult.Details = match.Key.KeyName;
-                    searchResult.ValueData = "";
-                    searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                    if (token.IsCancellationRequested) break;
+
+                    var match = _allMatches[i];
+                    var searchResult = new SearchResult { KeyPath = match.Key.KeyPath };
+
+                    if (match.MatchKind == "Key")
+                    {
+                        // Key name match
+                        searchResult.MatchType = "Key";
+                        searchResult.Details = match.Key.KeyName;
+                        searchResult.ValueData = "";
+                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                    }
+                    else if (match.MatchedValue != null)
+                    {
+                        // Value match (name or data)
+                        var v = match.MatchedValue;
+                        searchResult.MatchType = v.ValueType;
+                        searchResult.ValueName = v.ValueName;
+                        searchResult.ValueData = CleanValueData(v.ValueData?.ToString() ?? "");
+                        searchResult.Details = string.IsNullOrEmpty(v.ValueName) ? "(Default)" : v.ValueName;
+                        searchResult.FullValue = $"Name: {searchResult.Details}\nType: {v.ValueType}\nData: {searchResult.ValueData}";
+                    }
+                    else
+                    {
+                        // Fallback (should not normally happen)
+                        searchResult.MatchType = "Key";
+                        searchResult.Details = "";
+                        searchResult.ValueData = "";
+                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                    }
+
+                    _searchResults.Add(searchResult);
+
+                    // Truncate data for grid display (full data shown in preview panel)
+                    var gridData = searchResult.ValueData.Length > 200
+                        ? searchResult.ValueData.Substring(0, 200) + "..."
+                        : searchResult.ValueData;
+
+                    var rowIndex = _resultsGrid.Rows.Add(
+                        GetDisplayPath(match.Key.KeyPath),
+                        searchResult.Details,
+                        searchResult.MatchType,
+                        gridData);
+                    _resultsGrid.Rows[rowIndex].Tag = searchResult;
+                    count++;
+
+                    _displayedMatchCount++;
                 }
-                else if (match.MatchedValue != null)
-                {
-                    // Value match (name or data)
-                    var v = match.MatchedValue;
-                    searchResult.MatchType = v.ValueType;
-                    searchResult.ValueName = v.ValueName;
-                    searchResult.ValueData = CleanValueData(v.ValueData?.ToString() ?? "");
-                    searchResult.Details = string.IsNullOrEmpty(v.ValueName) ? "(Default)" : v.ValueName;
-                    searchResult.FullValue = $"Name: {searchResult.Details}\nType: {v.ValueType}\nData: {searchResult.ValueData}";
-                }
-                else
-                {
-                    // Fallback (should not normally happen)
-                    searchResult.MatchType = "Key";
-                    searchResult.Details = "";
-                    searchResult.ValueData = "";
-                    searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
-                }
+            }
+            finally
+            {
+                _resultsGrid.ResumeLayout();
+            }
 
-                _searchResults.Add(searchResult);
-
-                // Truncate data for grid display (full data shown in preview panel)
-                var gridData = searchResult.ValueData.Length > 200
-                    ? searchResult.ValueData.Substring(0, 200) + "..."
-                    : searchResult.ValueData;
-
-                _resultsGrid.Rows.Add(
-                    GetDisplayPath(match.Key.KeyPath),
-                    searchResult.Details,
-                    searchResult.MatchType,
-                    gridData);
-                count++;
-
-                if (count % 100 == 0)
-                {
-                    _statusLabel.Text = $"Loading results... {_searchResults.Count} so far";
-                }
-
-                _displayedMatchCount++;
+            if (count > 0)
+            {
+                _statusLabel.Text = $"Loading results... {_searchResults.Count} so far";
             }
 
             return Task.CompletedTask;
@@ -530,12 +577,46 @@ namespace RegistryExpert
 
         private void ResultsGrid_SelectionChanged(object? sender, EventArgs e)
         {
-            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Index < _searchResults.Count)
+            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Tag is SearchResult result)
             {
-                var result = _searchResults[_resultsGrid.SelectedRows[0].Index];
                 _previewPathLabel.Text = GetDisplayPath(result.KeyPath);
                 SetPreviewWithHighlight(result.FullValue, _currentSearchTerm);
             }
+        }
+
+        private void ResultsGrid_CellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
+        {
+            // Only draw icons in the "keyPath" column (index 0), skip header row
+            if (e.ColumnIndex != 0 || e.RowIndex < 0 || _searchIconList == null)
+                return;
+
+            if (_resultsGrid.Rows[e.RowIndex].Tag is not SearchResult result)
+                return;
+
+            var matchType = result.MatchType;
+            var imageKey = matchType == "Key" ? "folder" : ModernTheme.GetValueImageKey(matchType);
+            var imgIndex = _searchIconList.Images.IndexOfKey(imageKey);
+            if (imgIndex < 0) return;
+
+            // Paint background and borders (let the grid handle these parts)
+            e.PaintBackground(e.ClipBounds, true);
+
+            var img = _searchIconList.Images[imgIndex];
+            var iconX = e.CellBounds.X + 4;
+            var iconY = e.CellBounds.Y + (e.CellBounds.Height - img.Height) / 2;
+            e.Graphics.DrawImage(img, iconX, iconY, img.Width, img.Height);
+
+            // Draw the text offset past the icon
+            var textX = iconX + img.Width + 4;
+            var textRect = new Rectangle(textX, e.CellBounds.Y, e.CellBounds.Right - textX, e.CellBounds.Height);
+            var textColor = (e.State & DataGridViewElementStates.Selected) != 0
+                ? e.CellStyle.SelectionForeColor
+                : e.CellStyle.ForeColor;
+
+            TextRenderer.DrawText(e.Graphics, e.FormattedValue?.ToString() ?? "", e.CellStyle.Font,
+                textRect, textColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            e.Handled = true;
         }
 
         private void SetPreviewWithHighlight(string text, string searchTerm)
@@ -611,9 +692,8 @@ namespace RegistryExpert
 
         private void CopySelectedPath()
         {
-            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Index < _searchResults.Count)
+            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Tag is SearchResult result)
             {
-                var result = _searchResults[_resultsGrid.SelectedRows[0].Index];
                 if (!string.IsNullOrEmpty(result.KeyPath))
                 {
                     try
@@ -630,9 +710,8 @@ namespace RegistryExpert
 
         private void CopySelectedValue()
         {
-            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Index < _searchResults.Count)
+            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Tag is SearchResult result)
             {
-                var result = _searchResults[_resultsGrid.SelectedRows[0].Index];
                 try
                 {
                     if (!string.IsNullOrEmpty(result.ValueData))
@@ -653,9 +732,8 @@ namespace RegistryExpert
 
         private void NavigateToSelectedKey(bool closeAfterNavigate = false)
         {
-            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Index < _searchResults.Count)
+            if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Tag is SearchResult result)
             {
-                var result = _searchResults[_resultsGrid.SelectedRows[0].Index];
                 
                 // If the match is a value (not a key), pass the value name to auto-select it
                 string? valueNameToSelect = null;
@@ -715,6 +793,11 @@ namespace RegistryExpert
             _previewValueBox.BackColor = ModernTheme.Surface;
             _previewValueBox.ForeColor = ModernTheme.TextPrimary;
             
+            // Update split container colors
+            _splitContainer.BackColor = ModernTheme.Border;
+            _splitContainer.Panel1.BackColor = ModernTheme.Background;
+            _splitContainer.Panel2.BackColor = ModernTheme.Background;
+            
             // Re-highlight search term in preview if there's content
             if (!string.IsNullOrEmpty(_previewValueBox.Text) && !string.IsNullOrEmpty(_currentSearchTerm))
             {
@@ -729,7 +812,15 @@ namespace RegistryExpert
         {
             foreach (Control ctrl in parent.Controls)
             {
-                if (ctrl is Panel panel)
+                if (ctrl is SplitContainer split)
+                {
+                    split.BackColor = ModernTheme.Border;
+                    split.Panel1.BackColor = ModernTheme.Background;
+                    split.Panel2.BackColor = ModernTheme.Background;
+                    RefreshControlTheme(split.Panel1);
+                    RefreshControlTheme(split.Panel2);
+                }
+                else if (ctrl is Panel panel)
                 {
                     panel.BackColor = ModernTheme.Surface;
                 }
@@ -758,9 +849,18 @@ namespace RegistryExpert
                 }
                 else if (ctrl is Button button)
                 {
-                    button.BackColor = ModernTheme.Accent;
-                    button.ForeColor = Color.White;
-                    button.FlatAppearance.BorderColor = ModernTheme.Accent;
+                    // Preserve cancel button's distinctive error styling
+                    if (button == _cancelButton)
+                    {
+                        button.ForeColor = ModernTheme.Error;
+                        button.FlatAppearance.BorderColor = ModernTheme.Error;
+                    }
+                    else
+                    {
+                        button.BackColor = ModernTheme.Accent;
+                        button.ForeColor = Color.White;
+                        button.FlatAppearance.BorderColor = ModernTheme.Accent;
+                    }
                 }
                 
                 // Recurse into child controls
@@ -777,6 +877,7 @@ namespace RegistryExpert
             {
                 _searchCts?.Cancel();
                 _searchCts?.Dispose();
+                _searchIconList?.Dispose();
             }
             base.Dispose(disposing);
         }

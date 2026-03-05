@@ -428,7 +428,7 @@ namespace RegistryExpert
         private void FilterCombo_SelectedIndexChanged(object? sender, EventArgs e)
         {
             // Show/hide custom date panel
-            _customDatePanel.Visible = _filterCombo.SelectedIndex == 5; // "Custom Range..."
+            _customDatePanel.Visible = _filterCombo.SelectedItem?.ToString() == "Custom Range...";
             ApplyFilter();
         }
 
@@ -552,7 +552,7 @@ namespace RegistryExpert
             var limitText = _limitCombo.SelectedItem?.ToString() ?? "100";
             if (limitText == "All")
             {
-                _pageSize = int.MaxValue; // Show all at once
+                _pageSize = _filteredEntries.Count > 0 ? _filteredEntries.Count : int.MaxValue / 2; // Avoid overflow when adding to _currentDisplayCount
             }
             else if (int.TryParse(limitText, out int limit))
             {
@@ -617,9 +617,13 @@ namespace RegistryExpert
                 filtered = filtered.Where(e => e.DisplayPath.Contains(searchText, StringComparison.OrdinalIgnoreCase));
 
             _filteredEntries = filtered.ToList();
-            
+
             // Reset pagination - show first page
             _currentDisplayCount = Math.Min(_pageSize, _filteredEntries.Count);
+
+            // When "All" is selected, show all entries
+            if (_limitCombo.SelectedItem?.ToString() == "All")
+                _currentDisplayCount = _filteredEntries.Count;
             
             UpdateGridDisplay();
             _exportButton.Enabled = _filteredEntries.Count > 0;
@@ -627,17 +631,25 @@ namespace RegistryExpert
 
         private void UpdateGridDisplay()
         {
-            _timelineGrid.Rows.Clear();
-            
-            // Display only up to _currentDisplayCount entries
-            foreach (var entry in _filteredEntries.Take(_currentDisplayCount))
+            _timelineGrid.SuspendLayout();
+            try
             {
-                var rowIndex = _timelineGrid.Rows.Add(
-                    entry.LastModified,
-                    entry.DisplayPath
-                );
-                // Store the entry reference in the row's Tag for reliable retrieval after sorting
-                _timelineGrid.Rows[rowIndex].Tag = entry;
+                _timelineGrid.Rows.Clear();
+
+                // Display only up to _currentDisplayCount entries
+                foreach (var entry in _filteredEntries.Take(_currentDisplayCount))
+                {
+                    var rowIndex = _timelineGrid.Rows.Add(
+                        entry.LastModified,
+                        entry.DisplayPath
+                    );
+                    // Store the entry reference in the row's Tag for reliable retrieval after sorting
+                    _timelineGrid.Rows[rowIndex].Tag = entry;
+                }
+            }
+            finally
+            {
+                _timelineGrid.ResumeLayout();
             }
 
             // Update Load More button visibility and text
@@ -680,7 +692,9 @@ namespace RegistryExpert
         {
             // Add another page of results
             int previousCount = _currentDisplayCount;
-            _currentDisplayCount = Math.Min(_currentDisplayCount + _pageSize, _filteredEntries.Count);
+            int remaining = _filteredEntries.Count - _currentDisplayCount;
+            int toAdd = Math.Min(_pageSize, remaining);
+            _currentDisplayCount = _currentDisplayCount + toAdd;
             
             // Append new rows to the grid (more efficient than rebuilding)
             var newEntries = _filteredEntries.Skip(previousCount).Take(_currentDisplayCount - previousCount);
@@ -695,7 +709,7 @@ namespace RegistryExpert
             }
 
             // Update Load More button visibility and text
-            int remaining = _filteredEntries.Count - _currentDisplayCount;
+            remaining = _filteredEntries.Count - _currentDisplayCount;
             if (remaining > 0)
             {
                 _loadMoreButton.Text = $"Load More ({remaining:N0} remaining)";

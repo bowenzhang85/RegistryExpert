@@ -60,6 +60,11 @@ namespace RegistryExpert
         public DataGridView? DiskPartitionList { get; set; }
         public DataGridView? DiskPartitionDetails { get; set; }
         public Label? DiskPartitionDetailsLabel { get; set; }
+        // Physical Disks split pane controls
+        public SplitContainer? PhysicalDisksSplit { get; set; }
+        public DataGridView? PhysicalDisksList { get; set; }
+        public DataGridView? PhysicalDisksDetails { get; set; }
+        public Label? PhysicalDisksDetailsLabel { get; set; }
         public TreeView? DeviceManagerTree { get; set; }
         public Panel? DeviceManagerTreeHeader { get; set; }
         public Label? DeviceManagerTreeLabel { get; set; }
@@ -69,6 +74,14 @@ namespace RegistryExpert
         public List<Button> DeviceManagerDetailButtons { get; set; } = new();
         public FlowLayoutPanel? DeviceManagerButtonPanel { get; set; }
         public DataGridView? DeviceManagerDriverGrid { get; set; }
+        // Roles & Features panel controls
+        public SplitContainer? RolesFeaturesSplit { get; set; }
+        public TreeView? RolesTree { get; set; }
+        public Panel? RolesTreeHeader { get; set; }
+        public Label? RolesTreeLabel { get; set; }
+        public Panel? RolesDetailsHeader { get; set; }
+        public Label? RolesDetailsLabel { get; set; }
+        public DataGridView? RolesDetailsGrid { get; set; }
         // Fonts used in drawing (need explicit disposal)
         public Font? CategoryTextFont { get; set; }
         public ToolTip? CategoryToolTip { get; set; }
@@ -102,7 +115,6 @@ namespace RegistryExpert
         private ToolTip? _sharedToolTip; // Single shared ToolTip for the form
         private Icon? _customIcon; // Track custom icon for disposal
         private string? _currentHivePath; // Track the current loaded hive file path
-        private TreeNode? _previousSelectedNode; // Track for folder icon switching
         private Dictionary<string, Image> _toolbarIcons = new(); // Track toolbar icons for disposal
 
         // Cached icon fonts for Paint handlers (avoid allocating on every paint)
@@ -113,7 +125,7 @@ namespace RegistryExpert
         // Cached Device Manager TreeView fonts (avoid GDI leak from creating on every render)
         private readonly Font _deviceManagerParentFont = new Font("Segoe UI Semibold", 10F);
         private readonly Font _deviceManagerChildFont = new Font("Segoe UI", 9F);
-        
+
         // UI Controls
         private MenuStrip _menuStrip = null!;
         private Panel _toolbarPanel = null!;
@@ -426,7 +438,8 @@ namespace RegistryExpert
             {
                 if (_treeView.SelectedNode?.Tag is RegistryKey key)
                 {
-                    Clipboard.SetText(key.KeyPath);
+                    try { Clipboard.SetText(key.KeyPath); }
+                    catch (System.Runtime.InteropServices.ExternalException) { }
                 }
             });
             copyPathItem.ShortcutKeys = Keys.Control | Keys.C;
@@ -505,7 +518,8 @@ namespace RegistryExpert
                     var data = _listView.SelectedItems[0].SubItems[2].Text;
                     if (!string.IsNullOrEmpty(data))
                     {
-                        Clipboard.SetText(data);
+                        try { Clipboard.SetText(data); }
+                        catch (System.Runtime.InteropServices.ExternalException) { }
                     }
                 }
             });
@@ -1037,8 +1051,18 @@ namespace RegistryExpert
                 ImageSize = new Size(18, 18)
             };
             
-            imageList.Images.Add("folder", ModernTheme.CreateFolderIcon(false));
-            imageList.Images.Add("folder_open", ModernTheme.CreateFolderIcon(true));
+            // Use native Windows shell folder icon with fallback
+            Image? folderIcon = null;
+            try
+            {
+                folderIcon = ModernTheme.GetNativeFolderIcon();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to load native folder icon: {ex.Message}");
+            }
+
+            imageList.Images.Add("folder", folderIcon ?? ModernTheme.CreateFolderIcon());
             imageList.Images.Add("value", ModernTheme.CreateValueIcon());
             
             return imageList;
@@ -1318,10 +1342,11 @@ namespace RegistryExpert
         {
             try
             {
-                _loadCts?.Cancel();
-                _loadCts?.Dispose();
+                var oldCts = _loadCts;
                 _loadCts = new CancellationTokenSource();
                 var token = _loadCts.Token;
+                oldCts?.Cancel();
+                oldCts?.Dispose();
 
                 // Show progress UI — visibility changes inside _statusRightPanel
                 // don't affect status text bounds (fixed-width right panel)
@@ -1392,7 +1417,6 @@ namespace RegistryExpert
 
         private void PopulateTreeView()
         {
-            _previousSelectedNode = null;  // Reset before clearing tree to prevent stale references
             _treeView.Nodes.Clear();
             _listView.Items.Clear();
             _detailsBox.Clear();
@@ -1413,7 +1437,7 @@ namespace RegistryExpert
             {
                 Tag = key,
                 ImageKey = "folder",
-                SelectedImageKey = "folder_open"
+                SelectedImageKey = "folder"
             };
 
             if (key.SubKeys?.Count > 0)
@@ -1445,24 +1469,6 @@ namespace RegistryExpert
 
         private void TreeView_AfterSelect(object? sender, TreeViewEventArgs e)
         {
-            // Reset previous node to closed folder icon
-            // Check if node is still valid (in the tree) to prevent access issues
-            if (_previousSelectedNode != null && 
-                _previousSelectedNode != e.Node &&
-                _previousSelectedNode.TreeView != null)
-            {
-                _previousSelectedNode.ImageKey = "folder";
-                _previousSelectedNode.SelectedImageKey = "folder";
-            }
-            
-            // Set current node to open folder icon
-            if (e.Node != null)
-            {
-                e.Node.ImageKey = "folder_open";
-                e.Node.SelectedImageKey = "folder_open";
-                _previousSelectedNode = e.Node;
-            }
-            
             // Existing functionality
             if (e.Node?.Tag is RegistryKey key)
             {
@@ -1669,9 +1675,8 @@ namespace RegistryExpert
             {
                 try
                 {
-                    var sb = new StringBuilder();
-                    ExportKeyRecursive(key, sb, 0);
-                    File.WriteAllText(dialog.FileName, sb.ToString());
+                    using var writer = new StreamWriter(dialog.FileName, false, Encoding.UTF8);
+                    ExportKeyRecursive(key, writer, 0);
                     ShowInfo("Export completed successfully.");
                 }
                 catch (Exception ex)
@@ -1711,26 +1716,26 @@ namespace RegistryExpert
             return new string(' ', indent * 2); // Fallback for deeply nested keys
         }
 
-        private void ExportKeyRecursive(RegistryKey key, StringBuilder sb, int indent)
+        private void ExportKeyRecursive(RegistryKey key, StreamWriter writer, int indent)
         {
             string indentStr = GetIndent(indent);
-            sb.AppendLine($"{indentStr}[{key.KeyPath}]");
-            sb.AppendLine($"{indentStr}Last Write: {key.LastWriteTime}");
-            
+            writer.WriteLine($"{indentStr}[{key.KeyPath}]");
+            writer.WriteLine($"{indentStr}Last Write: {key.LastWriteTime}");
+
             string valueIndent = GetIndent(indent) + "  ";
             foreach (var value in key.Values)
             {
                 var name = string.IsNullOrEmpty(value.ValueName) ? "@" : $"\"{value.ValueName}\"";
-                sb.AppendLine($"{valueIndent}{name} = {value.ValueData} ({value.ValueType})");
+                writer.WriteLine($"{valueIndent}{name} = {value.ValueData} ({value.ValueType})");
             }
-            
-            sb.AppendLine();
-            
+
+            writer.WriteLine();
+
             if (key.SubKeys != null)
             {
                 foreach (var subKey in key.SubKeys)
                 {
-                    ExportKeyRecursive(subKey, sb, indent + 1);
+                    ExportKeyRecursive(subKey, writer, indent + 1);
                 }
             }
         }
@@ -3412,6 +3417,105 @@ namespace RegistryExpert
 
             deviceManagerSplit.Panel2.Controls.Add(deviceManagerDetailsPanel);
 
+            // ==================== Roles & Features Panel ====================
+            var rolesFeaturesSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            rolesFeaturesSplit.Panel1.BackColor = ModernTheme.Background;
+            rolesFeaturesSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.RolesFeaturesSplit = rolesFeaturesSplit;
+
+            rolesFeaturesSplit.VisibleChanged += (s, ev) =>
+            {
+                if (rolesFeaturesSplit.Visible && rolesFeaturesSplit.Width > 300)
+                {
+                    try { rolesFeaturesSplit.SplitterDistance = DpiHelper.Scale(320); } catch { }
+                }
+            };
+
+            // Roles/Features tree (left)
+            var rolesTree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                BorderStyle = BorderStyle.None,
+                FullRowSelect = true,
+                HideSelection = false,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                ItemHeight = DpiHelper.Scale(22),
+                AccessibleName = "Roles and Features Tree",
+                AccessibleRole = AccessibleRole.Outline
+            };
+            themeData.RolesTree = rolesTree;
+
+            var rolesTreeHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.RolesTreeHeader = rolesTreeHeader;
+            var rolesTreeLabel = new Label
+            {
+                Text = "Roles & Features",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            rolesTreeHeader.Controls.Add(rolesTreeLabel);
+            themeData.RolesTreeLabel = rolesTreeLabel;
+
+            rolesFeaturesSplit.Panel1.Controls.Add(rolesTree);
+            rolesFeaturesSplit.Panel1.Controls.Add(rolesTreeHeader);
+
+            // Roles/Features details (right)
+            var rolesDetailsPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+
+            var rolesDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.RolesDetailsHeader = rolesDetailsHeader;
+            var rolesDetailsLabel = new Label
+            {
+                Text = "Details",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            rolesDetailsHeader.Controls.Add(rolesDetailsLabel);
+            themeData.RolesDetailsLabel = rolesDetailsLabel;
+
+            var rolesDetailsGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(rolesDetailsGrid);
+            themeData.RolesDetailsGrid = rolesDetailsGrid;
+
+            rolesDetailsPanel.Controls.Add(rolesDetailsGrid);
+            rolesDetailsPanel.Controls.Add(rolesDetailsHeader);
+
+            rolesFeaturesSplit.Panel2.Controls.Add(rolesDetailsPanel);
+
             // ===== Disk/Partition Split Pane =====
             var diskPartitionSplit = new SplitContainer
             {
@@ -3532,6 +3636,128 @@ namespace RegistryExpert
 
             diskPartitionSplit.Panel2.Controls.Add(diskPartitionDetails);
             diskPartitionSplit.Panel2.Controls.Add(diskPartitionDetailsHeader);
+
+            // ===== Physical Disks Split Pane =====
+            var physicalDisksSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            physicalDisksSplit.Panel1.BackColor = ModernTheme.Background;
+            physicalDisksSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.PhysicalDisksSplit = physicalDisksSplit;
+
+            physicalDisksSplit.VisibleChanged += (s, ev) =>
+            {
+                if (physicalDisksSplit.Visible && physicalDisksSplit.Width > 300)
+                {
+                    try { physicalDisksSplit.SplitterDistance = physicalDisksSplit.Width / 2; } catch { }
+                }
+            };
+
+            // Left pane: Physical Disks list
+            var physicalDisksHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(8, 0, 0, 0)
+            };
+            var physicalDisksLabel = new Label
+            {
+                Text = "Physical Disks",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI Semibold", 9F),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoSize = false
+            };
+            physicalDisksHeader.Controls.Add(physicalDisksLabel);
+
+            var physicalDisksList = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BorderStyle = BorderStyle.None,
+                BackgroundColor = ModernTheme.Background,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                ColumnHeadersHeight = DpiHelper.Scale(32),
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                RowTemplate = { Height = DpiHelper.Scale(28) },
+                Font = ModernTheme.RegularFont
+            };
+            physicalDisksList.Columns.Add("disk", "Disk");
+            physicalDisksList.Columns.Add("bus", "Bus");
+            physicalDisksList.Columns.Add("status", "Status");
+            physicalDisksList.Columns["disk"]!.FillWeight = 55;
+            physicalDisksList.Columns["bus"]!.FillWeight = 20;
+            physicalDisksList.Columns["status"]!.FillWeight = 25;
+            ModernTheme.ApplyTo(physicalDisksList);
+            themeData.PhysicalDisksList = physicalDisksList;
+
+            physicalDisksSplit.Panel1.Controls.Add(physicalDisksList);
+            physicalDisksSplit.Panel1.Controls.Add(physicalDisksHeader);
+
+            // Right pane: Physical Disk Details
+            var physicalDisksDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(8, 0, 0, 0)
+            };
+            var physicalDisksDetailsLabel = new Label
+            {
+                Text = "Disk Details",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI Semibold", 9F),
+                TextAlign = ContentAlignment.MiddleLeft,
+                AutoSize = false
+            };
+            physicalDisksDetailsHeader.Controls.Add(physicalDisksDetailsLabel);
+            themeData.PhysicalDisksDetailsLabel = physicalDisksDetailsLabel;
+
+            var physicalDisksDetails = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AllowUserToResizeRows = false,
+                RowHeadersVisible = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                BorderStyle = BorderStyle.None,
+                BackgroundColor = ModernTheme.Background,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                ColumnHeadersHeight = DpiHelper.Scale(32),
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                RowTemplate = { Height = DpiHelper.Scale(28) },
+                Font = ModernTheme.RegularFont
+            };
+            physicalDisksDetails.Columns.Add("property", "Property");
+            physicalDisksDetails.Columns.Add("value", "Value");
+            physicalDisksDetails.Columns["property"]!.FillWeight = 35;
+            physicalDisksDetails.Columns["value"]!.FillWeight = 65;
+            ModernTheme.ApplyTo(physicalDisksDetails);
+            themeData.PhysicalDisksDetails = physicalDisksDetails;
+
+            physicalDisksSplit.Panel2.Controls.Add(physicalDisksDetails);
+            physicalDisksSplit.Panel2.Controls.Add(physicalDisksDetailsHeader);
 
             // Device Manager state
             DeviceItem? selectedDevice = null;
@@ -4124,17 +4350,27 @@ namespace RegistryExpert
                 }
             };
 
+            // Helper to hide all special panels at once
+            Action hideAllPanels = () =>
+            {
+                contentGrid.Visible = false;
+                networkSplitContainer.Visible = false;
+                firewallPanel.Visible = false;
+                deviceManagerSplit.Visible = false;
+                rolesFeaturesSplit.Visible = false;
+                diskPartitionSplit.Visible = false;
+                physicalDisksSplit.Visible = false;
+                appxFilterPanel.Visible = false;
+            };
+
             // Main function to display CBS sub-view
             displayCbsSubView = (viewKey) =>
             {
                 currentCbsSubView = viewKey;
                 updateCbsSubButtonStates();
 
+                hideAllPanels();
                 contentGrid.Visible = true;
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
 
                 switch (viewKey)
                 {
@@ -4159,10 +4395,7 @@ namespace RegistryExpert
             {
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
+                hideAllPanels();
                 contentGrid.Visible = true;
 
                 // Create CBS sub-buttons
@@ -4364,14 +4597,11 @@ namespace RegistryExpert
                     currentSection = extensionsSection;
                     contentGrid.Columns.Clear();
                     contentGrid.Rows.Clear();
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
-                    
+
                     // Keep appxFilterPanel visible for sub-tabs
-                    // appxFilterPanel.Visible = true; // Already visible from createGuestAgentSubButtons
+                    appxFilterPanel.Visible = true; // Restore after hideAllPanels
                     
                     // Setup grid columns for Extensions
                     contentGrid.Columns.Add("name", "Extension");
@@ -4411,14 +4641,9 @@ namespace RegistryExpert
             {
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
-                contentGrid.Visible = false;
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
-                appxFilterPanel.Visible = false;
+                hideAllPanels();
                 currentSection = null;
-                
+
                 // Hide CBS search/info panels
                 if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
                 if (cbsIdentitiesInfoPanel != null) cbsIdentitiesInfoPanel.Visible = false;
@@ -4601,14 +4826,10 @@ namespace RegistryExpert
             {
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
+                hideAllPanels();
                 contentGrid.Visible = true;
-                appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
-                
+
                 // Hide overview panel
                 if (componentsOverviewPanel != null) componentsOverviewPanel.Visible = false;
                 // Hide CBS Identities info panel
@@ -4715,12 +4936,8 @@ namespace RegistryExpert
             {
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
+                hideAllPanels();
                 contentGrid.Visible = true;
-                appxFilterPanel.Visible = false;
                 currentSection = null; // Clear current section since this is a custom view
 
                 // Hide overview panel and CBS Components search panel
@@ -4827,13 +5044,9 @@ namespace RegistryExpert
                 contentGrid.Rows.Clear();
 
                 // Hide special panels when showing other sections
-                networkSplitContainer.Visible = false;
-                firewallPanel.Visible = false;
-                deviceManagerSplit.Visible = false;
-                diskPartitionSplit.Visible = false;
-                appxFilterPanel.Visible = false;
+                hideAllPanels();
                 contentGrid.Visible = true;
-                
+
                 // Hide CBS Components search panel
                 if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
                 
@@ -5042,6 +5255,108 @@ namespace RegistryExpert
                     return;
                 }
 
+                // Special handling for Roles & Features - use tree + detail view
+                if (section.Title.Contains("Roles & Features"))
+                {
+                    contentGrid.Visible = false;
+                    rolesFeaturesSplit.Visible = true;
+
+                    rolesTree.Nodes.Clear();
+                    rolesDetailsGrid.Columns.Clear();
+                    rolesDetailsGrid.Rows.Clear();
+                    rolesDetailsLabel.Text = "Details";
+
+                    // Get flat data from extractor
+                    var allItems = _infoExtractor.GetRolesAndFeaturesData();
+                    var itemsByKey = allItems.ToDictionary(i => i.KeyName, StringComparer.OrdinalIgnoreCase);
+
+                    // Build parent-child lookup
+                    var childrenOf = new Dictionary<string, List<RoleFeatureItem>>(StringComparer.OrdinalIgnoreCase);
+                    var topLevel = new List<RoleFeatureItem>();
+
+                    foreach (var item in allItems)
+                    {
+                        if (string.IsNullOrEmpty(item.ParentName))
+                        {
+                            topLevel.Add(item);
+                        }
+                        else
+                        {
+                            if (!childrenOf.ContainsKey(item.ParentName))
+                                childrenOf[item.ParentName] = new List<RoleFeatureItem>();
+                            childrenOf[item.ParentName].Add(item);
+                        }
+                    }
+
+                    // Sort: installed (InstallState==1) first, then alphabetically by DisplayName
+                    Comparison<RoleFeatureItem> sortComparison = (a, b) =>
+                    {
+                        int aInstalled = a.InstallState == 1 ? 1 : 0;
+                        int bInstalled = b.InstallState == 1 ? 1 : 0;
+                        int installCompare = bInstalled.CompareTo(aInstalled);
+                        if (installCompare != 0) return installCompare;
+                        return string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase);
+                    };
+
+                    topLevel.Sort(sortComparison);
+
+                    // Recursive tree builder
+                    void AddChildren(TreeNode parentNode, string parentKeyName)
+                    {
+                        if (!childrenOf.TryGetValue(parentKeyName, out var children)) return;
+                        children.Sort(sortComparison);
+                        foreach (var child in children)
+                        {
+                            var childNode = new TreeNode(child.DisplayName)
+                            {
+                                Tag = child
+                            };
+                            if (child.InstallState != 1)
+                            {
+                                childNode.ForeColor = ModernTheme.TextDisabled;
+                            }
+                            parentNode.Nodes.Add(childNode);
+                            AddChildren(childNode, child.KeyName);
+                        }
+                    }
+
+                    // Count installed
+                    int installedCount = allItems.Count(i => i.InstallState == 1);
+
+                    // Build tree
+                    foreach (var item in topLevel)
+                    {
+                        var node = new TreeNode(item.DisplayName)
+                        {
+                            Tag = item
+                        };
+                        if (item.InstallState != 1)
+                        {
+                            node.ForeColor = ModernTheme.TextDisabled;
+                        }
+                        AddChildren(node, item.KeyName);
+                        rolesTree.Nodes.Add(node);
+                    }
+
+                    rolesTreeLabel.Text = $"Roles & Features ({installedCount} installed / {allItems.Count} total)";
+
+                    // Select first node
+                    if (rolesTree.Nodes.Count > 0)
+                    {
+                        rolesTree.SelectedNode = rolesTree.Nodes[0];
+                        rolesDetailsGrid.ClearSelection();
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
                 // Special handling for Windows Firewall - use profile-based view
                 if (section.Title.Contains("Windows Firewall"))
                 {
@@ -5117,11 +5432,8 @@ namespace RegistryExpert
                 // Special handling for Appx Packages - use filter buttons like Services
                 if (section.Title.Contains("Appx Packages"))
                 {
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
 
                     // Create filter buttons in the subcategory panel
                     createAppxFilterButtons();
@@ -5142,11 +5454,8 @@ namespace RegistryExpert
                 // Special handling for CBS Packages - show package groups with filtering
                 if (section.Title.Contains("CBS Packages"))
                 {
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
 
                     // Reset cache to reload fresh data
                     cbsPackagesSections = null;
@@ -5167,11 +5476,8 @@ namespace RegistryExpert
                 // Special handling for Storage Filters - use filter buttons for Disk/Volume
                 if (section.Title == "🔧 Filters")
                 {
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
 
                     // Create filter buttons
                     createStorageFilterButtons();
@@ -5189,15 +5495,11 @@ namespace RegistryExpert
                     return;
                 }
 
-                // Special handling for Storage Disk/Partition - show split pane
-                if (section.Title == "💿 Disk/Partition")
+                // Special handling for Storage Mounted Devices - show split pane
+                if (section.Title == "💿 Mounted Devices")
                 {
-                    contentGrid.Visible = false;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
+                    hideAllPanels();
                     diskPartitionSplit.Visible = true;
-                    appxFilterPanel.Visible = false;
 
                     // Display partition data directly (no secondary filter buttons needed)
                     displayStorageWithFilter("Partition");
@@ -5212,14 +5514,60 @@ namespace RegistryExpert
                     return;
                 }
 
+                // Special handling for Physical Disks - show split pane with disk inventory
+                if (section.Title == "💽 Physical Disks")
+                {
+                    hideAllPanels();
+                    physicalDisksSplit.Visible = true;
+
+                    // Populate physical disks list
+                    physicalDisksList.Rows.Clear();
+                    physicalDisksDetails.Rows.Clear();
+                    physicalDisksDetailsLabel.Text = "Disk Details";
+
+                    var physicalDisks = _infoExtractor.GetPhysicalDisks();
+                    foreach (var disk in physicalDisks)
+                    {
+                        var diskDisplay = !string.IsNullOrEmpty(disk.FriendlyName)
+                            ? disk.FriendlyName
+                            : disk.DeviceId;
+                        var statusDisplay = disk.PoolStatus;
+                        if (string.IsNullOrEmpty(statusDisplay))
+                            statusDisplay = disk.DeviceStatus;
+
+                        var rowIndex = physicalDisksList.Rows.Add(diskDisplay, disk.BusType, statusDisplay);
+                        physicalDisksList.Rows[rowIndex].Tag = disk;
+
+                        // Highlight probable pool members with accent color
+                        if (disk.PoolStatus == "Probable Pool Member")
+                        {
+                            physicalDisksList.Rows[rowIndex].DefaultCellStyle.ForeColor = ModernTheme.Accent;
+                        }
+                    }
+
+                    // Auto-select first row
+                    if (physicalDisksList.Rows.Count > 0)
+                    {
+                        physicalDisksList.ClearSelection();
+                        physicalDisksList.Rows[0].Selected = true;
+                        physicalDisksList.CurrentCell = physicalDisksList.Rows[0].Cells[0];
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
                 // Special handling for User Profiles - use filter buttons for All/Temp
                 if (section.Title.Contains("User Profiles"))
                 {
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    networkSplitContainer.Visible = false;
-                    firewallPanel.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
 
                     cachedProfilesSection = section;
                     createProfileFilterButtons();
@@ -5688,6 +6036,72 @@ namespace RegistryExpert
                 }
             };
 
+            // Handle roles/features tree node selection
+            rolesTree.AfterSelect += (s, ev) =>
+            {
+                if (ev.Node?.Tag is RoleFeatureItem roleItem)
+                {
+                    rolesDetailsLabel.Text = $"Details - {roleItem.DisplayName}";
+
+                    rolesDetailsGrid.Columns.Clear();
+                    rolesDetailsGrid.Rows.Clear();
+
+                    rolesDetailsGrid.Columns.Add("property", "Property");
+                    rolesDetailsGrid.Columns.Add("value", "Value");
+                    rolesDetailsGrid.Columns["property"]!.FillWeight = 30;
+                    rolesDetailsGrid.Columns["value"]!.FillWeight = 70;
+
+                    rolesDetailsGrid.Rows.Add("Display Name", roleItem.DisplayName);
+                    rolesDetailsGrid.Rows.Add("Internal Name", roleItem.KeyName);
+                    rolesDetailsGrid.Rows.Add("Type", roleItem.ComponentTypeName);
+                    rolesDetailsGrid.Rows.Add("Install State", roleItem.InstallStateName);
+
+                    if (!string.IsNullOrEmpty(roleItem.Description))
+                        rolesDetailsGrid.Rows.Add("Description", roleItem.Description);
+
+                    if (!string.IsNullOrEmpty(roleItem.ParentName))
+                        rolesDetailsGrid.Rows.Add("Parent", roleItem.ParentName);
+
+                    if (roleItem.MajorVersion > 0 || roleItem.MinorVersion > 0)
+                        rolesDetailsGrid.Rows.Add("Version", $"{roleItem.MajorVersion}.{roleItem.MinorVersion}");
+
+                    if (!string.IsNullOrEmpty(roleItem.SystemServices))
+                        rolesDetailsGrid.Rows.Add("System Services", roleItem.SystemServices);
+
+                    if (!string.IsNullOrEmpty(roleItem.Dependencies))
+                        rolesDetailsGrid.Rows.Add("Dependencies", roleItem.Dependencies);
+
+                    rolesDetailsGrid.Rows.Add("Numeric ID", roleItem.NumericId.ToString());
+
+                    // Set installed/not-installed row styling
+                    var stateRow = rolesDetailsGrid.Rows[3]; // Install State row
+                    if (roleItem.InstallState == 1)
+                    {
+                        stateRow.DefaultCellStyle.ForeColor = ModernTheme.Success;
+                    }
+
+                    registryPathLabel.Text = $"Registry Path: {roleItem.RegistryPath}";
+                    registryValueBox.Text = $"{roleItem.DisplayName} ({roleItem.ComponentTypeName}) | {roleItem.InstallStateName}";
+                }
+            };
+
+            // Handle roles/features details grid selection
+            rolesDetailsGrid.SelectionChanged += (s, ev) =>
+            {
+                if (rolesDetailsGrid.SelectedRows.Count > 0)
+                {
+                    var selectedNode = rolesTree.SelectedNode;
+                    if (selectedNode?.Tag is RoleFeatureItem roleItem)
+                    {
+                        var rowIndex = rolesDetailsGrid.SelectedRows[0].Index;
+                        var propName = rolesDetailsGrid.Rows[rowIndex].Cells[0].Value?.ToString() ?? "";
+                        var propValue = rolesDetailsGrid.Rows[rowIndex].Cells[1].Value?.ToString() ?? "";
+                        registryPathLabel.Text = $"Registry Path: {roleItem.RegistryPath}";
+                        registryValueBox.Text = $"{propName} = {propValue}";
+                    }
+                }
+            };
+
             // Track current category
             string currentCategory = "";
 
@@ -5828,6 +6242,73 @@ namespace RegistryExpert
                     registryValueBox.Text = $"{prop}: {val}";
             };
 
+            // Handle Physical Disks list selection
+            physicalDisksList.SelectionChanged += (s, ev) =>
+            {
+                if (physicalDisksList.SelectedRows.Count == 0) return;
+                var selectedRow = physicalDisksList.SelectedRows[0];
+                if (selectedRow.Tag is not PhysicalDiskEntry disk) return;
+
+                physicalDisksDetailsLabel.Text = $"Details — {disk.FriendlyName}";
+
+                // Update bottom pane
+                registryPathLabel.Text = $"Registry Path: {disk.EnumPath}";
+                registryValueBox.Text = $"Disk: {disk.FriendlyName} | Bus: {disk.BusType} | {disk.PoolStatus}";
+
+                // Populate right-side detail grid
+                physicalDisksDetails.Rows.Clear();
+                Action<string, string> addRow = (prop, val) =>
+                {
+                    if (!string.IsNullOrEmpty(val))
+                        physicalDisksDetails.Rows.Add(prop, val);
+                };
+
+                // Identity
+                addRow("Friendly Name", disk.FriendlyName);
+                addRow("Description", disk.DeviceDesc);
+                addRow("Device ID", disk.DeviceId);
+
+                // Bus/Location
+                addRow("Bus Type", disk.BusType);
+                addRow("Location", disk.LocationInfo);
+
+                // Hardware
+                addRow("Hardware ID", disk.HardwareId);
+                addRow("Manufacturer", disk.Manufacturer);
+                addRow("Service", disk.Service);
+                addRow("Status", disk.DeviceStatus);
+
+                // Partmgr / Storage Spaces
+                addRow("Disk ID", disk.DiskId);
+                addRow("Volume Count", !string.IsNullOrEmpty(disk.DiskId) ? disk.VolumeCount.ToString() : "");
+                addRow("Drive Letters", disk.DriveLetters);
+
+                // Storage Pool detection
+                if (disk.PoolStatus == "Probable Pool Member")
+                {
+                    addRow("Storage Pool", "Probable Pool Member — this disk has a DiskId but no STORAGE\\Volume entries, indicating it may be claimed by Storage Spaces");
+                }
+                else if (!string.IsNullOrEmpty(disk.PoolStatus))
+                {
+                    addRow("Storage Pool", disk.PoolStatus);
+                }
+
+                // Registry
+                addRow("Enum Path", disk.EnumPath);
+            };
+
+            // Handle Physical Disks detail grid selection to update bottom pane
+            physicalDisksDetails.SelectionChanged += (s, ev) =>
+            {
+                if (physicalDisksDetails.SelectedRows.Count == 0) return;
+                var selectedRow = physicalDisksDetails.SelectedRows[0];
+                var prop = selectedRow.Cells[0].Value?.ToString() ?? "";
+                var val = selectedRow.Cells[1].Value?.ToString() ?? "";
+
+                if (!string.IsNullOrEmpty(val))
+                    registryValueBox.Text = $"{prop}: {val}";
+            };
+
             // Handle grid selection to show registry path
             contentGrid.SelectionChanged += (s, ev) =>
             {
@@ -5925,7 +6406,9 @@ namespace RegistryExpert
             };
 
             // Add content controls to Panel1 of the split container
+            contentDetailSplit.Panel1.Controls.Add(physicalDisksSplit);
             contentDetailSplit.Panel1.Controls.Add(diskPartitionSplit);
+            contentDetailSplit.Panel1.Controls.Add(rolesFeaturesSplit);
             contentDetailSplit.Panel1.Controls.Add(deviceManagerSplit);
             contentDetailSplit.Panel1.Controls.Add(firewallPanel);
             contentDetailSplit.Panel1.Controls.Add(networkSplitContainer);
@@ -5967,13 +6450,11 @@ namespace RegistryExpert
                 if (key == "Services")
                 {
                     currentSection = null;
-                    
-                    // Hide network panel and show content grid
-                    networkSplitContainer.Visible = false;
-                    deviceManagerSplit.Visible = false;
-                    diskPartitionSplit.Visible = false;
+
+                    // Hide all special panels and show content grid
+                    hideAllPanels();
                     contentGrid.Visible = true;
-                    
+
                     if (allServicesCache.Count == 0)
                     {
                         allServicesCache = _infoExtractor.GetAllServices();
@@ -6300,6 +6781,74 @@ namespace RegistryExpert
                         availableButtons.Add(activationBtn);
                     else
                         unavailableButtons.Add(activationBtn);
+
+                    // Add Roles/Features button (requires SOFTWARE hive from a Windows Server)
+                    bool hasRolesFeatures = isSoftwareHive && _infoExtractor.HasServerRolesAndFeatures();
+                    var rolesSection = hasRolesFeatures
+                        ? new AnalysisSection { Title = "\U0001f527 Roles & Features" }
+                        : null;
+
+                    var rolesBtn = new Button
+                    {
+                        Text = "",
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = hasRolesFeatures ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Size = DpiHelper.ScaleSize(130, 28),
+                        Margin = DpiHelper.ScalePadding(2),
+                        Cursor = hasRolesFeatures ? Cursors.Hand : Cursors.Default,
+                        Tag = rolesSection,
+                        AccessibleName = "Roles and Features"
+                    };
+                    rolesBtn.FlatAppearance.BorderColor = hasRolesFeatures ? ModernTheme.Border : grayedOutColor;
+                    rolesBtn.FlatAppearance.BorderSize = 1;
+                    rolesBtn.FlatAppearance.MouseOverBackColor = hasRolesFeatures ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+
+                    var hasRoles = hasRolesFeatures; // Capture for closure
+                    rolesBtn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = hasRoles ? ModernTheme.TextPrimary : grayedOutColor;
+
+                        var iconFont = _iconFont10;
+                        TextRenderer.DrawText(ev.Graphics, "\uE7EE", iconFont, DpiHelper.ScalePoint(8, 6), textColor);
+
+                        TextRenderer.DrawText(ev.Graphics, "Roles/Features", ModernTheme.RegularFont, DpiHelper.ScalePoint(28, 5), textColor);
+                    };
+
+                    if (!hasRolesFeatures)
+                    {
+                        subCategoryToolTip.SetToolTip(rolesBtn, "Requires SOFTWARE hive from a Windows Server");
+                    }
+                    else
+                    {
+                        subCategoryToolTip.SetToolTip(rolesBtn, "View installed server roles and features");
+                    }
+
+                    rolesBtn.Click += (sender, args) =>
+                    {
+                        if (!hasRoles)
+                        {
+                            MessageBox.Show(
+                                "This feature requires a SOFTWARE hive from a Windows Server.\n\n" +
+                                "Server roles and features data is stored under:\n" +
+                                @"SOFTWARE\Microsoft\ServerManager\ServicingStorage\ServerComponentCache",
+                                "Windows Server Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else if (rolesBtn.Tag is AnalysisSection rs)
+                        {
+                            displaySection(rs);
+                        }
+                    };
+
+                    subCategoryButtons.Add(rolesBtn);
+
+                    if (hasRolesFeatures)
+                        availableButtons.Add(rolesBtn);
+                    else
+                        unavailableButtons.Add(rolesBtn);
                 }
 
                 // Add Components button to Update category (requires COMPONENTS hive)
@@ -6579,6 +7128,23 @@ namespace RegistryExpert
             }
         }
 
+        private void ApplyThemeToDataGridView(DataGridView grid, Color? columnHeaderBack = null)
+        {
+            var headerBack = columnHeaderBack ?? ModernTheme.TreeViewBack;
+            grid.BackgroundColor = ModernTheme.Surface;
+            grid.ForeColor = ModernTheme.TextPrimary;
+            grid.GridColor = ModernTheme.Border;
+            grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
+            grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
+            grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
+            grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
+            grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
+            grid.ColumnHeadersDefaultCellStyle.BackColor = headerBack;
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = headerBack;
+            grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+        }
+
         private void RefreshAnalyzeFormTheme(Form form)
         {
             // Apply base form theme
@@ -6621,19 +7187,7 @@ namespace RegistryExpert
             // Update content grid
             if (themeData.ContentGrid != null)
             {
-                var grid = themeData.ContentGrid;
-                grid.BackgroundColor = ModernTheme.Surface;
-                grid.ForeColor = ModernTheme.TextPrimary;
-                grid.GridColor = ModernTheme.Border;
-                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
-                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
-                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
-                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
-                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
-                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                ApplyThemeToDataGridView(themeData.ContentGrid, ModernTheme.Surface);
             }
 
             // Update registry info panel (now using ContentDetailSplit and DetailPanel)
@@ -6670,19 +7224,7 @@ namespace RegistryExpert
             // Update network details grid
             if (themeData.NetworkDetailsGrid != null)
             {
-                var grid = themeData.NetworkDetailsGrid;
-                grid.BackgroundColor = ModernTheme.Surface;
-                grid.ForeColor = ModernTheme.TextPrimary;
-                grid.GridColor = ModernTheme.Border;
-                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
-                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
-                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
-                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
-                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                ApplyThemeToDataGridView(themeData.NetworkDetailsGrid);
             }
 
             // Update subcategory buttons
@@ -6751,19 +7293,7 @@ namespace RegistryExpert
             // Update firewall rules grid
             if (themeData.FirewallRulesGrid != null)
             {
-                var grid = themeData.FirewallRulesGrid;
-                grid.BackgroundColor = ModernTheme.Surface;
-                grid.ForeColor = ModernTheme.TextPrimary;
-                grid.GridColor = ModernTheme.Border;
-                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
-                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
-                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
-                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
-                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                ApplyThemeToDataGridView(themeData.FirewallRulesGrid);
             }
 
             // Update firewall profile buttons
@@ -6803,19 +7333,7 @@ namespace RegistryExpert
 
             if (themeData.DeviceManagerDetailsGrid != null)
             {
-                var grid = themeData.DeviceManagerDetailsGrid;
-                grid.BackgroundColor = ModernTheme.Surface;
-                grid.ForeColor = ModernTheme.TextPrimary;
-                grid.GridColor = ModernTheme.Border;
-                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
-                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
-                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
-                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
-                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                ApplyThemeToDataGridView(themeData.DeviceManagerDetailsGrid);
             }
 
             // Update Device Manager toggle buttons
@@ -6837,19 +7355,43 @@ namespace RegistryExpert
             // Update Driver Details grid (same pattern as Device grid)
             if (themeData.DeviceManagerDriverGrid != null)
             {
-                var grid = themeData.DeviceManagerDriverGrid;
-                grid.BackgroundColor = ModernTheme.Surface;
-                grid.ForeColor = ModernTheme.TextPrimary;
-                grid.GridColor = ModernTheme.Border;
-                grid.DefaultCellStyle.BackColor = ModernTheme.Surface;
-                grid.DefaultCellStyle.ForeColor = ModernTheme.TextPrimary;
-                grid.DefaultCellStyle.SelectionBackColor = ModernTheme.Selection;
-                grid.DefaultCellStyle.SelectionForeColor = ModernTheme.TextPrimary;
-                grid.AlternatingRowsDefaultCellStyle.BackColor = ModernTheme.ListViewAltRow;
-                grid.ColumnHeadersDefaultCellStyle.BackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
-                grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
-                grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                ApplyThemeToDataGridView(themeData.DeviceManagerDriverGrid);
+            }
+
+            // Update Roles & Features panel
+            if (themeData.RolesFeaturesSplit != null)
+            {
+                themeData.RolesFeaturesSplit.BackColor = ModernTheme.Border;
+                themeData.RolesFeaturesSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.RolesFeaturesSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+            if (themeData.RolesTree != null)
+            {
+                themeData.RolesTree.BackColor = ModernTheme.TreeViewBack;
+                themeData.RolesTree.ForeColor = ModernTheme.TextPrimary;
+                themeData.RolesTree.LineColor = ModernTheme.Border;
+                // Update not-installed node colors
+                void UpdateNodeColors(TreeNode node)
+                {
+                    if (node.Tag is RoleFeatureItem ri && ri.InstallState != 1)
+                        node.ForeColor = ModernTheme.TextDisabled;
+                    else
+                        node.ForeColor = ModernTheme.TextPrimary;
+                    foreach (TreeNode child in node.Nodes)
+                        UpdateNodeColors(child);
+                }
+                foreach (TreeNode node in themeData.RolesTree.Nodes)
+                    UpdateNodeColors(node);
+                themeData.RolesTree.Invalidate();
+            }
+            if (themeData.RolesTreeHeader != null) themeData.RolesTreeHeader.BackColor = ModernTheme.Surface;
+            if (themeData.RolesTreeLabel != null) themeData.RolesTreeLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.RolesDetailsHeader != null) themeData.RolesDetailsHeader.BackColor = ModernTheme.Surface;
+            if (themeData.RolesDetailsLabel != null) themeData.RolesDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+
+            if (themeData.RolesDetailsGrid != null)
+            {
+                ApplyThemeToDataGridView(themeData.RolesDetailsGrid);
             }
 
             form.Invalidate(true);
@@ -7244,6 +7786,12 @@ namespace RegistryExpert
             {
                 try
                 {
+                    if (info.ReleaseUrl == null || !info.ReleaseUrl.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        MessageBox.Show(form, "Invalid or untrusted download URL.",
+                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                     {
                         FileName = info.ReleaseUrl,
@@ -7522,7 +8070,6 @@ namespace RegistryExpert
             catch { }
             
             _infoExtractor = null;
-            _previousSelectedNode = null;
             
             base.OnFormClosing(e);
         }
@@ -7637,6 +8184,34 @@ namespace RegistryExpert
         public string RegistryPath { get; set; } = "";
     }
 
+    public class RoleFeatureItem
+    {
+        public string KeyName { get; set; } = "";
+        public string DisplayName { get; set; } = "";
+        public string Description { get; set; } = "";
+        public int ServerComponentType { get; set; }   // 0=Role, 1=RoleService, 2=Feature
+        public int InstallState { get; set; }           // 0=Not Installed, 1=Installed
+        public string ParentName { get; set; } = "";
+        public int NumericId { get; set; }
+        public string RegistryPath { get; set; } = "";
+        public string SystemServices { get; set; } = "";
+        public string Dependencies { get; set; } = "";
+        public int MajorVersion { get; set; }
+        public int MinorVersion { get; set; }
+
+        public string ComponentTypeName => ServerComponentType switch
+        {
+            0 => "Role",
+            1 => "Role Service",
+            2 => "Feature",
+            _ => $"Unknown ({ServerComponentType})"
+        };
+
+        public string InstallStateName => InstallState == 1 ? "Installed" : "Not Installed";
+
+        public override string ToString() => DisplayName;
+    }
+
     public class MountedDeviceEntry
     {
         public string MountPoint { get; set; } = "";
@@ -7665,5 +8240,40 @@ namespace RegistryExpert
         public string EnumPath { get; set; } = "";
         public string DiskId { get; set; } = "";
         public string StaleStatus { get; set; } = "";
+    }
+
+    public class PhysicalDiskEntry
+    {
+        // Identification
+        public string DeviceId { get; set; } = "";        // e.g. "SCSI\Disk&Ven_Msft&Prod_Virtual_Disk\000000"
+        public string FriendlyName { get; set; } = "";     // e.g. "Microsoft Virtual Disk"
+        public string DeviceDesc { get; set; } = "";       // e.g. "Disk drive"
+
+        // Bus/Location
+        public string BusType { get; set; } = "";          // IDE, SCSI, USBSTOR, NVME
+        public string LocationInfo { get; set; } = "";     // e.g. "Bus 0, Target 0, LUN 0"
+
+        // Hardware
+        public string HardwareId { get; set; } = "";       // First hardware ID string
+        public string CompatibleIds { get; set; } = "";    // Compatible IDs
+        public string Manufacturer { get; set; } = "";     // Mfg value (cleaned)
+        public string Service { get; set; } = "";          // Driver service name
+        public string DeviceClass { get; set; } = "";      // Class GUID description
+
+        // Partmgr
+        public string DiskId { get; set; } = "";           // Partmgr DiskId GUID
+        public int VolumeCount { get; set; }               // Number of STORAGE\Volume entries for this DiskId
+        public string PoolStatus { get; set; } = "";       // "Probable Pool Member", "Normal", or ""
+
+        // Drive letter mapping
+        public string DriveLetters { get; set; } = "";     // Mapped drive letters (e.g. "C:, D:")
+        public string PartitionStyle { get; set; } = "";   // MBR, GPT, or Unknown
+
+        // Registry
+        public string EnumPath { get; set; } = "";         // Full enum path
+        public string RegistryPath { get; set; } = "";     // Display path
+
+        // Status
+        public string DeviceStatus { get; set; } = "";     // Enabled/Disabled from ConfigFlags
     }
 }

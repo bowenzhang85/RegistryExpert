@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using System.Collections.Concurrent;
 using RegistryParser.Abstractions;
 
 namespace RegistryExpert
@@ -15,8 +14,9 @@ namespace RegistryExpert
         private readonly OfflineRegistryParser _parser;
         
         // Cache for frequently accessed registry keys
-        private readonly ConcurrentDictionary<string, RegistryKey?> _keyCache = new();
-        private readonly ConcurrentDictionary<string, string?> _valueCache = new();
+        private readonly Dictionary<string, RegistryKey?> _keyCache = new();
+        private readonly Dictionary<string, string?> _valueCache = new();
+        private readonly string _currentControlSet;
 
         // Lazy-cached disk partition registry and active storage volume DiskIds
         private List<DiskPartitionInfo>? _diskPartitionRegistry;
@@ -25,6 +25,19 @@ namespace RegistryExpert
         public RegistryInfoExtractor(OfflineRegistryParser parser)
         {
             _parser = parser;
+
+            // Determine the active control set from Select\Current
+            _currentControlSet = "ControlSet001"; // default
+            try
+            {
+                var selectKey = _parser.GetKey("Select");
+                var currentValue = selectKey?.Values.FirstOrDefault(v => v.ValueName == "Current")?.ValueData?.ToString();
+                if (int.TryParse(currentValue, out int csNumber) && csNumber >= 1 && csNumber <= 3)
+                {
+                    _currentControlSet = $"ControlSet{csNumber:D3}";
+                }
+            }
+            catch { /* default to ControlSet001 */ }
         }
 
         /// <summary>
@@ -32,7 +45,11 @@ namespace RegistryExpert
         /// </summary>
         private RegistryKey? GetCachedKey(string path)
         {
-            return _keyCache.GetOrAdd(path, p => _parser.GetKey(p));
+            if (_keyCache.TryGetValue(path, out var cached))
+                return cached;
+            var key = _parser.GetKey(path);
+            _keyCache[path] = key;
+            return key;
         }
 
 
@@ -42,18 +59,17 @@ namespace RegistryExpert
         {
             // Use cache key that includes value name
             var cacheKey = $"{keyPath}\\{valueName}";
-            return _valueCache.GetOrAdd(cacheKey, _ =>
+            if (_valueCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+            string? result = null;
+            try
             {
-                try
-                {
-                    var key = GetCachedKey(keyPath);
-                    return key?.Values.FirstOrDefault(v => v.ValueName == valueName)?.ValueData?.ToString();
-                }
-                catch
-                {
-                    return null;
-                }
-            });
+                var key = GetCachedKey(keyPath);
+                result = key?.Values.FirstOrDefault(v => v.ValueName == valueName)?.ValueData?.ToString();
+            }
+            catch { }
+            _valueCache[cacheKey] = result;
+            return result;
         }
 
         private byte[]? GetBinaryValue(string keyPath, string valueName)
@@ -317,11 +333,11 @@ namespace RegistryExpert
 
             // Computer Info Section
             var computerSection = new AnalysisSection { Title = "💻 Computer Information" };
-            var computerNamePath = @"ControlSet001\Control\ComputerName\ComputerName";
+            var computerNamePath = $@"{_currentControlSet}\Control\ComputerName\ComputerName";
             var computerName = GetValue(computerNamePath, "ComputerName");
             if (string.IsNullOrEmpty(computerName))
             {
-                computerNamePath = @"ControlSet001\Control\ComputerName\ActiveComputerName";
+                computerNamePath = $@"{_currentControlSet}\Control\ComputerName\ActiveComputerName";
                 computerName = GetValue(computerNamePath, "ComputerName");
             }
             if (!string.IsNullOrEmpty(computerName))
@@ -333,7 +349,7 @@ namespace RegistryExpert
                     RegistryValue = $"ComputerName = {computerName}"
                 });
 
-            var timezonePath = @"ControlSet001\Control\TimeZoneInformation";
+            var timezonePath = $@"{_currentControlSet}\Control\TimeZoneInformation";
             var timezone = GetValue(timezonePath, "TimeZoneKeyName");
             var timezoneValueName = "TimeZoneKeyName";
             if (string.IsNullOrEmpty(timezone))
@@ -350,7 +366,7 @@ namespace RegistryExpert
                     RegistryValue = $"{timezoneValueName} = {timezone}"
                 });
 
-            var shutdownPath = @"ControlSet001\Control\Windows";
+            var shutdownPath = $@"{_currentControlSet}\Control\Windows";
             var shutdownTime = GetBinaryValue(shutdownPath, "ShutdownTime");
             if (shutdownTime != null && shutdownTime.Length >= 8)
             {
@@ -376,7 +392,7 @@ namespace RegistryExpert
             sections.Add(computerSection);
 
             // OS Information Section (SOFTWARE hive) - Always include for UI consistency
-            const string osRegPath = @"Microsoft\Windows NT\CurrentVersion";
+            string osRegPath = @"Microsoft\Windows NT\CurrentVersion";
             var osSection = new AnalysisSection { Title = "🪟 Build Information" };
             var productName = GetValue(osRegPath, "ProductName");
             var buildNumber = GetValue(osRegPath, "CurrentBuild");  // Fetch early for Windows 11 detection
@@ -484,7 +500,7 @@ namespace RegistryExpert
             sections.Add(osSection);
 
             // CPU Hyper-Threading Section
-            const string memMgmtPath = @"ControlSet001\Control\Session Manager\Memory Management";
+            string memMgmtPath = $@"{_currentControlSet}\Control\Session Manager\Memory Management";
             var memMgmtKey = _parser.GetKey(memMgmtPath);
             var htSection = new AnalysisSection { Title = "🔄 CPU Hyper-Threading" };
             if (memMgmtKey != null)
@@ -522,7 +538,7 @@ namespace RegistryExpert
             sections.Add(htSection); // Always add for UI consistency
 
             // Crash Dump Configuration (SYSTEM hive)
-            var crashControlKey = _parser.GetKey(@"ControlSet001\Control\CrashControl");
+            var crashControlKey = _parser.GetKey($@"{_currentControlSet}\Control\CrashControl");
             var dumpSection = new AnalysisSection { Title = "💥 Crash Dump Configuration" };
             if (crashControlKey != null)
             {
@@ -542,7 +558,7 @@ namespace RegistryExpert
                 { 
                     Name = "CrashDumpEnabled", 
                     Value = dumpTypeText,
-                    RegistryPath = @"ControlSet001\Control\CrashControl",
+                    RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                     RegistryValue = $"CrashDumpEnabled = {crashDumpEnabled}"
                 });
 
@@ -554,7 +570,7 @@ namespace RegistryExpert
                     { 
                         Name = "DumpFile", 
                         Value = dumpFile,
-                        RegistryPath = @"ControlSet001\Control\CrashControl",
+                        RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                         RegistryValue = $"DumpFile = {dumpFile}"
                     });
                 }
@@ -567,7 +583,7 @@ namespace RegistryExpert
                     { 
                         Name = "MinidumpDir", 
                         Value = minidumpDir,
-                        RegistryPath = @"ControlSet001\Control\CrashControl",
+                        RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                         RegistryValue = $"MinidumpDir = {minidumpDir}"
                     });
                 }
@@ -578,7 +594,7 @@ namespace RegistryExpert
                 { 
                     Name = "AutoReboot", 
                     Value = autoReboot == "1" ? "1 - Enabled" : (autoReboot == "0" ? "0 - Disabled" : "Not Configured"),
-                    RegistryPath = @"ControlSet001\Control\CrashControl",
+                    RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                     RegistryValue = $"AutoReboot = {autoReboot}"
                 });
 
@@ -588,7 +604,7 @@ namespace RegistryExpert
                 { 
                     Name = "Overwrite", 
                     Value = overwrite == "1" ? "1 - Overwrite existing file" : (overwrite == "0" ? "0 - Keep existing file" : "Not Configured"),
-                    RegistryPath = @"ControlSet001\Control\CrashControl",
+                    RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                     RegistryValue = $"Overwrite = {overwrite}"
                 });
 
@@ -598,7 +614,7 @@ namespace RegistryExpert
                 { 
                     Name = "LogEvent", 
                     Value = logEvent == "1" ? "1 - Log to System Event Log" : (logEvent == "0" ? "0 - Do not log" : "Not Configured"),
-                    RegistryPath = @"ControlSet001\Control\CrashControl",
+                    RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                     RegistryValue = $"LogEvent = {logEvent}"
                 });
 
@@ -610,7 +626,7 @@ namespace RegistryExpert
                     { 
                         Name = "SendAlert", 
                         Value = sendAlert == "1" ? "1 - Send administrative alert" : "0 - No alert",
-                        RegistryPath = @"ControlSet001\Control\CrashControl",
+                        RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                         RegistryValue = $"SendAlert = {sendAlert}"
                     });
                 }
@@ -623,7 +639,7 @@ namespace RegistryExpert
                     { 
                         Name = "DumpFilters", 
                         Value = dumpFilters,
-                        RegistryPath = @"ControlSet001\Control\CrashControl",
+                        RegistryPath = $@"{_currentControlSet}\Control\CrashControl",
                         RegistryValue = $"DumpFilters = {dumpFilters}"
                     });
                 }
@@ -636,7 +652,7 @@ namespace RegistryExpert
             if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
             {
                 // SOFTWARE hive: Show VmId, VmType, and grayed out agent status
-                const string azurePath = @"Microsoft\Windows Azure";
+                string azurePath = @"Microsoft\Windows Azure";
                 var azureKey = _parser.GetKey(azurePath);
                 
                 // Get VmId
@@ -667,7 +683,7 @@ namespace RegistryExpert
                 {
                     Name = "WindowsAzureGuestAgent",
                     Value = "(Load SYSTEM hive to view)",
-                    RegistryPath = @"ControlSet001\Services\WindowsAzureGuestAgent",
+                    RegistryPath = $@"{_currentControlSet}\Services\WindowsAzureGuestAgent",
                     RegistryValue = "Agent service information requires SYSTEM hive.\nLoad the SYSTEM hive to see agent version and path."
                 });
                 
@@ -675,7 +691,7 @@ namespace RegistryExpert
                 {
                     Name = "RdAgent",
                     Value = "(Load SYSTEM hive to view)",
-                    RegistryPath = @"ControlSet001\Services\RdAgent",
+                    RegistryPath = $@"{_currentControlSet}\Services\RdAgent",
                     RegistryValue = "Agent service information requires SYSTEM hive.\nLoad the SYSTEM hive to see agent version and path."
                 });
                 
@@ -684,7 +700,7 @@ namespace RegistryExpert
             else
             {
                 // SYSTEM hive: Show agent service info
-                const string waGuestAgentPath = @"ControlSet001\Services\WindowsAzureGuestAgent";
+                string waGuestAgentPath = $@"{_currentControlSet}\Services\WindowsAzureGuestAgent";
                 var waImagePath = GetValue(waGuestAgentPath, "ImagePath") ?? "";
                 var waVersion = ExtractAgentVersionInfo(waImagePath);
                 guestSection.Items.Add(new AnalysisItem
@@ -695,7 +711,7 @@ namespace RegistryExpert
                     RegistryValue = string.IsNullOrEmpty(waImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(waImagePath, 140)}"
                 });
 
-                const string rdAgentPath = @"ControlSet001\Services\RdAgent";
+                string rdAgentPath = $@"{_currentControlSet}\Services\RdAgent";
                 var rdImagePath = GetValue(rdAgentPath, "ImagePath") ?? "";
                 var rdVersion = ExtractAgentVersionInfo(rdImagePath);
                 guestSection.Items.Add(new AnalysisItem
@@ -735,7 +751,7 @@ namespace RegistryExpert
             var sections = new List<AnalysisSection>();
             var section = new AnalysisSection { Title = "\U0001f5a5\ufe0f Device Manager" };
 
-            var enumKey = _parser.GetKey(@"ControlSet001\Enum");
+            var enumKey = _parser.GetKey($@"{_currentControlSet}\Enum");
             if (enumKey?.SubKeys == null)
             {
                 sections.Add(section);
@@ -785,7 +801,7 @@ namespace RegistryExpert
                             displayName = instance.KeyName;
                         }
 
-                        var registryPath = $@"ControlSet001\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
+                        var registryPath = $@"{_currentControlSet}\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
 
                         // Collect device properties
                         var properties = new List<(string Name, string Value, string ValueName)>();
@@ -821,7 +837,7 @@ namespace RegistryExpert
                         string driverRegistryPath = "";
                         if (!string.IsNullOrEmpty(driverValue))
                         {
-                            var driverKeyPath = $@"ControlSet001\Control\Class\{driverValue}";
+                            var driverKeyPath = $@"{_currentControlSet}\Control\Class\{driverValue}";
                             var driverKey = GetCachedKey(driverKeyPath);
                             if (driverKey?.Values != null)
                             {
@@ -863,7 +879,7 @@ namespace RegistryExpert
                 else
                 {
                     // Look up class display name from ControlSet001\Control\Class\{ClassGUID}
-                    classKeyPath = $@"ControlSet001\Control\Class\{groupKey}";
+                    classKeyPath = $@"{_currentControlSet}\Control\Class\{groupKey}";
                     className = GetValue(classKeyPath, "Class") ?? groupKey;
                     classGuidDisplay = groupKey;
                 }
@@ -940,7 +956,7 @@ namespace RegistryExpert
             var timeSection = new AnalysisSection { Title = "🕐 System Time Config" };
 
             // w32time Parameters - Type (NTP vs NT5DS)
-            const string w32timeParamsPath = @"ControlSet001\Services\w32time\Parameters";
+            string w32timeParamsPath = $@"{_currentControlSet}\Services\w32time\Parameters";
             var paramsKey = _parser.GetKey(w32timeParamsPath);
             
             if (paramsKey != null)
@@ -981,7 +997,7 @@ namespace RegistryExpert
             }
 
             // w32time Config - Poll intervals
-            const string w32timeConfigPath = @"ControlSet001\Services\w32time\Config";
+            string w32timeConfigPath = $@"{_currentControlSet}\Services\w32time\Config";
             var configKey = _parser.GetKey(w32timeConfigPath);
             
             if (configKey != null)
@@ -1043,7 +1059,7 @@ namespace RegistryExpert
             }
 
             // Time Providers - VMICTimeProvider (for Azure/Hyper-V VMs)
-            const string vmicProviderPath = @"ControlSet001\Services\w32time\TimeProviders\VMICTimeProvider";
+            string vmicProviderPath = $@"{_currentControlSet}\Services\w32time\TimeProviders\VMICTimeProvider";
             var vmicKey = _parser.GetKey(vmicProviderPath);
             
             if (vmicKey != null)
@@ -1069,7 +1085,7 @@ namespace RegistryExpert
             }
 
             // Time Providers - NtpClient
-            const string ntpClientPath = @"ControlSet001\Services\w32time\TimeProviders\NtpClient";
+            string ntpClientPath = $@"{_currentControlSet}\Services\w32time\TimeProviders\NtpClient";
             var ntpClientKey = _parser.GetKey(ntpClientPath);
             
             if (ntpClientKey != null)
@@ -1122,7 +1138,7 @@ namespace RegistryExpert
             }
 
             // Time Providers - NtpServer (if this machine serves time)
-            const string ntpServerPath = @"ControlSet001\Services\w32time\TimeProviders\NtpServer";
+            string ntpServerPath = $@"{_currentControlSet}\Services\w32time\TimeProviders\NtpServer";
             var ntpServerKey = _parser.GetKey(ntpServerPath);
             
             if (ntpServerKey != null)
@@ -1138,7 +1154,7 @@ namespace RegistryExpert
             }
 
             // w32time service start type
-            const string w32timeServicePath = @"ControlSet001\Services\w32time";
+            string w32timeServicePath = $@"{_currentControlSet}\Services\w32time";
             var w32timeKey = _parser.GetKey(w32timeServicePath);
             
             if (w32timeKey != null)
@@ -1185,7 +1201,7 @@ namespace RegistryExpert
         {
             var extensionsSection = new AnalysisSection { Title = "🔌 Extensions" };
             
-            const string handlerStatePath = @"Microsoft\Windows Azure\HandlerState";
+            string handlerStatePath = @"Microsoft\Windows Azure\HandlerState";
             var handlerStateKey = _parser.GetKey(handlerStatePath);
             
             if (handlerStateKey?.SubKeys == null || !handlerStateKey.SubKeys.Any())
@@ -1428,7 +1444,8 @@ namespace RegistryExpert
                 var runSection = new AnalysisSection { Title = "▶️ Run Dialog History" };
                 foreach (var value in runMru.Values.Where(v => v.ValueName != "MRUList" && !string.IsNullOrEmpty(v.ValueData?.ToString())).Take(10))
                 {
-                    var cmd = value.ValueData?.ToString()?.TrimEnd('\\', '1') ?? "";
+                    var cmd = value.ValueData?.ToString() ?? "";
+                    if (cmd.EndsWith("\\1")) cmd = cmd[..^2];
                     runSection.Items.Add(new AnalysisItem 
                     { 
                         Name = value.ValueName, 
@@ -1480,7 +1497,7 @@ namespace RegistryExpert
         public List<ServiceInfo> GetAllServices()
         {
             var services = new List<ServiceInfo>();
-            var servicesKey = _parser.GetKey(@"ControlSet001\Services");
+            var servicesKey = _parser.GetKey($@"{_currentControlSet}\Services");
             
             if (servicesKey?.SubKeys != null)
             {
@@ -1502,7 +1519,7 @@ namespace RegistryExpert
                         StartType = startValue,
                         StartTypeName = isDelayedAuto ? "Automatic (Delayed)" : GetStartTypeName(startValue),
                         ImagePath = imagePath,
-                        RegistryPath = $@"ControlSet001\Services\{k.KeyName}",
+                        RegistryPath = $@"{_currentControlSet}\Services\{k.KeyName}",
                         IsDisabled = startValue == "4",
                         IsAutoStart = startValue == "2",
                         IsDelayedAutoStart = isDelayedAuto,
@@ -1522,9 +1539,9 @@ namespace RegistryExpert
         public List<AnalysisSection> GetRdpAnalysis()
         {
             var sections = new List<AnalysisSection>();
-            const string tsPath = @"ControlSet001\Control\Terminal Server";
-            const string rdpTcpPath = @"ControlSet001\Control\Terminal Server\WinStations\RDP-Tcp";
-            const string termServicePath = @"ControlSet001\Services\TermService";
+            string tsPath = $@"{_currentControlSet}\Control\Terminal Server";
+            string rdpTcpPath = $@"{_currentControlSet}\Control\Terminal Server\WinStations\RDP-Tcp";
+            string termServicePath = $@"{_currentControlSet}\Services\TermService";
 
             // Terminal Server Configuration (SYSTEM hive)
             var terminalServerKey = _parser.GetKey(tsPath);
@@ -1553,7 +1570,7 @@ namespace RegistryExpert
                 });
 
                 // WinStations SelfSignedCertificate (binary thumbprint/identifier)
-                const string winStationsPathForCert = @"ControlSet001\Control\Terminal Server\WinStations";
+                string winStationsPathForCert = $@"{_currentControlSet}\Control\Terminal Server\WinStations";
                 var selfSignedCertBytes = GetBinaryValue(winStationsPathForCert, "SelfSignedCertificate");
                 var selfSignedCertDisplay = (selfSignedCertBytes != null && selfSignedCertBytes.Length > 0)
                     ? BitConverter.ToString(selfSignedCertBytes).Replace("-", "")
@@ -1715,7 +1732,7 @@ namespace RegistryExpert
                     });
 
                     // fDisableAutoReconnect (Policy)
-                    const string tsPolicyPath = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
+                    string tsPolicyPath = @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services";
                     var tsPolicyKey = _parser.GetKey(tsPolicyPath);
                     if (tsPolicyKey != null)
                     {
@@ -1861,7 +1878,7 @@ namespace RegistryExpert
             }
 
             // Citrix Detection Section
-            const string winStationsPath = @"ControlSet001\Control\Terminal Server\WinStations";
+            string winStationsPath = $@"{_currentControlSet}\Control\Terminal Server\WinStations";
             var winStationsKey = _parser.GetKey(winStationsPath);
             bool hasCitrixICA = false;
             var icaStations = new List<string>();
@@ -2033,7 +2050,7 @@ namespace RegistryExpert
             }
 
             // Terminal Services Licensing
-            const string licensingPath = @"ControlSet001\Control\Terminal Server\Licensing Core";
+            string licensingPath = $@"{_currentControlSet}\Control\Terminal Server\Licensing Core";
             var licensingKey = _parser.GetKey(licensingPath);
             if (licensingKey != null)
             {
@@ -2073,7 +2090,7 @@ namespace RegistryExpert
             var rdsSection = new AnalysisSection { Title = "🏢 Remote Desktop Services (RDS)" };
             
             // SpecifiedLicenseServers from TermService\Parameters
-            const string termServiceParamsPath = @"ControlSet001\Services\TermService\Parameters";
+            string termServiceParamsPath = $@"{_currentControlSet}\Services\TermService\Parameters";
             var termServiceParamsKey = _parser.GetKey(termServiceParamsPath);
             if (termServiceParamsKey != null)
             {
@@ -2115,7 +2132,7 @@ namespace RegistryExpert
             }
 
             // LicensingMode from RCM\Licensing Core
-            const string rcmLicensingPath = @"ControlSet001\Control\Terminal Server\RCM\Licensing Core";
+            string rcmLicensingPath = $@"{_currentControlSet}\Control\Terminal Server\RCM\Licensing Core";
             var rcmLicensingKey = _parser.GetKey(rcmLicensingPath);
             if (rcmLicensingKey != null)
             {
@@ -2149,7 +2166,7 @@ namespace RegistryExpert
 
             // Add additional RDS relevant settings if available
             // Check for RDS policy settings
-            const string rdsPolicyPath = @"ControlSet001\Control\Terminal Server\RCM";
+            string rdsPolicyPath = $@"{_currentControlSet}\Control\Terminal Server\RCM";
             var rcmKey = _parser.GetKey(rdsPolicyPath);
             if (rcmKey != null)
             {
@@ -2188,7 +2205,7 @@ namespace RegistryExpert
 
             // Build a lookup from NetCfgInstanceId to adapter info from Class key
             var adapterClassInfo = new Dictionary<string, (string DriverDesc, string DriverVersion, string ProviderName, string ClassPath, string DeviceInstanceId, string InstallTimestamp)>(StringComparer.OrdinalIgnoreCase);
-            var classKey = _parser.GetKey(@"ControlSet001\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}");
+            var classKey = _parser.GetKey($@"{_currentControlSet}\Control\Class\{{4d36e972-e325-11ce-bfc1-08002be10318}}");
             if (classKey?.SubKeys != null)
             {
                 foreach (var adapter in classKey.SubKeys)
@@ -2200,7 +2217,7 @@ namespace RegistryExpert
                         var driverVersion = adapter.Values.FirstOrDefault(v => v.ValueName == "DriverVersion")?.ValueData?.ToString() ?? "";
                         var providerName = adapter.Values.FirstOrDefault(v => v.ValueName == "ProviderName")?.ValueData?.ToString() ?? "";
                         var deviceInstanceId = adapter.Values.FirstOrDefault(v => v.ValueName == "DeviceInstanceID")?.ValueData?.ToString() ?? "";
-                        var classPath = $@"ControlSet001\Control\Class\{{4d36e972-e325-11ce-bfc1-08002be10318}}\{adapter.KeyName}";
+                        var classPath = $@"{_currentControlSet}\Control\Class\{{4d36e972-e325-11ce-bfc1-08002be10318}}\{adapter.KeyName}";
                         
                         // Get NetworkInterfaceInstallTimestamp (FILETIME format - 64-bit value)
                         string installTimestamp = "";
@@ -2247,7 +2264,7 @@ namespace RegistryExpert
             // Build a lookup for device enabled/disabled state from Enum key
             // ConfigFlags: 0 = Enabled, 1 (bit 0 set) = Disabled
             var deviceEnabledState = new Dictionary<string, (bool IsEnabled, string EnumPath)>(StringComparer.OrdinalIgnoreCase);
-            var enumKey = _parser.GetKey(@"ControlSet001\Enum");
+            var enumKey = _parser.GetKey($@"{_currentControlSet}\Enum");
             if (enumKey?.SubKeys != null)
             {
                 foreach (var busType in enumKey.SubKeys) // PCI, USB, ROOT, etc.
@@ -2262,7 +2279,7 @@ namespace RegistryExpert
                                 {
                                     var configFlags = instance.Values.FirstOrDefault(v => v.ValueName == "ConfigFlags")?.ValueData?.ToString();
                                     var deviceInstancePath = $@"{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
-                                    var enumPath = $@"ControlSet001\Enum\{deviceInstancePath}";
+                                    var enumPath = $@"{_currentControlSet}\Enum\{deviceInstancePath}";
                                     
                                     // ConfigFlags bit 0 = CONFIGFLAG_DISABLED
                                     bool isEnabled = true;
@@ -2280,7 +2297,7 @@ namespace RegistryExpert
             }
 
             // Network Interfaces (SYSTEM hive)
-            var interfacesKey = _parser.GetKey(@"ControlSet001\Services\Tcpip\Parameters\Interfaces");
+            var interfacesKey = _parser.GetKey($@"{_currentControlSet}\Services\Tcpip\Parameters\Interfaces");
             if (interfacesKey?.SubKeys != null && interfacesKey.SubKeys.Count > 0)
             {
                 var ifaceSection = new AnalysisSection { Title = "🔌 Network Interfaces" };
@@ -2299,7 +2316,7 @@ namespace RegistryExpert
                         ?? iface.Values.FirstOrDefault(v => v.ValueName == "Domain")?.ValueData?.ToString();
                     var dhcpServer = iface.Values.FirstOrDefault(v => v.ValueName == "DhcpServer")?.ValueData?.ToString();
 
-                    var registryPath = $@"ControlSet001\Services\Tcpip\Parameters\Interfaces\{iface.KeyName}";
+                    var registryPath = $@"{_currentControlSet}\Services\Tcpip\Parameters\Interfaces\{iface.KeyName}";
 
                     // Try to get adapter class info
                     string adapterName = iface.KeyName;
@@ -2369,7 +2386,7 @@ namespace RegistryExpert
                             subItems.Add(new AnalysisItem { Name = "Domain", Value = domain, RegistryPath = registryPath, RegistryValue = dhcpEnabled == "1" ? "DhcpDomain" : "Domain" });
 
                         // DNS Registered Adapters data for this interface GUID
-                        var dnsRegAdapterPath = $@"ControlSet001\Services\Tcpip\Parameters\DNSRegisteredAdapters\{iface.KeyName}";
+                        var dnsRegAdapterPath = $@"{_currentControlSet}\Services\Tcpip\Parameters\DNSRegisteredAdapters\{iface.KeyName}";
                         var dnsRegKey = _parser.GetKey(dnsRegAdapterPath);
                         if (dnsRegKey != null)
                         {
@@ -2425,7 +2442,7 @@ namespace RegistryExpert
             }
 
             // DNS Registered Adapters (PrimaryDomainName and Ghosted NICs)
-            const string dnsRegBasePath = @"ControlSet001\Services\Tcpip\Parameters\DNSRegisteredAdapters";
+            string dnsRegBasePath = $@"{_currentControlSet}\Services\Tcpip\Parameters\DNSRegisteredAdapters";
             var primaryDomainKey = _parser.GetKey($"{dnsRegBasePath}\\PrimaryDomainName");
             if (primaryDomainKey != null)
             {
@@ -2560,7 +2577,7 @@ namespace RegistryExpert
             }
 
             // Shares (SYSTEM hive)
-            var sharesKey = _parser.GetKey(@"ControlSet001\Services\LanmanServer\Shares");
+            var sharesKey = _parser.GetKey($@"{_currentControlSet}\Services\LanmanServer\Shares");
             var sharesSection = new AnalysisSection { Title = "📁 Network Shares" };
             
             if (sharesKey != null && sharesKey.Values.Count > 0)
@@ -2590,7 +2607,7 @@ namespace RegistryExpert
                     {
                         Name = share.ValueName,
                         Value = path,
-                        RegistryPath = @"ControlSet001\Services\LanmanServer\Shares",
+                        RegistryPath = $@"{_currentControlSet}\Services\LanmanServer\Shares",
                         RegistryValue = string.Join(" | ", details)
                     });
                 }
@@ -2601,7 +2618,7 @@ namespace RegistryExpert
                 {
                     Name = "No network shares configured",
                     Value = "",
-                    RegistryPath = @"ControlSet001\Services\LanmanServer\Shares",
+                    RegistryPath = $@"{_currentControlSet}\Services\LanmanServer\Shares",
                     RegistryValue = "No shares found in the registry"
                 });
             }
@@ -2609,7 +2626,7 @@ namespace RegistryExpert
 
             // NTLM Authentication Settings (SYSTEM hive)
             var ntlmSection = new AnalysisSection { Title = "🔑 NTLM Authentication" };
-            const string lsaPath = @"ControlSet001\Control\Lsa";
+            string lsaPath = $@"{_currentControlSet}\Control\Lsa";
             var lsaKey = _parser.GetKey(lsaPath);
             
             if (lsaKey != null)
@@ -2636,7 +2653,7 @@ namespace RegistryExpert
                 });
 
                 // Check MSV1_0 subkey for RestrictSendingNTLMTraffic
-                const string msv1Path = @"ControlSet001\Control\Lsa\MSV1_0";
+                string msv1Path = $@"{_currentControlSet}\Control\Lsa\MSV1_0";
                 var msv1Key = _parser.GetKey(msv1Path);
                 if (msv1Key != null)
                 {
@@ -2721,7 +2738,7 @@ namespace RegistryExpert
             sections.Add(ntlmSection);
 
             // TLS/SSL Protocol Settings (SYSTEM hive)
-            var schannelPath = @"ControlSet001\Control\SecurityProviders\SCHANNEL\Protocols";
+            var schannelPath = $@"{_currentControlSet}\Control\SecurityProviders\SCHANNEL\Protocols";
             var schannelKey = _parser.GetKey(schannelPath);
             if (schannelKey?.SubKeys != null && schannelKey.SubKeys.Count > 0)
             {
@@ -2851,7 +2868,7 @@ namespace RegistryExpert
             }
 
             // Windows Firewall Settings (SYSTEM hive)
-            const string firewallBasePath = @"ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy";
+            string firewallBasePath = $@"{_currentControlSet}\Services\SharedAccess\Parameters\FirewallPolicy";
             var firewallBaseKey = _parser.GetKey(firewallBasePath);
             if (firewallBaseKey != null)
             {
@@ -4471,9 +4488,7 @@ namespace RegistryExpert
         /// </summary>
         private string TruncateString(string str, int maxLength)
         {
-            if (string.IsNullOrEmpty(str) || str.Length <= maxLength)
-                return str;
-            return str.Substring(0, maxLength - 3) + "...";
+            return TruncatePath(str, maxLength);
         }
 
         /// <summary>
@@ -5001,14 +5016,23 @@ namespace RegistryExpert
             });
             sections.Add(filtersSection);
 
-            // Disk/Partition section (placeholder - actual data loaded via GetMountedDevices)
-            var partitionSection = new AnalysisSection { Title = "💿 Disk/Partition" };
+            // Mounted Devices section (placeholder - actual data loaded via GetMountedDevices)
+            var partitionSection = new AnalysisSection { Title = "💿 Mounted Devices" };
             partitionSection.Items.Add(new AnalysisItem
             {
                 Name = "Mounted Devices",
                 Value = "Displays MBR signatures, GPT partition GUIDs, and device paths from MountedDevices"
             });
             sections.Add(partitionSection);
+
+            // Physical Disks section (placeholder - actual data loaded via GetPhysicalDisks)
+            var physicalDisksSection = new AnalysisSection { Title = "💽 Physical Disks" };
+            physicalDisksSection.Items.Add(new AnalysisItem
+            {
+                Name = "Physical Disks",
+                Value = "Enumerates all physical disk devices and detects probable Storage Spaces pool members"
+            });
+            sections.Add(physicalDisksSection);
 
             return sections;
         }
@@ -5018,116 +5042,7 @@ namespace RegistryExpert
         /// </summary>
         public List<AnalysisItem> GetDiskFilters()
         {
-            var items = new List<AnalysisItem>();
-
-            // Disk class GUID: {4d36e967-e325-11ce-bfc1-08002be10318}
-            const string diskClassPath = @"ControlSet001\Control\Class\{4d36e967-e325-11ce-bfc1-08002be10318}";
-            var diskClassKey = _parser.GetKey(diskClassPath);
-
-            if (diskClassKey != null)
-            {
-                // UpperFilters - filter drivers loaded above the disk class driver
-                var upperFilters = diskClassKey.Values.FirstOrDefault(v => v.ValueName == "UpperFilters")?.ValueData?.ToString() ?? "";
-                if (!string.IsNullOrEmpty(upperFilters))
-                {
-                    var filterList = ParseMultiSzValue(upperFilters);
-                    items.Add(new AnalysisItem
-                    {
-                        Name = "UpperFilters",
-                        Value = filterList,
-                        RegistryPath = diskClassPath,
-                        RegistryValue = $"UpperFilters = {upperFilters}"
-                    });
-
-                    // Add individual filter details
-                    foreach (var filter in filterList.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        var filterServicePath = $@"ControlSet001\Services\{filter.Trim()}";
-                        var filterService = _parser.GetKey(filterServicePath);
-                        if (filterService != null)
-                        {
-                            var imagePath = filterService.Values.FirstOrDefault(v => v.ValueName == "ImagePath")?.ValueData?.ToString() ?? "";
-                            var description = filterService.Values.FirstOrDefault(v => v.ValueName == "Description")?.ValueData?.ToString() ?? "";
-                            
-                            items.Add(new AnalysisItem
-                            {
-                                Name = $"  → {filter.Trim()}",
-                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) : 
-                                       (!string.IsNullOrEmpty(imagePath) ? TruncatePath(imagePath, 80) : "Upper filter driver"),
-                                RegistryPath = filterServicePath,
-                                RegistryValue = !string.IsNullOrEmpty(imagePath) ? $"ImagePath = {imagePath}" : "Service entry found"
-                            });
-                        }
-                    }
-                }
-                else
-                {
-                    items.Add(new AnalysisItem
-                    {
-                        Name = "UpperFilters",
-                        Value = "(none configured)",
-                        RegistryPath = diskClassPath,
-                        RegistryValue = "UpperFilters not present"
-                    });
-                }
-
-                // LowerFilters - filter drivers loaded below the disk class driver
-                var lowerFilters = diskClassKey.Values.FirstOrDefault(v => v.ValueName == "LowerFilters")?.ValueData?.ToString() ?? "";
-                if (!string.IsNullOrEmpty(lowerFilters))
-                {
-                    var filterList = ParseMultiSzValue(lowerFilters);
-                    items.Add(new AnalysisItem
-                    {
-                        Name = "LowerFilters",
-                        Value = filterList,
-                        RegistryPath = diskClassPath,
-                        RegistryValue = $"LowerFilters = {lowerFilters}"
-                    });
-
-                    // Add individual filter details
-                    foreach (var filter in filterList.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        var filterServicePath = $@"ControlSet001\Services\{filter.Trim()}";
-                        var filterService = _parser.GetKey(filterServicePath);
-                        if (filterService != null)
-                        {
-                            var imagePath = filterService.Values.FirstOrDefault(v => v.ValueName == "ImagePath")?.ValueData?.ToString() ?? "";
-                            var description = filterService.Values.FirstOrDefault(v => v.ValueName == "Description")?.ValueData?.ToString() ?? "";
-                            
-                            items.Add(new AnalysisItem
-                            {
-                                Name = $"  → {filter.Trim()}",
-                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) : 
-                                       (!string.IsNullOrEmpty(imagePath) ? TruncatePath(imagePath, 80) : "Lower filter driver"),
-                                RegistryPath = filterServicePath,
-                                RegistryValue = !string.IsNullOrEmpty(imagePath) ? $"ImagePath = {imagePath}" : "Service entry found"
-                            });
-                        }
-                    }
-                }
-                else
-                {
-                    items.Add(new AnalysisItem
-                    {
-                        Name = "LowerFilters",
-                        Value = "(none configured)",
-                        RegistryPath = diskClassPath,
-                        RegistryValue = "LowerFilters not present"
-                    });
-                }
-            }
-            else
-            {
-                items.Add(new AnalysisItem
-                {
-                    Name = "Status",
-                    Value = "Disk class configuration not found",
-                    RegistryPath = diskClassPath,
-                    RegistryValue = "Key not present - requires SYSTEM hive"
-                });
-            }
-
-            return items;
+            return GetClassFilters("{4d36e967-e325-11ce-bfc1-08002be10318}", "Disk");
         }
 
         /// <summary>
@@ -5135,16 +5050,23 @@ namespace RegistryExpert
         /// </summary>
         public List<AnalysisItem> GetVolumeFilters()
         {
+            return GetClassFilters("{71A27CDD-812A-11D0-BEC7-08002BE2092F}", "Volume");
+        }
+
+        /// <summary>
+        /// Get filter drivers configuration for a given device class GUID
+        /// </summary>
+        private List<AnalysisItem> GetClassFilters(string classGuid, string className)
+        {
             var items = new List<AnalysisItem>();
 
-            // Volume class GUID: {71A27CDD-812A-11D0-BEC7-08002BE2092F}
-            const string volumeClassPath = @"ControlSet001\Control\Class\{71A27CDD-812A-11D0-BEC7-08002BE2092F}";
-            var volumeClassKey = _parser.GetKey(volumeClassPath);
+            var classPath = $@"{_currentControlSet}\Control\Class\{classGuid}";
+            var classKey = _parser.GetKey(classPath);
 
-            if (volumeClassKey != null)
+            if (classKey != null)
             {
-                // UpperFilters - filter drivers loaded above the volume class driver
-                var upperFilters = volumeClassKey.Values.FirstOrDefault(v => v.ValueName == "UpperFilters")?.ValueData?.ToString() ?? "";
+                // UpperFilters
+                var upperFilters = classKey.Values.FirstOrDefault(v => v.ValueName == "UpperFilters")?.ValueData?.ToString() ?? "";
                 if (!string.IsNullOrEmpty(upperFilters))
                 {
                     var filterList = ParseMultiSzValue(upperFilters);
@@ -5152,24 +5074,23 @@ namespace RegistryExpert
                     {
                         Name = "UpperFilters",
                         Value = filterList,
-                        RegistryPath = volumeClassPath,
+                        RegistryPath = classPath,
                         RegistryValue = $"UpperFilters = {upperFilters}"
                     });
 
-                    // Add individual filter details
                     foreach (var filter in filterList.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
                     {
-                        var filterServicePath = $@"ControlSet001\Services\{filter.Trim()}";
+                        var filterServicePath = $@"{_currentControlSet}\Services\{filter.Trim()}";
                         var filterService = _parser.GetKey(filterServicePath);
                         if (filterService != null)
                         {
                             var imagePath = filterService.Values.FirstOrDefault(v => v.ValueName == "ImagePath")?.ValueData?.ToString() ?? "";
                             var description = filterService.Values.FirstOrDefault(v => v.ValueName == "Description")?.ValueData?.ToString() ?? "";
-                            
+
                             items.Add(new AnalysisItem
                             {
                                 Name = $"  → {filter.Trim()}",
-                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) : 
+                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) :
                                        (!string.IsNullOrEmpty(imagePath) ? TruncatePath(imagePath, 80) : "Upper filter driver"),
                                 RegistryPath = filterServicePath,
                                 RegistryValue = !string.IsNullOrEmpty(imagePath) ? $"ImagePath = {imagePath}" : "Service entry found"
@@ -5183,13 +5104,13 @@ namespace RegistryExpert
                     {
                         Name = "UpperFilters",
                         Value = "(none configured)",
-                        RegistryPath = volumeClassPath,
+                        RegistryPath = classPath,
                         RegistryValue = "UpperFilters not present"
                     });
                 }
 
-                // LowerFilters - filter drivers loaded below the volume class driver
-                var lowerFilters = volumeClassKey.Values.FirstOrDefault(v => v.ValueName == "LowerFilters")?.ValueData?.ToString() ?? "";
+                // LowerFilters
+                var lowerFilters = classKey.Values.FirstOrDefault(v => v.ValueName == "LowerFilters")?.ValueData?.ToString() ?? "";
                 if (!string.IsNullOrEmpty(lowerFilters))
                 {
                     var filterList = ParseMultiSzValue(lowerFilters);
@@ -5197,24 +5118,23 @@ namespace RegistryExpert
                     {
                         Name = "LowerFilters",
                         Value = filterList,
-                        RegistryPath = volumeClassPath,
+                        RegistryPath = classPath,
                         RegistryValue = $"LowerFilters = {lowerFilters}"
                     });
 
-                    // Add individual filter details
                     foreach (var filter in filterList.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries))
                     {
-                        var filterServicePath = $@"ControlSet001\Services\{filter.Trim()}";
+                        var filterServicePath = $@"{_currentControlSet}\Services\{filter.Trim()}";
                         var filterService = _parser.GetKey(filterServicePath);
                         if (filterService != null)
                         {
                             var imagePath = filterService.Values.FirstOrDefault(v => v.ValueName == "ImagePath")?.ValueData?.ToString() ?? "";
                             var description = filterService.Values.FirstOrDefault(v => v.ValueName == "Description")?.ValueData?.ToString() ?? "";
-                            
+
                             items.Add(new AnalysisItem
                             {
                                 Name = $"  → {filter.Trim()}",
-                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) : 
+                                Value = !string.IsNullOrEmpty(description) ? TruncatePath(description, 80) :
                                        (!string.IsNullOrEmpty(imagePath) ? TruncatePath(imagePath, 80) : "Lower filter driver"),
                                 RegistryPath = filterServicePath,
                                 RegistryValue = !string.IsNullOrEmpty(imagePath) ? $"ImagePath = {imagePath}" : "Service entry found"
@@ -5228,7 +5148,7 @@ namespace RegistryExpert
                     {
                         Name = "LowerFilters",
                         Value = "(none configured)",
-                        RegistryPath = volumeClassPath,
+                        RegistryPath = classPath,
                         RegistryValue = "LowerFilters not present"
                     });
                 }
@@ -5238,8 +5158,8 @@ namespace RegistryExpert
                 items.Add(new AnalysisItem
                 {
                     Name = "Status",
-                    Value = "Volume class configuration not found",
-                    RegistryPath = volumeClassPath,
+                    Value = $"{className} class configuration not found",
+                    RegistryPath = classPath,
                     RegistryValue = "Key not present - requires SYSTEM hive"
                 });
             }
@@ -5499,6 +5419,212 @@ namespace RegistryExpert
         }
 
         /// <summary>
+        /// Enumerate all physical disk devices from ControlSet001\Enum across all bus types
+        /// and detect probable Storage Spaces pool members.
+        /// </summary>
+        public List<PhysicalDiskEntry> GetPhysicalDisks()
+        {
+            var disks = new List<PhysicalDiskEntry>();
+
+            // Bus types that contain disk devices, and their key prefixes
+            var busTypes = new[]
+            {
+                ("IDE", $@"{_currentControlSet}\Enum\IDE"),
+                ("SCSI", $@"{_currentControlSet}\Enum\SCSI"),
+                ("USBSTOR", $@"{_currentControlSet}\Enum\USBSTOR"),
+                ("NVME", $@"{_currentControlSet}\Enum\NVME"),
+            };
+
+            // Build set of active STORAGE\Volume DiskIds for pool detection
+            var activeDiskIds = BuildActiveStorageVolumeDiskIds();
+
+            // Build MountedDevices drive letter mapping: DiskId -> list of drive letters
+            var diskIdToDriveLetters = BuildDiskIdToDriveLetterMap();
+
+            foreach (var (busType, basePath) in busTypes)
+            {
+                var busKey = GetCachedKey(basePath);
+                if (busKey?.SubKeys == null) continue;
+
+                foreach (var deviceTypeKey in busKey.SubKeys)
+                {
+                    var deviceTypeName = deviceTypeKey.KeyName;
+                    if (string.IsNullOrEmpty(deviceTypeName)) continue;
+
+                    // Only process disk devices (skip CdRom, other device types)
+                    bool isDisk = deviceTypeName.StartsWith("Disk", StringComparison.OrdinalIgnoreCase);
+                    if (!isDisk) continue;
+
+                    // Read the device type subkey to get instances
+                    var deviceTypeKeyPath = $@"{basePath}\{deviceTypeName}";
+                    var fullDeviceTypeKey = GetCachedKey(deviceTypeKeyPath);
+                    if (fullDeviceTypeKey?.SubKeys == null) continue;
+
+                    foreach (var instanceKey in fullDeviceTypeKey.SubKeys)
+                    {
+                        var instanceName = instanceKey.KeyName;
+                        if (string.IsNullOrEmpty(instanceName)) continue;
+
+                        var instancePath = $@"{deviceTypeKeyPath}\{instanceName}";
+                        var instanceFullKey = GetCachedKey(instancePath);
+                        if (instanceFullKey?.Values == null) continue;
+
+                        var entry = new PhysicalDiskEntry
+                        {
+                            BusType = busType,
+                            DeviceId = $@"{busType}\{deviceTypeName}\{instanceName}",
+                            EnumPath = instancePath,
+                            RegistryPath = instancePath,
+                        };
+
+                        // Read standard values
+                        string? ReadVal(string name)
+                        {
+                            return instanceFullKey.Values
+                                .FirstOrDefault(v => string.Equals(v.ValueName, name, StringComparison.OrdinalIgnoreCase))
+                                ?.ValueData?.ToString();
+                        }
+
+                        string? CleanResourceString(string? val)
+                        {
+                            if (val == null) return null;
+                            var semi = val.LastIndexOf(';');
+                            return semi >= 0 ? val.Substring(semi + 1) : val;
+                        }
+
+                        entry.FriendlyName = CleanResourceString(ReadVal("FriendlyName")) ?? "";
+                        entry.DeviceDesc = CleanResourceString(ReadVal("DeviceDesc")) ?? "";
+                        entry.Manufacturer = CleanResourceString(ReadVal("Mfg")) ?? "";
+                        entry.Service = ReadVal("Service") ?? "";
+                        entry.LocationInfo = ReadVal("LocationInformation") ?? "";
+                        entry.DeviceClass = ReadVal("Class") ?? "";
+
+                        // FriendlyName fallback to DeviceDesc
+                        if (string.IsNullOrEmpty(entry.FriendlyName) && !string.IsNullOrEmpty(entry.DeviceDesc))
+                            entry.FriendlyName = entry.DeviceDesc;
+
+                        // HardwareID (first entry only)
+                        var hwIdRaw = ReadVal("HardwareID");
+                        if (!string.IsNullOrEmpty(hwIdRaw))
+                        {
+                            var firstId = hwIdRaw.Split(new[] { '\0', ' ' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                            entry.HardwareId = firstId ?? hwIdRaw;
+                        }
+
+                        // CompatibleIDs
+                        entry.CompatibleIds = ReadVal("CompatibleIDs") ?? "";
+
+                        // ConfigFlags -> status
+                        var configFlags = ReadVal("ConfigFlags");
+                        if (!string.IsNullOrEmpty(configFlags))
+                        {
+                            if (int.TryParse(configFlags.Split(' ')[0], out int flags))
+                                entry.DeviceStatus = (flags & 1) == 1 ? "Disabled" : "Enabled";
+                        }
+                        else
+                        {
+                            entry.DeviceStatus = "Enabled";
+                        }
+
+                        // Read DiskId from Device Parameters\Partmgr
+                        var partmgrPath = $@"{instancePath}\Device Parameters\Partmgr";
+                        var partmgrKey = GetCachedKey(partmgrPath);
+                        if (partmgrKey?.Values != null)
+                        {
+                            var diskIdVal = partmgrKey.Values
+                                .FirstOrDefault(v => string.Equals(v.ValueName, "DiskId", StringComparison.OrdinalIgnoreCase))
+                                ?.ValueData?.ToString();
+                            if (!string.IsNullOrEmpty(diskIdVal))
+                            {
+                                entry.DiskId = diskIdVal;
+
+                                // Check if this DiskId has STORAGE\Volume entries
+                                var normalizedId = diskIdVal.Trim();
+                                if (!normalizedId.StartsWith("{"))
+                                    normalizedId = "{" + normalizedId + "}";
+
+                                if (activeDiskIds.Contains(normalizedId))
+                                {
+                                    entry.PoolStatus = "Normal";
+                                    entry.VolumeCount = CountVolumesForDiskId(normalizedId);
+                                }
+                                else
+                                {
+                                    entry.PoolStatus = "Probable Pool Member";
+                                    entry.VolumeCount = 0;
+                                }
+
+                                // Map drive letters
+                                if (diskIdToDriveLetters.TryGetValue(normalizedId, out var letters))
+                                {
+                                    entry.DriveLetters = string.Join(", ", letters);
+                                }
+                            }
+                        }
+
+                        disks.Add(entry);
+                    }
+                }
+            }
+
+            // Sort: pool members first, then by bus type, then by location
+            return disks
+                .OrderByDescending(d => d.PoolStatus == "Probable Pool Member" ? 1 : 0)
+                .ThenBy(d => d.BusType)
+                .ThenBy(d => d.LocationInfo)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Count STORAGE\Volume entries for a given DiskId GUID.
+        /// </summary>
+        private int CountVolumesForDiskId(string diskIdGuid)
+        {
+            var volumeKey = GetCachedKey($@"{_currentControlSet}\Enum\STORAGE\Volume");
+            if (volumeKey?.SubKeys == null) return 0;
+
+            int count = 0;
+            foreach (var subKey in volumeKey.SubKeys)
+            {
+                var name = subKey.KeyName;
+                if (!string.IsNullOrEmpty(name) &&
+                    name.IndexOf(diskIdGuid, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
+        /// Build a mapping from DiskId GUIDs to drive letters using MountedDevices + Partmgr cross-reference.
+        /// </summary>
+        private Dictionary<string, List<string>> BuildDiskIdToDriveLetterMap()
+        {
+            var map = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            var mountedDevices = GetMountedDevices();
+            foreach (var device in mountedDevices)
+            {
+                if (device.MountType != "Drive Letter" || string.IsNullOrEmpty(device.DiskId))
+                    continue;
+
+                var normalizedId = device.DiskId.Trim();
+                if (!normalizedId.StartsWith("{"))
+                    normalizedId = "{" + normalizedId + "}";
+
+                if (!map.TryGetValue(normalizedId, out var letters))
+                {
+                    letters = new List<string>();
+                    map[normalizedId] = letters;
+                }
+                letters.Add(device.MountPoint);
+            }
+
+            return map;
+        }
+
+        /// <summary>
         /// Parse device path string to extract bus type, vendor, product, and serial number.
         /// Handles paths like \??\SCSI#Disk&amp;Ven_Samsung&amp;Prod_SSD#serial#{guid}
         /// and \??\USBSTOR#Disk&amp;Ven_SanDisk&amp;Prod_Ultra&amp;Rev_1.00#SERIAL#{guid}
@@ -5587,7 +5713,7 @@ namespace RegistryExpert
                 return;
 
             // Construct: ControlSet001\Enum\SCSI\CdRom&Ven_Msft&Prod_Virtual_DVD-ROM\5&394b69d0&0&000002
-            var enumPath = $@"ControlSet001\Enum\{segments[0]}\{segments[1]}\{segments[2]}";
+            var enumPath = $@"{_currentControlSet}\Enum\{segments[0]}\{segments[1]}\{segments[2]}";
             EnrichFromEnumPath(entry, enumPath);
         }
 
@@ -5675,7 +5801,7 @@ namespace RegistryExpert
 
             _diskPartitionRegistry = new List<DiskPartitionInfo>();
 
-            var enumKey = GetCachedKey(@"ControlSet001\Enum");
+            var enumKey = GetCachedKey($@"{_currentControlSet}\Enum");
             if (enumKey?.SubKeys == null)
                 return _diskPartitionRegistry;
 
@@ -5712,7 +5838,7 @@ namespace RegistryExpert
                         var cacheVal = partmgr.Values.FirstOrDefault(v =>
                             string.Equals(v.ValueName, "PartitionTableCache", StringComparison.OrdinalIgnoreCase));
 
-                        var enumPath = $@"ControlSet001\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
+                        var enumPath = $@"{_currentControlSet}\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
 
                         _diskPartitionRegistry.Add(new DiskPartitionInfo
                         {
@@ -5773,7 +5899,7 @@ namespace RegistryExpert
 
             _activeStorageVolumeDiskIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            var volumeKey = GetCachedKey(@"ControlSet001\Enum\STORAGE\Volume");
+            var volumeKey = GetCachedKey($@"{_currentControlSet}\Enum\STORAGE\Volume");
             if (volumeKey?.SubKeys == null)
                 return _activeStorageVolumeDiskIds;
 
@@ -5856,7 +5982,7 @@ namespace RegistryExpert
 
             // Step 1: Parse STORAGE\Volume subkeys → (DiskId, Offset) pairs
             // Format: {DiskId}#PartitionByteOffsetHex
-            var volumeKey = GetCachedKey(@"ControlSet001\Enum\STORAGE\Volume");
+            var volumeKey = GetCachedKey($@"{_currentControlSet}\Enum\STORAGE\Volume");
             if (volumeKey?.SubKeys == null)
                 return result;
 
@@ -6008,7 +6134,7 @@ namespace RegistryExpert
         public AnalysisSection GetDotNetFrameworkAnalysis()
         {
             var section = new AnalysisSection { Title = "🔷 .NET Framework" };
-            const string ndpBasePath = @"Microsoft\NET Framework Setup\NDP";
+            string ndpBasePath = @"Microsoft\NET Framework Setup\NDP";
 
             try
             {
@@ -6243,8 +6369,8 @@ namespace RegistryExpert
             var section = new AnalysisSection { Title = "📱 Appx Packages" };
             
             // Get counts for display
-            const string inboxPath = @"Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\InboxApplications";
-            const string applicationsPath = @"Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications";
+            string inboxPath = @"Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\InboxApplications";
+            string applicationsPath = @"Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications";
             
             var inboxKey = _parser.GetKey(inboxPath);
             var applicationsKey = _parser.GetKey(applicationsPath);
@@ -6307,8 +6433,8 @@ namespace RegistryExpert
         {
             var section = new AnalysisSection { Title = "🚀 Startup Programs" };
 
-            const string runPath = @"Microsoft\Windows\CurrentVersion\Run";
-            const string runOncePath = @"Microsoft\Windows\CurrentVersion\RunOnce";
+            string runPath = @"Microsoft\Windows\CurrentVersion\Run";
+            string runOncePath = @"Microsoft\Windows\CurrentVersion\RunOnce";
 
             var entries = new List<(string Name, string Command, string Source, string RegistryPath)>();
 
@@ -6377,9 +6503,9 @@ namespace RegistryExpert
             var section = new AnalysisSection { Title = "📦 Installed Programs" };
 
             // x64 programs path
-            const string x64Path = @"Microsoft\Windows\CurrentVersion\Uninstall";
+            string x64Path = @"Microsoft\Windows\CurrentVersion\Uninstall";
             // x86 (WOW6432Node) programs path
-            const string x86Path = @"WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+            string x86Path = @"WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
 
             var programs = new List<(string Name, string Version, string Publisher, string InstallDate, string Architecture, string RegistryPath)>();
 
@@ -6491,7 +6617,7 @@ namespace RegistryExpert
         /// <returns>True if firewall is enabled for this profile, false otherwise</returns>
         public bool IsFirewallProfileEnabled(string profileName)
         {
-            const string firewallBasePath = @"ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy";
+            string firewallBasePath = $@"{_currentControlSet}\Services\SharedAccess\Parameters\FirewallPolicy";
             var profileKey = _parser.GetKey($@"{firewallBasePath}\{profileName}");
             if (profileKey == null) return false;
             
@@ -6505,7 +6631,7 @@ namespace RegistryExpert
         public List<FirewallRuleInfo> GetFirewallRulesForProfile(string profileName)
         {
             var rules = new List<FirewallRuleInfo>();
-            const string rulesPath = @"ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
+            string rulesPath = $@"{_currentControlSet}\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
             var rulesKey = _parser.GetKey(rulesPath);
             
             if (rulesKey == null) return rules;
@@ -6721,6 +6847,94 @@ namespace RegistryExpert
                 };
             }
             return protocolValue;
+        }
+
+        #endregion
+
+        #region Server Roles & Features
+
+        /// <summary>
+        /// Checks whether the SOFTWARE hive contains Windows Server roles/features data
+        /// </summary>
+        public bool HasServerRolesAndFeatures()
+        {
+            var key = _parser.GetKey(@"Microsoft\ServerManager\ServicingStorage\ServerComponentCache");
+            return key?.SubKeys != null && key.SubKeys.Count > 0;
+        }
+
+        /// <summary>
+        /// Extracts all server roles and features from ServerComponentCache
+        /// </summary>
+        public List<RoleFeatureItem> GetRolesAndFeaturesData()
+        {
+            var results = new List<RoleFeatureItem>();
+            var cacheKey = _parser.GetKey(@"Microsoft\ServerManager\ServicingStorage\ServerComponentCache");
+            if (cacheKey?.SubKeys == null) return results;
+
+            foreach (var subKey in cacheKey.SubKeys)
+            {
+                var item = new RoleFeatureItem
+                {
+                    KeyName = subKey.KeyName,
+                    RegistryPath = $@"Microsoft\ServerManager\ServicingStorage\ServerComponentCache\{subKey.KeyName}"
+                };
+
+                if (subKey.Values != null)
+                {
+                    foreach (var val in subKey.Values)
+                    {
+                        var valName = val.ValueName ?? "";
+                        var valData = val.ValueData?.ToString() ?? "";
+
+                        switch (valName)
+                        {
+                            case "DisplayName":
+                                item.DisplayName = valData;
+                                break;
+                            case "Description":
+                                item.Description = valData;
+                                break;
+                            case "ServerComponentType":
+                                if (int.TryParse(valData, out int compType))
+                                    item.ServerComponentType = compType;
+                                break;
+                            case "InstallState":
+                                if (int.TryParse(valData, out int installState))
+                                    item.InstallState = installState;
+                                break;
+                            case "ParentName":
+                                item.ParentName = valData;
+                                break;
+                            case "NumericId":
+                                if (int.TryParse(valData, out int numId))
+                                    item.NumericId = numId;
+                                break;
+                            case "MajorVersion":
+                                if (int.TryParse(valData, out int major))
+                                    item.MajorVersion = major;
+                                break;
+                            case "MinorVersion":
+                                if (int.TryParse(valData, out int minor))
+                                    item.MinorVersion = minor;
+                                break;
+                            case "SystemServices":
+                                item.SystemServices = valData;
+                                break;
+                            case "NonAncestorDependencies":
+                                item.Dependencies = valData;
+                                break;
+                        }
+                    }
+                }
+
+                // Fall back to key name if no DisplayName
+                if (string.IsNullOrEmpty(item.DisplayName))
+                    item.DisplayName = subKey.KeyName;
+
+                results.Add(item);
+            }
+
+            return results;
         }
 
         #endregion
