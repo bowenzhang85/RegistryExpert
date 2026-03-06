@@ -81,6 +81,7 @@ namespace RegistryExpert
         private Label _progressLabel = null!;
         private ProgressBar _progressBar = null!;
         private ImageList? _valueImageList; // Track for disposal (value type icons)
+        private ImageList? _imageList; // Track for disposal (folder icons)
         
         // Pre-computed diff status for every key path (lightweight — no Win32 controls)
         private Dictionary<string, DiffInfo>? _leftDiffByPath;
@@ -186,6 +187,12 @@ namespace RegistryExpert
         /// <summary>
         /// Handle DPI changes when moving between monitors with different DPI settings.
         /// </summary>
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ModernTheme.ApplyWindowStyle(this);
+        }
+
         protected override void OnDpiChanged(DpiChangedEventArgs e)
         {
             // Reset the cached DPI scale factor so it gets recalculated
@@ -223,6 +230,16 @@ namespace RegistryExpert
             this.MinimumSize = new Size(1000, 700);
             this.StartPosition = FormStartPosition.CenterParent;
             this.BackColor = ModernTheme.Background;
+
+            // Create folder icon ImageList for tree views
+            _imageList = new ImageList
+            {
+                ColorDepth = ColorDepth.Depth32Bit,
+                ImageSize = DpiHelper.ScaleSize(18, 18)
+            };
+            Image? folderIcon = null;
+            try { folderIcon = ModernTheme.GetNativeFolderIcon(); } catch { }
+            _imageList.Images.Add("folder", folderIcon ?? ModernTheme.CreateFolderIcon());
 
             // Main split container
             _mainSplit = new SplitContainer
@@ -746,20 +763,13 @@ namespace RegistryExpert
             treeView = new TreeView
             {
                 Dock = DockStyle.Fill,
-                DrawMode = TreeViewDrawMode.OwnerDrawText,
                 HideSelection = false,
-                ShowLines = true,
-                ShowPlusMinus = true,
-                ShowRootLines = true,
                 Font = ModernTheme.DataFont,
                 AccessibleName = isLeft ? "Left Hive Keys" : "Right Hive Keys"
             };
             ModernTheme.ApplyTo(treeView);
-            treeView.FullRowSelect = false;  // Prevent system selection color mismatch with owner-drawn selection
-            treeView.DrawNode += TreeView_DrawNode;
+            treeView.ImageList = _imageList;
             treeView.BeforeExpand += TreeView_BeforeExpand;
-            // Allow clicking anywhere on the row to select (not just the text)
-            treeView.MouseDown += TreeView_MouseDown;
 
             if (isLeft)
             {
@@ -1186,16 +1196,12 @@ namespace RegistryExpert
             var newTree = new TreeView
             {
                 Dock = DockStyle.Fill,
-                DrawMode = TreeViewDrawMode.OwnerDrawText,
                 HideSelection = false,
-                ShowLines = true,
-                ShowPlusMinus = true,
-                ShowRootLines = true,
                 Font = ModernTheme.DataFont,
                 AccessibleName = isLeft ? "Left Hive Keys" : "Right Hive Keys"
             };
             ModernTheme.ApplyTo(newTree);
-            newTree.DrawNode += TreeView_DrawNode;
+            newTree.ImageList = _imageList;
             newTree.BeforeExpand += TreeView_BeforeExpand;
             
             if (isLeft)
@@ -1327,7 +1333,20 @@ namespace RegistryExpert
                 IsUniqueToThisHive = diffInfo.IsUniqueToThisHive,
                 HasValueDifference = diffInfo.HasValueDifference
             };
-            var node = new TreeNode(key.KeyName) { Tag = nodeTag };
+            var node = new TreeNode(key.KeyName)
+            {
+                Tag = nodeTag,
+                ImageKey = "folder",
+                SelectedImageKey = "folder"
+            };
+
+            // Set ForeColor for diff coloring — ModernTheme's DrawNode respects node.ForeColor
+            if (diffInfo.HasDifference)
+            {
+                node.ForeColor = diffInfo.IsUniqueToThisHive
+                    ? ModernTheme.DiffAdded    // GREEN - unique to this hive
+                    : ModernTheme.DiffRemoved; // RED - value/structural differences
+            }
             
             // Add dummy child if this node has expandable children
             if (HasVisibleChildren(key, path, isLeftTree))
@@ -1443,63 +1462,6 @@ namespace RegistryExpert
             }
 
             return false;
-        }
-
-        private void TreeView_MouseDown(object? sender, MouseEventArgs e)
-        {
-            if (sender is TreeView tv)
-            {
-                var node = tv.GetNodeAt(e.X, e.Y);
-                if (node != null)
-                    tv.SelectedNode = node;
-            }
-        }
-
-        private void TreeView_DrawNode(object? sender, DrawTreeNodeEventArgs e)
-        {
-            if (e.Node == null) return;
-
-            var bounds = e.Bounds;
-            var tag = e.Node.Tag as NodeTag;
-            
-            // Extend bounds to the full width of the TreeView to prevent text clipping
-            if (e.Node.TreeView != null)
-            {
-                bounds = new Rectangle(bounds.X, bounds.Y, e.Node.TreeView.ClientSize.Width - bounds.X, bounds.Height);
-            }
-            
-            // Determine color based on difference type:
-            // GREEN = unique to this hive (doesn't exist in other)
-            // RED = exists in both but has different values
-            // Normal = identical in both hives
-            Color foreColor;
-            if (tag?.HasDifference == true)
-            {
-                if (tag.IsUniqueToThisHive)
-                    foreColor = ModernTheme.DiffAdded;  // GREEN - unique to this hive
-                else if (tag.HasValueDifference)
-                    foreColor = ModernTheme.DiffRemoved;  // RED - value differences
-                else
-                    foreColor = ModernTheme.DiffRemoved;  // Default to RED for any other difference
-            }
-            else
-            {
-                foreColor = ModernTheme.TextPrimary;  // Normal - no difference
-            }
-
-            // Always paint background (required for correct theme switching)
-            var bgColor = (e.State & TreeNodeStates.Selected) != 0
-                ? ModernTheme.SelectionActive
-                : (e.Node.TreeView?.BackColor ?? ModernTheme.Background);
-            using var bgBrush = new SolidBrush(bgColor);
-            e.Graphics.FillRectangle(bgBrush, bounds);
-
-            // White text on blue selection for contrast
-            if ((e.State & TreeNodeStates.Selected) != 0)
-                foreColor = Color.White;
-
-            TextRenderer.DrawText(e.Graphics, e.Node.Text, ModernTheme.DataFont, bounds, foreColor,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
 
         private void LeftTreeView_AfterSelect(object? sender, TreeViewEventArgs e)
@@ -1799,6 +1761,34 @@ namespace RegistryExpert
         private void ApplyTheme()
         {
             this.BackColor = ModernTheme.Background;
+            ModernTheme.ApplyWindowStyle(this);
+
+            // Landing panels (recursive — updates all anonymous child controls)
+            ApplyThemeToLandingPanel(_leftLandingPanel);
+            ApplyThemeToLandingPanel(_rightLandingPanel);
+
+            // Load buttons (may have been restyled after loading a hive)
+            if (_leftLoadButton.BackColor != ModernTheme.Accent)
+            {
+                // "Change File" state — secondary style
+                _leftLoadButton.BackColor = ModernTheme.Surface;
+                _leftLoadButton.ForeColor = ModernTheme.TextPrimary;
+                _leftLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
+            }
+            else
+            {
+                _leftLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.AccentHover;
+            }
+            if (_rightLoadButton.BackColor != ModernTheme.Accent)
+            {
+                _rightLoadButton.BackColor = ModernTheme.Surface;
+                _rightLoadButton.ForeColor = ModernTheme.TextPrimary;
+                _rightLoadButton.FlatAppearance.BorderColor = ModernTheme.Border;
+            }
+            else
+            {
+                _rightLoadButton.FlatAppearance.MouseOverBackColor = ModernTheme.AccentHover;
+            }
 
             // Header panels
             _leftHeaderPanel.BackColor = ModernTheme.Surface;
@@ -1831,6 +1821,10 @@ namespace RegistryExpert
 
             _diffOnlyCheckbox.ForeColor = ModernTheme.TextPrimary;
 
+            // Progress overlay
+            _progressOverlay.BackColor = ModernTheme.Background;
+            _progressLabel.ForeColor = ModernTheme.TextPrimary;
+
             // Status bar
             _statusPanel.BackColor = ModernTheme.Surface;
             _statusForeColor = ModernTheme.TextSecondary;
@@ -1842,6 +1836,38 @@ namespace RegistryExpert
 
             ApplyThemeToGrid(_leftValuesGrid);
             ApplyThemeToGrid(_rightValuesGrid);
+
+            this.Invalidate(true);
+        }
+
+        private static void ApplyThemeToLandingPanel(Panel landingPanel)
+        {
+            landingPanel.BackColor = ModernTheme.Background;
+            foreach (Control c in landingPanel.Controls)
+                ApplyThemeToLandingControl(c);
+        }
+
+        private static void ApplyThemeToLandingControl(Control control)
+        {
+            switch (control)
+            {
+                case Panel panel:
+                    panel.BackColor = ModernTheme.Background;
+                    panel.Invalidate(); // Repaint step circle with new accent color
+                    foreach (Control child in panel.Controls)
+                        ApplyThemeToLandingControl(child);
+                    break;
+                case Label label:
+                    // Preserve Success-colored labels (file name, status after load)
+                    if (label.ForeColor != ModernTheme.Success && label.ForeColor != Color.White)
+                    {
+                        // Secondary labels (descriptions, status) vs primary (titles)
+                        var isBold = label.Font.Bold && label.Font.Size > 12;
+                        label.ForeColor = isBold ? ModernTheme.TextPrimary : ModernTheme.TextSecondary;
+                    }
+                    label.BackColor = ModernTheme.Background;
+                    break;
+            }
         }
 
         private void ApplyThemeToGrid(DataGridView grid)
@@ -1879,6 +1905,7 @@ namespace RegistryExpert
                 }
                 
                 _valueImageList?.Dispose();
+                _imageList?.Dispose();
             }
             base.Dispose(disposing);
         }

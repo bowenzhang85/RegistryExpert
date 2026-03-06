@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows.Forms;
 using RegistryParser.Abstractions;
@@ -221,40 +222,106 @@ namespace RegistryExpert
         /// <summary>
         /// Handle DPI changes when moving between monitors with different DPI settings.
         /// </summary>
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ModernTheme.ApplyWindowStyle(this);
+        }
+
         protected override void OnDpiChanged(DpiChangedEventArgs e)
         {
-            // Reset the cached DPI scale factor so it gets recalculated
-            DpiHelper.ResetScaleFactor();
-            
+            // Set the correct per-monitor DPI
+            DpiHelper.SetDpi(e.DeviceDpiNew);
+
             base.OnDpiChanged(e);
-            
+
+            ApplyDpiScaling();
+        }
+
+        /// <summary>
+        /// Apply manual DPI scaling to controls that WinForms ScaleContainerForDpi doesn't handle.
+        /// Called from OnDpiChanged and from Load event (when WM_DPICHANGED doesn't fire but DPI differs).
+        /// </summary>
+        private void ApplyDpiScaling()
+        {
             // Update controls that need manual DPI adjustment
-            _toolbarPanel.Height = DpiHelper.Scale(52);
-            _statusPanel.Height = DpiHelper.Scale(32);
+            _toolbarPanel.Height = DpiHelper.Scale(46);
+            _statusPanel.Height = DpiHelper.Scale(28);
             _statusPanel.Padding = DpiHelper.ScalePadding(10, 0, 10, 0);
             _statusRightPanel.Width = DpiHelper.Scale(170);
             _progressWrapper.Width = DpiHelper.Scale(100);
             _progressWrapper.Padding = new Padding(0, DpiHelper.Scale(8), 0, DpiHelper.Scale(8));
             _cancelWrapper.Width = DpiHelper.Scale(68);
-            _cancelWrapper.Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4));
+            _cancelWrapper.Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(2), DpiHelper.Scale(4), DpiHelper.Scale(2));
             _hiveTypeLabel.Padding = DpiHelper.ScalePadding(4, 0, 0, 0);
-            
+
             // Refresh the toolbar to recalculate button layouts
             CreateModernToolbar();
+
+            // Recreate ImageList with DPI-scaled icon size
+            var oldImageList = _imageList;
+            _imageList = CreateImageList();
+            _treeView.ImageList = _imageList;
+            oldImageList?.Dispose();
+
+            // Recreate value ImageList for new DPI
+            var oldValueImageList = _valueImageList;
+            _valueImageList = CreateValueImageList();
+            _listView.SmallImageList = _valueImageList;
+            oldValueImageList?.Dispose();
+
+            // Update TreeView indent/item height for new DPI
+            _treeView.Indent = DpiHelper.Scale(24);
+            _treeView.ItemHeight = DpiHelper.Scale(26);
+
+            // Update bookmark panel internals that were created at the wrong DPI
+            var bookmarkContainer = _bookmarkBar?.Parent;
+            if (bookmarkContainer != null)
+            {
+                // Fix the collapse bar width inside the bookmark panel
+                foreach (Control child in _bookmarkPanel.Controls)
+                {
+                    if (child is Panel p && p.Tag?.ToString() == "bookmarkCollapseBar")
+                    {
+                        p.Width = DpiHelper.Scale(24);
+                    }
+                    if (child is FlowLayoutPanel flow && child.Tag?.ToString() == "bookmarkItems")
+                    {
+                        flow.Padding = DpiHelper.ScalePadding(4, 6, 4, 4);
+                    }
+                }
+
+                // Update collapsed bar width
+                if (!bookmarkContainer.Visible || bookmarkContainer.Width <= DpiHelper.Scale(30))
+                {
+                    bookmarkContainer.Width = DpiHelper.Scale(24);
+                }
+            }
+
+            // Recalculate bookmark panel widths if a hive is loaded
+            if (_parser != null)
+            {
+                PopulateBookmarks(_parser.CurrentHiveType.ToString());
+            }
+
+            // Update main splitter distance proportionally
+            if (_mainSplitContainer.Visible && _mainSplitContainer.Width > 0)
+            {
+                _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+            }
         }
 
         private void InitializeComponent()
         {
             this.SuspendLayout();
-            
-            // Enable DPI scaling
-            this.AutoScaleMode = AutoScaleMode.Dpi;
-            this.AutoScaleDimensions = new SizeF(96F, 96F);
-            
+
+            // Disable WinForms auto-scaling — all sizing is handled manually via DpiHelper.Scale()
+            this.AutoScaleMode = AutoScaleMode.None;
+
             // Form settings
             this.Text = "Registry Expert";
-            this.Size = new Size(1280, 800);
-            this.MinimumSize = new Size(900, 600);
+            this.ClientSize = DpiHelper.ScaleSize(1280, 800);
+            this.MinimumSize = DpiHelper.ScaleSize(900, 600);
             this.StartPosition = FormStartPosition.CenterScreen;
             
             // Set application icon
@@ -288,17 +355,17 @@ namespace RegistryExpert
             _toolbarPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = DpiHelper.Scale(52),
+                Height = DpiHelper.Scale(46),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(8, 8, 8, 8)
+                Padding = new Padding(8, 5, 8, 5)
             };
             CreateModernToolbar();
 
-            // Status Panel (bottom)
+            // Status Panel (bottom) — minimal height with top border
             _statusPanel = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = DpiHelper.Scale(32),
+                Height = DpiHelper.Scale(28),
                 BackColor = ModernTheme.Surface,
                 Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
@@ -373,7 +440,7 @@ namespace RegistryExpert
             {
                 Dock = DockStyle.Right,
                 Width = DpiHelper.Scale(68),
-                Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4), DpiHelper.Scale(4)),
+                Padding = new Padding(DpiHelper.Scale(4), DpiHelper.Scale(2), DpiHelper.Scale(4), DpiHelper.Scale(2)),
                 Visible = false,
                 BackColor = Color.Transparent,
             };
@@ -588,11 +655,48 @@ namespace RegistryExpert
             
             this.ResumeLayout(false);
             this.PerformLayout();
-            
+
+            // Enable WinForms DPI auto-scaling AFTER layout.
+            // During construction, AutoScaleMode is None so WinForms doesn't interfere
+            // with DpiHelper.Scale() sizing. After layout, switching to Dpi mode enables
+            // WM_DPICHANGED handling: if the form opens on a monitor with different DPI
+            // than GetDpiForSystem() (multi-monitor setups), WinForms will automatically
+            // rescale all controls by the ratio newDpi/oldDpi.
+            this.AutoScaleMode = AutoScaleMode.Dpi;
+
             // Set splitter distances after layout
             this.Load += async (s, e) => {
-                _mainSplitContainer.SplitterDistance = 280;
-                _rightSplitContainer.SplitterDistance = Math.Max(250, _rightSplitContainer.Height * 2 / 3);
+                // Detect DPI mismatch: GetDpiForSystem() used during construction may differ
+                // from the actual monitor DPI (multi-monitor setups). WinForms scales control
+                // sizes/positions via ScaleContainerForDpi, but doesn't handle custom properties
+                // (TreeView.ItemHeight, ImageList recreation, bookmark internals, etc.).
+                float constructionFactor = DpiHelper.ScaleFactor;
+                float actualFactor = this.DeviceDpi / 96f;
+
+                // Always update DpiHelper to the actual monitor DPI
+                DpiHelper.SetDpi(this.DeviceDpi);
+
+                // If there's a DPI mismatch, apply manual scaling for custom properties
+                if (Math.Abs(actualFactor - constructionFactor) > 0.01f)
+                {
+                    ApplyDpiScaling();
+                }
+                else
+                {
+                    // Even when DPI matches, recreate image lists (they may need refresh)
+                    var oldImageList = _imageList;
+                    _imageList = CreateImageList();
+                    _treeView.ImageList = _imageList;
+                    oldImageList?.Dispose();
+
+                    var oldValueImageList = _valueImageList;
+                    _valueImageList = CreateValueImageList();
+                    _listView.SmallImageList = _valueImageList;
+                    oldValueImageList?.Dispose();
+                }
+
+                _mainSplitContainer.SplitterDistance = DpiHelper.Scale(280);
+                _rightSplitContainer.SplitterDistance = Math.Max(DpiHelper.Scale(250), _rightSplitContainer.Height * 2 / 3);
                 try { await CheckForUpdatesOnStartupAsync(); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Startup update check failed: {ex.Message}"); }
             };
@@ -605,34 +709,33 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 BackColor = ModernTheme.Background
             };
-            
-            // Card-like center panel with subtle border
+
+            // Card-like center panel with soft shadow
             var centerPanel = new Panel
             {
-                Size = DpiHelper.ScaleSize(450, 400),
+                Size = DpiHelper.ScaleSize(500, 440),
                 BackColor = ModernTheme.Surface
             };
             centerPanel.Paint += (s, e) =>
             {
-                // Draw border manually with four lines for proper corner connection
-                var w = centerPanel.Width - 1;
-                var h = centerPanel.Height - 1;
+                var g = e.Graphics;
+                // Draw soft shadow (multiple semi-transparent rectangles)
+                for (int i = 4; i >= 1; i--)
+                {
+                    var shadowColor = Color.FromArgb(8 * i, 0, 0, 0);
+                    using var shadowPen = new Pen(shadowColor, 1);
+                    g.DrawRectangle(shadowPen, -i, -i, centerPanel.Width - 1 + 2 * i, centerPanel.Height - 1 + 2 * i);
+                }
+                // Draw border
                 using var pen = new Pen(ModernTheme.Border, 1);
-                // Top line
-                e.Graphics.DrawLine(pen, 0, 0, w, 0);
-                // Right line
-                e.Graphics.DrawLine(pen, w, 0, w, h);
-                // Bottom line
-                e.Graphics.DrawLine(pen, w, h, 0, h);
-                // Left line
-                e.Graphics.DrawLine(pen, 0, h, 0, 0);
+                g.DrawRectangle(pen, 0, 0, centerPanel.Width - 1, centerPanel.Height - 1);
             };
-            
+
             // Program icon - load from PNG for best quality
             var iconBox = new PictureBox
             {
-                Size = DpiHelper.ScaleSize(72, 72),
-                Location = DpiHelper.ScalePoint((450 - 72) / 2, 30),
+                Size = DpiHelper.ScaleSize(80, 80),
+                Location = DpiHelper.ScalePoint((500 - 80) / 2, 30),
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent
             };
@@ -645,54 +748,55 @@ namespace RegistryExpert
                 }
             }
             catch { }
-            
+
+            using var titleFontInstance = new Font("Segoe UI Semibold", 18F, FontStyle.Regular);
             var titleLabel = new Label
             {
                 Text = "Registry Expert",
-                Font = ModernTheme.TitleFont,
+                Font = new Font("Segoe UI Semibold", 18F, FontStyle.Regular),
                 ForeColor = ModernTheme.TextPrimary,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = DpiHelper.ScaleSize(450, 45),
-                Location = DpiHelper.ScalePoint(0, 115)
+                Size = DpiHelper.ScaleSize(500, 50),
+                Location = DpiHelper.ScalePoint(0, 120)
             };
-            
+
             var subtitleLabel = new Label
             {
                 Text = "Drag and drop a registry hive file here\nor click the button below to browse",
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextSecondary,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = DpiHelper.ScaleSize(450, 50),
-                Location = DpiHelper.ScalePoint(0, 160)
+                Size = DpiHelper.ScaleSize(500, 50),
+                Location = DpiHelper.ScalePoint(0, 175)
             };
-            
+
             var openButton = ModernTheme.CreateButton("  Open Hive File  ", OpenHive_Click);
-            openButton.Size = DpiHelper.ScaleSize(160, 40);
-            openButton.Location = DpiHelper.ScalePoint(145, 225);
-            
+            openButton.Size = DpiHelper.ScaleSize(220, 42);
+            openButton.Location = DpiHelper.ScalePoint(140, 245);
+
             // Compare button
             var compareButton = ModernTheme.CreateButton("  Compare Hives  ", (s, e) => ShowCompare_Click(s, e));
-            compareButton.Size = DpiHelper.ScaleSize(160, 40);
-            compareButton.Location = DpiHelper.ScalePoint(145, 280);
+            compareButton.Size = DpiHelper.ScaleSize(220, 42);
+            compareButton.Location = DpiHelper.ScalePoint(140, 300);
             compareButton.BackColor = ModernTheme.Surface;
             compareButton.ForeColor = ModernTheme.TextPrimary;
             compareButton.FlatAppearance.BorderColor = ModernTheme.Accent;
             compareButton.FlatAppearance.BorderSize = 1;
-            
+
             // Hint text
             var hintLabel = new Label
             {
                 Text = "Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, and more",
                 Font = ModernTheme.SmallFont,
-                ForeColor = ModernTheme.TextDisabled,
+                ForeColor = Color.FromArgb(150, ModernTheme.TextDisabled),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Size = DpiHelper.ScaleSize(450, 25),
-                Location = DpiHelper.ScalePoint(0, 340)
+                Size = DpiHelper.ScaleSize(500, 25),
+                Location = DpiHelper.ScalePoint(0, 370)
             };
-            
+
             centerPanel.Controls.AddRange(new Control[] { iconBox, titleLabel, subtitleLabel, openButton, compareButton, hintLabel });
             panel.Controls.Add(centerPanel);
-            
+
             // Center the panel
             panel.Resize += (s, e) =>
             {
@@ -701,7 +805,7 @@ namespace RegistryExpert
                     (panel.Height - centerPanel.Height) / 2
                 );
             };
-            
+
             return panel;
         }
 
@@ -747,30 +851,29 @@ namespace RegistryExpert
         {
             var panel = new Panel
             {
-                Height = DpiHelper.Scale(40),
+                Height = DpiHelper.Scale(34),
                 Dock = DockStyle.Top,
                 BackColor = ModernTheme.Surface,
                 Padding = new Padding(16, 0, 16, 0)
             };
-            
-            // Custom paint for gradient and icon
+
+            // Custom paint — flat fill with icon and text
             panel.Paint += (s, e) =>
             {
-                // Subtle gradient
-                using var brush = new LinearGradientBrush(panel.ClientRectangle, 
-                    ModernTheme.GradientStart, ModernTheme.GradientEnd, LinearGradientMode.Vertical);
+                // Flat surface fill
+                using var brush = new SolidBrush(ModernTheme.Surface);
                 e.Graphics.FillRectangle(brush, panel.ClientRectangle);
-                
+
                 // Icon
-                var iconFont = _iconFont12;
+                var iconFont = _iconFont10;
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
-                e.Graphics.DrawString(icon, iconFont, iconBrush, DpiHelper.Scale(16), (panel.Height - iconFont.Height) / 2);
-                
-                // Text
-                using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
-                e.Graphics.DrawString(text, ModernTheme.HeaderFont, textBrush, DpiHelper.Scale(40), (panel.Height - ModernTheme.HeaderFont.Height) / 2);
+                e.Graphics.DrawString(icon, iconFont, iconBrush, DpiHelper.Scale(12), (panel.Height - iconFont.Height) / 2);
+
+                // Text — subtler color
+                using var textBrush = new SolidBrush(ModernTheme.TextSecondary);
+                e.Graphics.DrawString(text, ModernTheme.HeaderFont, textBrush, DpiHelper.Scale(34), (panel.Height - ModernTheme.HeaderFont.Height) / 2);
             };
-            
+
             // Bottom border
             var border = new Panel
             {
@@ -778,7 +881,7 @@ namespace RegistryExpert
                 Dock = DockStyle.Bottom,
                 BackColor = ModernTheme.Border
             };
-            
+
             panel.Controls.Add(border);
             return panel;
         }
@@ -983,12 +1086,15 @@ namespace RegistryExpert
 
             // Measure the widest bookmark text to determine adaptive panel width
             int maxTextWidth = 0;
-            foreach (var (name, _) in bookmarks)
+            using (var g = this.CreateGraphics())
             {
-                var text = $"  \u25B8  {name}";
-                var textWidth = TextRenderer.MeasureText(text, ModernTheme.RegularFont).Width;
-                if (textWidth > maxTextWidth)
-                    maxTextWidth = textWidth;
+                foreach (var (name, _) in bookmarks)
+                {
+                    var text = $"  \u25B8  {name}";
+                    var textWidth = TextRenderer.MeasureText(g, text, ModernTheme.RegularFont).Width;
+                    if (textWidth > maxTextWidth)
+                        maxTextWidth = textWidth;
+                }
             }
 
             // Item width = widest text + left/right padding + small extra margin
@@ -1048,7 +1154,7 @@ namespace RegistryExpert
             var imageList = new ImageList
             {
                 ColorDepth = ColorDepth.Depth32Bit,
-                ImageSize = new Size(18, 18)
+                ImageSize = DpiHelper.ScaleSize(18, 18)
             };
             
             // Use native Windows shell folder icon with fallback
@@ -1212,23 +1318,49 @@ namespace RegistryExpert
                 BackColor = Color.Transparent,
                 ForeColor = ModernTheme.TextPrimary,
                 Font = ModernTheme.RegularFont,
-                Size = DpiHelper.ScaleSize(105, 36),
+                Size = DpiHelper.ScaleSize(105, 34),
                 Margin = DpiHelper.ScalePadding(2),
                 Cursor = Cursors.Hand
             };
             btn.FlatAppearance.BorderSize = 0;
-            btn.FlatAppearance.MouseOverBackColor = ModernTheme.SurfaceHover;
-            btn.FlatAppearance.MouseDownBackColor = ModernTheme.AccentDark;
+            btn.FlatAppearance.MouseOverBackColor = Color.Transparent;  // We handle hover in Paint
+            btn.FlatAppearance.MouseDownBackColor = Color.Transparent;
             btn.Click += onClick;
-            
-            // Custom paint for icon image and text
+
+            bool isHovered = false;
+            bool isPressed = false;
+            btn.MouseEnter += (s, e) => { isHovered = true; btn.Invalidate(); };
+            btn.MouseLeave += (s, e) => { isHovered = false; isPressed = false; btn.Invalidate(); };
+            btn.MouseDown += (s, e) => { isPressed = true; btn.Invalidate(); };
+            btn.MouseUp += (s, e) => { isPressed = false; btn.Invalidate(); };
+
+            // Custom paint with pill-shaped hover background
             btn.Paint += (s, e) =>
             {
                 var g = e.Graphics;
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-                
+
+                // Draw pill-shaped hover/press background
+                if (isHovered || isPressed)
+                {
+                    var hoverColor = isPressed ? ModernTheme.AccentDark : ModernTheme.SurfaceHover;
+                    using var hoverBrush = new SolidBrush(hoverColor);
+                    var rect = new Rectangle(1, 1, btn.Width - 2, btn.Height - 2);
+                    var radius = DpiHelper.Scale(6);
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                    int d = radius * 2;
+                    path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+                    path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+                    path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+                    path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+                    path.CloseFigure();
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.FillPath(hoverBrush, path);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+                }
+
                 var iconX = DpiHelper.Scale(10);
-                
+
                 // Draw icon image
                 if (_toolbarIcons.TryGetValue(iconKey, out var iconImage))
                 {
@@ -1236,17 +1368,17 @@ namespace RegistryExpert
                     var iconY = (btn.Height - iconImage.Height) / 2;
                     g.DrawImage(iconImage, iconX, iconY, iconImage.Width, iconImage.Height);
                 }
-                
+
                 // Draw text after icon with proper gap
-                var textX = iconX + DpiHelper.Scale(28) + DpiHelper.Scale(4);  // icon width + 4px gap
-                using var textBrush = new SolidBrush(ModernTheme.TextPrimary);
+                var textX = iconX + DpiHelper.Scale(28) + DpiHelper.Scale(8);
+                using var textBrush = new SolidBrush(isPressed ? Color.White : ModernTheme.TextPrimary);
                 var textY = (btn.Height - ModernTheme.RegularFont.Height) / 2;
                 g.DrawString(text, ModernTheme.RegularFont, textBrush, textX, textY);
             };
-            
+
             _sharedToolTip ??= new ToolTip();
             _sharedToolTip.SetToolTip(btn, tooltip);
-            
+
             return btn;
         }
 
@@ -1255,8 +1387,8 @@ namespace RegistryExpert
             return new Panel
             {
                 Width = DpiHelper.Scale(1),
-                Height = DpiHelper.Scale(28),
-                Margin = DpiHelper.ScalePadding(8, 4, 8, 4),
+                Height = DpiHelper.Scale(16),
+                Margin = DpiHelper.ScalePadding(6, 9, 6, 9),
                 BackColor = ModernTheme.Border
             };
         }
@@ -7079,52 +7211,62 @@ namespace RegistryExpert
 
         private void SwitchTheme(ThemeType theme)
         {
-            ModernTheme.SetTheme(theme);
-            ApplyThemeToAll();
-            
-            // Recreate drop panel with new theme colors
-            RefreshDropPanel();
-            
-            // Refresh analyze window theme without reloading data
-            if (_analyzeForm != null && !_analyzeForm.IsDisposed)
+            // Suppress all painting until every control is updated, then redraw once
+            ModernTheme.SuspendDrawing(this);
+            try
             {
-                RefreshAnalyzeFormTheme(_analyzeForm);
-            }
-            
-            // Refresh search window theme without reloading data
-            if (_searchForm != null && !_searchForm.IsDisposed)
-            {
-                _searchForm.RefreshTheme();
-            }
-            
-            // Refresh statistics window theme
-            if (_statisticsForm != null && !_statisticsForm.IsDisposed)
-            {
-                RefreshStatisticsFormTheme(_statisticsForm);
-            }
-            
-            // Refresh timeline window theme
-            if (_timelineForm != null && !_timelineForm.IsDisposed && _timelineForm is TimelineForm tf)
-            {
-                tf.RefreshTheme();
-            }
-            
-            // Update menu checkmarks
-            foreach (ToolStripMenuItem item in _menuStrip.Items)
-            {
-                if (item.Text == "&View")
+                ModernTheme.SetTheme(theme);
+                ModernTheme.ApplyWindowStyle(this);
+                ApplyThemeToAll();
+
+                // Recreate drop panel with new theme colors
+                RefreshDropPanel();
+
+                // Refresh analyze window theme without reloading data
+                if (_analyzeForm != null && !_analyzeForm.IsDisposed)
                 {
-                    foreach (var dropItem in item.DropDownItems)
+                    RefreshAnalyzeFormTheme(_analyzeForm);
+                }
+
+                // Refresh search window theme without reloading data
+                if (_searchForm != null && !_searchForm.IsDisposed)
+                {
+                    _searchForm.RefreshTheme();
+                }
+
+                // Refresh statistics window theme
+                if (_statisticsForm != null && !_statisticsForm.IsDisposed)
+                {
+                    RefreshStatisticsFormTheme(_statisticsForm);
+                }
+
+                // Refresh timeline window theme
+                if (_timelineForm != null && !_timelineForm.IsDisposed && _timelineForm is TimelineForm tf)
+                {
+                    tf.RefreshTheme();
+                }
+
+                // Update menu checkmarks
+                foreach (ToolStripMenuItem item in _menuStrip.Items)
+                {
+                    if (item.Text == "&View")
                     {
-                        if (dropItem is ToolStripMenuItem menuItem)
+                        foreach (var dropItem in item.DropDownItems)
                         {
-                            if (menuItem.Text == "&Dark Theme")
-                                menuItem.Checked = theme == ThemeType.Dark;
-                            else if (menuItem.Text == "&Light Theme")
-                                menuItem.Checked = theme == ThemeType.Light;
+                            if (dropItem is ToolStripMenuItem menuItem)
+                            {
+                                if (menuItem.Text == "&Dark Theme")
+                                    menuItem.Checked = theme == ThemeType.Dark;
+                                else if (menuItem.Text == "&Light Theme")
+                                    menuItem.Checked = theme == ThemeType.Light;
+                            }
                         }
                     }
                 }
+            }
+            finally
+            {
+                ModernTheme.ResumeDrawing(this);
             }
         }
 
@@ -7394,7 +7536,79 @@ namespace RegistryExpert
                 ApplyThemeToDataGridView(themeData.RolesDetailsGrid);
             }
 
+            // Update Disk Partition (Mounted Devices) split pane
+            if (themeData.DiskPartitionSplit != null)
+            {
+                themeData.DiskPartitionSplit.BackColor = ModernTheme.Border;
+                themeData.DiskPartitionSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.DiskPartitionSplit.Panel2.BackColor = ModernTheme.Background;
+                UpdateSplitPaneHeaders(themeData.DiskPartitionSplit);
+            }
+            if (themeData.DiskPartitionList != null) ApplyThemeToDataGridView(themeData.DiskPartitionList);
+            if (themeData.DiskPartitionDetails != null) ApplyThemeToDataGridView(themeData.DiskPartitionDetails);
+            if (themeData.DiskPartitionDetailsLabel != null)
+            {
+                themeData.DiskPartitionDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+                themeData.DiskPartitionDetailsLabel.BackColor = ModernTheme.Surface;
+            }
+
+            // Update Physical Disks split pane
+            if (themeData.PhysicalDisksSplit != null)
+            {
+                themeData.PhysicalDisksSplit.BackColor = ModernTheme.Border;
+                themeData.PhysicalDisksSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.PhysicalDisksSplit.Panel2.BackColor = ModernTheme.Background;
+                UpdateSplitPaneHeaders(themeData.PhysicalDisksSplit);
+            }
+            if (themeData.PhysicalDisksList != null) ApplyThemeToDataGridView(themeData.PhysicalDisksList);
+            if (themeData.PhysicalDisksDetails != null) ApplyThemeToDataGridView(themeData.PhysicalDisksDetails);
+            if (themeData.PhysicalDisksDetailsLabel != null)
+            {
+                themeData.PhysicalDisksDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+                themeData.PhysicalDisksDetailsLabel.BackColor = ModernTheme.Surface;
+            }
+
+            // Update any untracked filter buttons in AppxFilterPanel (Profile filters, Guest Agent sub-buttons)
+            if (themeData.AppxFilterPanel != null)
+            {
+                foreach (Control c in themeData.AppxFilterPanel.Controls)
+                {
+                    if (c is Button btn && !themeData.AppxFilterButtons.Contains(btn)
+                        && !themeData.StorageFilterButtons.Contains(btn))
+                    {
+                        bool isActive = btn.ForeColor == Color.White;
+                        if (!isActive)
+                        {
+                            btn.BackColor = ModernTheme.Surface;
+                            btn.ForeColor = ModernTheme.TextPrimary;
+                        }
+                        btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                        btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+                    }
+                }
+            }
+
             form.Invalidate(true);
+        }
+
+        private void UpdateSplitPaneHeaders(SplitContainer split)
+        {
+            // Update header panels (Panel controls docked Top) in both panes
+            foreach (var panel in new[] { split.Panel1, split.Panel2 })
+            {
+                foreach (Control c in panel.Controls)
+                {
+                    if (c is Panel headerPanel && headerPanel.Dock == DockStyle.Top)
+                    {
+                        headerPanel.BackColor = ModernTheme.Surface;
+                        foreach (Control child in headerPanel.Controls)
+                        {
+                            if (child is Label lbl)
+                                lbl.ForeColor = ModernTheme.TextSecondary;
+                        }
+                    }
+                }
+            }
         }
 
         private void RefreshStatisticsFormTheme(Form form)

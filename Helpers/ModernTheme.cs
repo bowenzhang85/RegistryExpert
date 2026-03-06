@@ -29,69 +29,118 @@ namespace RegistryExpert
 
         // Track themed ListViews to prevent duplicate event handler registration
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ListView, object> _themedListViews = new();
-        
+
         // Track themed TabControls to prevent duplicate event handler registration
         private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TabControl, object> _themedTabControls = new();
-        
+
         // Lock object for thread-safe theme changes
         private static readonly object _themeLock = new object();
+
+        // DWM API for Windows 11 dark title bar and rounded corners
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+        private const int DWMWCP_ROUND = 2;
+        private const int WM_SETREDRAW = 0x000B;
+
+        /// <summary>
+        /// Suspend all painting on a control (for batch updates).
+        /// Must be followed by ResumeDrawing.
+        /// </summary>
+        public static void SuspendDrawing(Control control)
+        {
+            if (control.IsHandleCreated)
+                SendMessage(control.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+        }
+
+        /// <summary>
+        /// Resume painting on a control and trigger a full redraw.
+        /// </summary>
+        public static void ResumeDrawing(Control control)
+        {
+            if (control.IsHandleCreated)
+            {
+                SendMessage(control.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                control.Refresh();
+            }
+        }
+
+        /// <summary>
+        /// Apply Windows 11 dark title bar and rounded corners to a form.
+        /// Must be called after the form handle is created.
+        /// </summary>
+        public static void ApplyWindowStyle(Form form)
+        {
+            if (Environment.OSVersion.Version.Build >= 22000)
+            {
+                int darkMode = _currentTheme == ThemeType.Dark ? 1 : 0;
+                DwmSetWindowAttribute(form.Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref darkMode, sizeof(int));
+                int cornerPref = DWMWCP_ROUND;
+                DwmSetWindowAttribute(form.Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPref, sizeof(int));
+            }
+        }
 
         // Color Palette - Dynamic based on theme (Modern VS Code / Fluent inspired)
         // When Windows High Contrast mode is active, all colors defer to SystemColors
         // for full accessibility compliance.
         public static Color Background => SystemInformation.HighContrast
             ? SystemColors.Window
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(24, 24, 28)      // Darker, richer background
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(30, 30, 34)      // Slightly brighter base
                 : Color.FromArgb(249, 249, 251);
-        
+
         public static Color Surface => SystemInformation.HighContrast
             ? SystemColors.Window
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(32, 32, 36)      // Subtle elevation
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(39, 39, 44)      // Better contrast with background
                 : Color.FromArgb(255, 255, 255);
-        
+
         public static Color SurfaceLight => SystemInformation.HighContrast
             ? SystemColors.Control
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(44, 44, 50)      // Hover states
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(50, 50, 56)      // Better hover visibility
                 : Color.FromArgb(245, 245, 248);
-        
+
         public static Color SurfaceHover => SystemInformation.HighContrast
             ? SystemColors.ControlLight
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(55, 55, 62)      // Card hover
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(60, 60, 68)      // More visible hover
                 : Color.FromArgb(235, 235, 240);
-        
+
         public static Color Border => SystemInformation.HighContrast
             ? SystemColors.ControlDark
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(58, 58, 65)      // Subtle borders
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(55, 55, 62)      // Subtle borders
                 : Color.FromArgb(225, 225, 230);
         
         
         public static Color TextPrimary => SystemInformation.HighContrast
             ? SystemColors.WindowText
-            : _currentTheme == ThemeType.Dark 
+            : _currentTheme == ThemeType.Dark
                 ? Color.FromArgb(230, 230, 235)   // Softer white
                 : Color.FromArgb(28, 28, 35);
-        
+
         public static Color TextSecondary => SystemInformation.HighContrast
             ? SystemColors.GrayText
-            : _currentTheme == ThemeType.Dark 
+            : _currentTheme == ThemeType.Dark
                 ? Color.FromArgb(160, 160, 170)   // Muted text
                 : Color.FromArgb(90, 90, 100);
-        
+
         public static Color TextDisabled => SystemInformation.HighContrast
             ? SystemColors.GrayText
-            : _currentTheme == ThemeType.Dark 
+            : _currentTheme == ThemeType.Dark
                 ? Color.FromArgb(70, 70, 80)
                 : Color.FromArgb(170, 170, 180);
-        
-        // Modern accent colors (teal/cyan inspired)
+
+        // Modern accent colors
         public static Color Accent => SystemInformation.HighContrast
             ? SystemColors.Highlight
-            : Color.FromArgb(45, 156, 219);       // Modern blue
+            : Color.FromArgb(56, 161, 223);       // Slightly brighter blue
         public static Color AccentHover => SystemInformation.HighContrast
             ? SystemColors.HotTrack
             : Color.FromArgb(60, 175, 235);       // Lighter hover
@@ -140,43 +189,43 @@ namespace RegistryExpert
         public static Color TreeViewBack => SystemInformation.HighContrast
             ? SystemColors.Window
             : _currentTheme == ThemeType.Dark
-                ? Color.FromArgb(28, 28, 32)      // Slightly different from background
+                ? Color.FromArgb(30, 30, 34)      // Match Background
                 : Color.FromArgb(252, 252, 254);
-        
+
         public static Color ListViewBack => SystemInformation.HighContrast
             ? SystemColors.Window
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(28, 28, 32)
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(30, 30, 34)      // Match Background
                 : Color.FromArgb(252, 252, 254);
-        
+
         public static Color ListViewAltRow => SystemInformation.HighContrast
             ? SystemColors.Window
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(34, 34, 40)      // Subtle striping
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(36, 36, 42)      // Subtle striping
                 : Color.FromArgb(247, 247, 250);
-        
+
         public static Color Selection => SystemInformation.HighContrast
             ? SystemColors.Highlight
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(45, 50, 60)      // Subtle selection
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(45, 55, 70)      // Slightly more visible
                 : Color.FromArgb(230, 242, 255);
         
         public static Color SelectionActive => SystemInformation.HighContrast
             ? SystemColors.Highlight
             : Color.FromArgb(45, 156, 219);
         
-        // Gradient colors for headers
+        // Flat surface colors for headers (no gradient — modern flat style)
         public static Color GradientStart => SystemInformation.HighContrast
             ? SystemColors.Control
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(35, 35, 42)
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(39, 39, 44)      // Match Surface (flat)
                 : Color.FromArgb(250, 250, 252);
-        
+
         public static Color GradientEnd => SystemInformation.HighContrast
             ? SystemColors.Control
-            : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(28, 28, 32)
-                : Color.FromArgb(245, 245, 248);
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(39, 39, 44)      // Match Surface (flat)
+                : Color.FromArgb(250, 250, 252);
 
         // Fonts (Modern, consistent sizing)
         public static readonly Font RegularFont = new Font("Segoe UI", 9F, FontStyle.Regular);
@@ -221,10 +270,14 @@ namespace RegistryExpert
             form.BackColor = Background;
             form.ForeColor = TextPrimary;
             form.Font = RegularFont;
+            if (form.IsHandleCreated)
+                ApplyWindowStyle(form);
+            else
+                form.HandleCreated += (s, e) => ApplyWindowStyle(form);
         }
 
         /// <summary>
-        /// Apply modern theme to a TreeView
+        /// Apply modern theme to a TreeView with owner-drawn rounded selection
         /// </summary>
         public static void ApplyTo(TreeView tree)
         {
@@ -233,11 +286,165 @@ namespace RegistryExpert
             tree.Font = TreeFont;
             tree.BorderStyle = BorderStyle.None;
             tree.LineColor = Border;
-            tree.Indent = 24;  // Don't scale - let AutoScaleMode handle it
-            tree.ItemHeight = 26;  // Don't scale - allows +/- button hit-detection to work properly
+            tree.Indent = DpiHelper.Scale(24);
+            tree.ItemHeight = DpiHelper.Scale(26);
             tree.ShowLines = false;  // Cleaner modern look
-            tree.ShowPlusMinus = true;  // Ensure expand/collapse buttons work on single click
+            tree.ShowPlusMinus = false;  // We draw our own chevrons; disable native to prevent double-toggle
             tree.FullRowSelect = true;
+            tree.DrawMode = TreeViewDrawMode.OwnerDrawAll;
+            tree.DrawNode -= TreeView_DrawNode;
+            tree.DrawNode += TreeView_DrawNode;
+            tree.NodeMouseClick -= TreeView_NodeMouseClick;
+            tree.NodeMouseClick += TreeView_NodeMouseClick;
+
+            // Enable native double-buffering to eliminate flicker during expand/collapse
+            const int TVM_SETEXTENDEDSTYLE = 0x112C;
+            const int TVS_EX_DOUBLEBUFFER = 0x0004;
+            if (tree.IsHandleCreated)
+            {
+                SendMessage(tree.Handle, TVM_SETEXTENDEDSTYLE, (IntPtr)TVS_EX_DOUBLEBUFFER, (IntPtr)TVS_EX_DOUBLEBUFFER);
+            }
+            else
+            {
+                tree.HandleCreated += (s, e) =>
+                {
+                    SendMessage(tree.Handle, TVM_SETEXTENDEDSTYLE, (IntPtr)TVS_EX_DOUBLEBUFFER, (IntPtr)TVS_EX_DOUBLEBUFFER);
+                };
+            }
+        }
+
+        private static void TreeView_NodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            if (e.Node == null || e.Node.Nodes.Count == 0) return;
+
+            var tree = sender as TreeView;
+            if (tree == null) return;
+
+            // Calculate the chevron hit zone (matches the drawing layout in TreeView_DrawNode)
+            int indent = DpiHelper.Scale(4) + e.Node.Level * tree.Indent;
+            int chevronSize = DpiHelper.Scale(16);
+            int chevronEnd = indent + chevronSize;
+
+            if (e.X >= indent && e.X <= chevronEnd)
+            {
+                if (e.Node.IsExpanded)
+                    e.Node.Collapse();
+                else
+                    e.Node.Expand();
+            }
+        }
+
+        private static void TreeView_DrawNode(object? sender, DrawTreeNodeEventArgs e)
+        {
+            if (e.Node == null) return;
+            var tree = sender as TreeView;
+            if (tree == null) return;
+
+            // Skip nodes with no visible area (collapsed parents, off-screen)
+            int rowY = e.Bounds.Y;
+            int rowH = tree.ItemHeight;
+            if (rowH <= 0) return;
+
+            var isSelected = (e.State & TreeNodeStates.Selected) != 0;
+            var isExpanded = e.Node.IsExpanded;
+            var hasChildren = e.Node.Nodes.Count > 0;
+
+            int rowRight = tree.ClientSize.Width;
+            var rowBounds = new Rectangle(0, rowY, rowRight, rowH);
+
+            // 1. Draw row background
+            using var bgBrush = new SolidBrush(TreeViewBack);
+            e.Graphics.FillRectangle(bgBrush, rowBounds);
+
+            // 2. Calculate horizontal layout
+            int indent = DpiHelper.Scale(4) + e.Node.Level * tree.Indent;
+            int chevronSize = DpiHelper.Scale(16);
+            bool hasIcons = tree.ImageList != null;
+            int iconW = hasIcons ? tree.ImageList!.ImageSize.Width : 0;
+            int iconH = hasIcons ? tree.ImageList!.ImageSize.Height : 0;
+            int gap = DpiHelper.Scale(4);
+
+            int chevronX = indent;
+            int iconX = indent + chevronSize + gap;
+            int textX = hasIcons ? iconX + iconW + gap : iconX;
+
+            // 3. Draw selection highlight (behind everything else)
+            if (isSelected)
+            {
+                // Accent left bar (VS Code style)
+                var barH = DpiHelper.Scale(16);
+                var barY2 = rowY + (rowH - barH) / 2;
+                using var accentBrush = new SolidBrush(Accent);
+                e.Graphics.FillRectangle(accentBrush, 0, barY2, DpiHelper.Scale(3), barH);
+
+                // Rounded selection background
+                var selBounds = new Rectangle(
+                    DpiHelper.Scale(4), rowY + 1,
+                    rowRight - DpiHelper.Scale(8), rowH - 2);
+                var selColor = tree.Focused ? SelectionActive : Color.FromArgb(80, Accent.R, Accent.G, Accent.B);
+                using var selBrush = new SolidBrush(selColor);
+                var radius = DpiHelper.Scale(4);
+                using var path = CreateRoundedRectPath(selBounds, radius);
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                e.Graphics.FillPath(selBrush, path);
+                e.Graphics.SmoothingMode = SmoothingMode.Default;
+            }
+
+            // 4. Draw expand/collapse chevron
+            if (hasChildren)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                int cx = chevronX + chevronSize / 2;
+                int cy = rowY + rowH / 2;
+                int a = DpiHelper.Scale(4);
+                using var chevronPen = new Pen(isSelected && tree.Focused ? Color.White : TextSecondary, 1.5f * DpiHelper.ScaleFactor);
+                if (isExpanded)
+                {
+                    // Down chevron
+                    e.Graphics.DrawLines(chevronPen, new Point[] {
+                        new(cx - a, cy - a / 2),
+                        new(cx, cy + a / 2),
+                        new(cx + a, cy - a / 2)
+                    });
+                }
+                else
+                {
+                    // Right chevron
+                    e.Graphics.DrawLines(chevronPen, new Point[] {
+                        new(cx - a / 2, cy - a),
+                        new(cx + a / 2, cy),
+                        new(cx - a / 2, cy + a)
+                    });
+                }
+                e.Graphics.SmoothingMode = SmoothingMode.Default;
+            }
+
+            // 5. Draw folder/node icon
+            if (tree.ImageList != null)
+            {
+                var imgKey = isSelected && !string.IsNullOrEmpty(e.Node.SelectedImageKey)
+                    ? e.Node.SelectedImageKey : e.Node.ImageKey;
+                int imgIdx = !string.IsNullOrEmpty(imgKey)
+                    ? tree.ImageList.Images.IndexOfKey(imgKey)
+                    : (isSelected && e.Node.SelectedImageIndex >= 0
+                        ? e.Node.SelectedImageIndex : e.Node.ImageIndex);
+                if (imgIdx >= 0 && imgIdx < tree.ImageList.Images.Count)
+                {
+                    var img = tree.ImageList.Images[imgIdx];
+                    int iy = rowY + (rowH - iconH) / 2;
+                    e.Graphics.DrawImage(img, iconX, iy, iconW, iconH);
+                }
+            }
+
+            // 6. Draw text (respect node.ForeColor if explicitly set, e.g. diff coloring in CompareForm)
+            var textColor = isSelected && tree.Focused
+                ? Color.White
+                : (e.Node.ForeColor != Color.Empty ? e.Node.ForeColor : TextPrimary);
+            var font = e.Node.NodeFont ?? tree.Font;
+            var textBounds = new Rectangle(textX, rowY, rowRight - textX - DpiHelper.Scale(4), rowH);
+            TextRenderer.DrawText(e.Graphics, e.Node.Text, font, textBounds, textColor,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         }
 
         /// <summary>
@@ -281,18 +488,16 @@ namespace RegistryExpert
 
         private static void ListView_DrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs e)
         {
-            // Modern gradient header
-            using var brush = new LinearGradientBrush(e.Bounds, GradientStart, GradientEnd, LinearGradientMode.Vertical);
+            // Modern flat header
+            using var brush = new SolidBrush(Surface);
             e.Graphics.FillRectangle(brush, e.Bounds);
-            
-            using var borderPen = new Pen(Border);
-            // Bottom border
+
+            // Subtle bottom border only
+            using var borderPen = new Pen(Color.FromArgb(40, Border.R, Border.G, Border.B));
             e.Graphics.DrawLine(borderPen, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-            // Right border for column separator
-            e.Graphics.DrawLine(borderPen, e.Bounds.Right - 1, e.Bounds.Top + 4, e.Bounds.Right - 1, e.Bounds.Bottom - 4);
-            
+
             using var textBrush = new SolidBrush(TextSecondary);
-            var textRect = new Rectangle(e.Bounds.X + 12, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
+            var textRect = new Rectangle(e.Bounds.X + DpiHelper.Scale(14), e.Bounds.Y, e.Bounds.Width - DpiHelper.Scale(14), e.Bounds.Height);
             using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
             e.Graphics.DrawString(e.Header?.Text ?? "", DataBoldFont, textBrush, textRect, sf);
         }
@@ -305,30 +510,48 @@ namespace RegistryExpert
         private static void ListView_DrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
         {
             if (e.Item == null) return;
-            
+
             Color backColor = e.ItemIndex % 2 == 0 ? ListViewBack : ListViewAltRow;
+
             if (e.Item.Selected)
             {
-                backColor = e.Item.ListView?.Focused == true ? SelectionActive : Selection;
+                // Draw non-selected row background first (for rounded corners to show through)
+                using var bgBrush = new SolidBrush(e.ItemIndex % 2 == 0 ? ListViewBack : ListViewAltRow);
+                e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+                // Draw rounded selection highlight on first subitem only (covers full row)
+                if (e.ColumnIndex == 0)
+                {
+                    var selColor = e.Item.ListView?.Focused == true
+                        ? SelectionActive
+                        : Color.FromArgb(80, Accent.R, Accent.G, Accent.B);
+                    var fullRowBounds = new Rectangle(
+                        e.Item.Bounds.X + 2, e.Item.Bounds.Y + 1,
+                        e.Item.ListView!.ClientSize.Width - 4, e.Item.Bounds.Height - 2);
+                    using var selBrush = new SolidBrush(selColor);
+                    var radius = DpiHelper.Scale(4);
+                    using var path = CreateRoundedRectPath(fullRowBounds, radius);
+                    e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                    e.Graphics.FillPath(selBrush, path);
+                    e.Graphics.SmoothingMode = SmoothingMode.Default;
+                }
             }
-            
-            using var brush = new SolidBrush(backColor);
-            e.Graphics.FillRectangle(brush, e.Bounds);
-            
-            // Column separator (right border)
-            using var borderPen = new Pen(Color.FromArgb(60, Border));
-            e.Graphics.DrawLine(borderPen, e.Bounds.Right - 1, e.Bounds.Top + 2, e.Bounds.Right - 1, e.Bounds.Bottom - 2);
-            
+            else
+            {
+                using var brush = new SolidBrush(backColor);
+                e.Graphics.FillRectangle(brush, e.Bounds);
+            }
+
             Color textColor = e.Item.Selected && e.Item.ListView?.Focused == true ? Color.White : TextPrimary;
             using var textBrush = new SolidBrush(textColor);
-            
-            var textX = e.Bounds.X + 12;
-            
+
+            var textX = e.Bounds.X + DpiHelper.Scale(12);
+
             // Draw icon for the first column if SmallImageList is available
             if (e.ColumnIndex == 0 && e.Item.ListView?.SmallImageList is ImageList list)
             {
-                var imgIndex = !string.IsNullOrEmpty(e.Item.ImageKey) 
-                    ? list.Images.IndexOfKey(e.Item.ImageKey) 
+                var imgIndex = !string.IsNullOrEmpty(e.Item.ImageKey)
+                    ? list.Images.IndexOfKey(e.Item.ImageKey)
                     : e.Item.ImageIndex;
                 if (imgIndex >= 0 && imgIndex < list.Images.Count)
                 {
@@ -338,10 +561,25 @@ namespace RegistryExpert
                     textX = e.Bounds.X + 4 + img.Width + 4;
                 }
             }
-            
+
             var textRect = new Rectangle(textX, e.Bounds.Y, e.Bounds.Width - (textX - e.Bounds.X), e.Bounds.Height);
             using var sf = new StringFormat { LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
             e.Graphics.DrawString(e.SubItem?.Text ?? "", DataFont, textBrush, textRect, sf);
+        }
+
+        /// <summary>
+        /// Creates a rounded rectangle GraphicsPath.
+        /// </summary>
+        private static GraphicsPath CreateRoundedRectPath(Rectangle bounds, int radius)
+        {
+            var path = new GraphicsPath();
+            int diameter = radius * 2;
+            path.AddArc(bounds.X, bounds.Y, diameter, diameter, 180, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Y, diameter, diameter, 270, 90);
+            path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         /// <summary>

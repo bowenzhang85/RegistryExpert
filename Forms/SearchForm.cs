@@ -55,6 +55,12 @@ namespace RegistryExpert
         /// <summary>
         /// Handle DPI changes when moving between monitors with different DPI settings.
         /// </summary>
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ModernTheme.ApplyWindowStyle(this);
+        }
+
         protected override void OnDpiChanged(DpiChangedEventArgs e)
         {
             // Reset the cached DPI scale factor so it gets recalculated
@@ -769,6 +775,7 @@ namespace RegistryExpert
         public void RefreshTheme()
         {
             // Apply theme to form
+            ModernTheme.ApplyWindowStyle(this);
             this.BackColor = ModernTheme.Background;
             this.ForeColor = ModernTheme.TextPrimary;
             
