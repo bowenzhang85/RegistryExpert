@@ -48,6 +48,12 @@ namespace RegistryExpert
             this.Icon = mainForm.Icon;
         }
 
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            ModernTheme.ApplyWindowStyle(this);
+        }
+
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -837,6 +843,7 @@ namespace RegistryExpert
         /// </summary>
         public void RefreshTheme()
         {
+            ModernTheme.ApplyWindowStyle(this);
             this.BackColor = ModernTheme.Background;
             
             // Refresh grid

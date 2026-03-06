@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace RegistryExpert
@@ -12,6 +13,9 @@ namespace RegistryExpert
     {
         private static float? _scaleFactor;
         private static readonly object _lock = new object();
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForSystem();
 
         /// <summary>
         /// Gets the DPI scale factor (1.0 = 100%, 1.25 = 125%, 1.5 = 150%, 2.0 = 200%)
@@ -26,12 +30,27 @@ namespace RegistryExpert
                     {
                         if (_scaleFactor == null)
                         {
-                            using var g = Graphics.FromHwnd(IntPtr.Zero);
-                            _scaleFactor = g.DpiX / 96f;
+                            // Use GetDpiForSystem() which is PerMonitorV2-aware and returns
+                            // the actual system DPI (e.g. 192 at 200% scaling).
+                            // Graphics.FromHwnd(IntPtr.Zero) returns 96 in PerMonitorV2 mode.
+                            _scaleFactor = GetDpiForSystem() / 96f;
                         }
                     }
                 }
                 return _scaleFactor.Value;
+            }
+        }
+
+        /// <summary>
+        /// Sets the DPI scale factor from a control's DeviceDpi.
+        /// Call this early in the form's constructor and in OnDpiChanged.
+        /// This is more reliable than Graphics.FromHwnd for PerMonitorV2 apps.
+        /// </summary>
+        public static void SetDpi(int deviceDpi)
+        {
+            lock (_lock)
+            {
+                _scaleFactor = deviceDpi / 96f;
             }
         }
 
@@ -69,7 +88,7 @@ namespace RegistryExpert
         /// <summary>
         /// Creates a DPI-scaled Padding from the given values (at 96 DPI / 100%)
         /// </summary>
-        public static Padding ScalePadding(int left, int top, int right, int bottom) 
+        public static Padding ScalePadding(int left, int top, int right, int bottom)
             => new Padding(Scale(left), Scale(top), Scale(right), Scale(bottom));
 
     }
