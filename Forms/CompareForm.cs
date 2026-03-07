@@ -98,6 +98,12 @@ namespace RegistryExpert
         private Panel _cancelWrapper = null!;
         private CancellationTokenSource? _loadCts;
 
+        /// <summary>
+        /// Available loaded hive file paths from main form, for "Use Loaded Hive" buttons.
+        /// Set before the form is shown. Thread-safe: only read from the CompareForm's STA thread.
+        /// </summary>
+        public IReadOnlyList<(string FilePath, string HiveTypeName)> AvailableHives { get; set; } = Array.Empty<(string, string)>();
+
         public CompareForm()
         {
             InitializeComponent();
@@ -617,13 +623,56 @@ namespace RegistryExpert
             };
             loadButton.FlatAppearance.BorderSize = 0;
             loadButton.FlatAppearance.MouseOverBackColor = ModernTheme.AccentHover;
-            loadButton.Click += (s, e) => LoadHive(isLeft);
+
+            // Local alias — out parameters can't be captured in lambdas
+            var loadBtn = loadButton;
+
+            // Default click handler — opens file dialog
+            EventHandler loadButtonBrowseHandler = (s, e) => LoadHive(isLeft);
+            loadButton.Click += loadButtonBrowseHandler;
 
             // Button container for centering
             var buttonPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = DpiHelper.Scale(70)
+                Height = DpiHelper.Scale(110)
+            };
+
+            // Adjust button behavior based on available hives (set in Shown event)
+            ContextMenuStrip? loadBtnMenu = null;
+            this.Shown += (s, e) =>
+            {
+                if (AvailableHives.Count > 1 && isLeft)
+                {
+                    // Left side only: convert load button to dropdown with loaded hive options + Browse
+                    loadBtn.Text = "Load Hive File \u25BE";
+                    loadBtn.Click -= loadButtonBrowseHandler;
+                    loadBtn.Click += (s2, e2) =>
+                    {
+                        loadBtnMenu?.Dispose();
+                        loadBtnMenu = new ContextMenuStrip();
+                        loadBtnMenu.Renderer = new ToolStripProfessionalRenderer(new ModernColorTable());
+                        foreach (var (path, name) in AvailableHives)
+                        {
+                            var menuItem = new ToolStripMenuItem($"{name}  ({System.IO.Path.GetFileName(path)})", null, (s3, e3) =>
+                            {
+                                LoadHiveFileAsync(path, isLeft).ContinueWith(t =>
+                                {
+                                    if (t.IsFaulted) System.Diagnostics.Debug.WriteLine($"Load failed: {t.Exception?.Message}");
+                                }, TaskScheduler.Default);
+                            });
+                            menuItem.ForeColor = ModernTheme.TextPrimary;
+                            menuItem.BackColor = ModernTheme.Surface;
+                            loadBtnMenu.Items.Add(menuItem);
+                        }
+                        loadBtnMenu.Items.Add(new ToolStripSeparator());
+                        var browseItem = new ToolStripMenuItem("Browse File...", null, (s3, e3) => LoadHive(isLeft));
+                        browseItem.ForeColor = ModernTheme.TextPrimary;
+                        browseItem.BackColor = ModernTheme.Surface;
+                        loadBtnMenu.Items.Add(browseItem);
+                        loadBtnMenu.Show(loadBtn, new Point(0, loadBtn.Height));
+                    };
+                }
             };
 
             // File name label (shown after loading)

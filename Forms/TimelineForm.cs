@@ -12,12 +12,14 @@ namespace RegistryExpert
 {
     public class TimelineForm : Form
     {
-        private readonly OfflineRegistryParser _parser;
+        private OfflineRegistryParser _parser;
+        private readonly IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> _parsers;
         private readonly MainForm _mainForm;
         
         private DataGridView _timelineGrid = null!;
         private ComboBox _filterCombo = null!;
         private ComboBox _limitCombo = null!;
+        private ComboBox? _hiveSelector;
         private TextBox _searchBox = null!;
         private System.Windows.Forms.Timer _searchDebounce = null!;
         private const string SearchPlaceholder = "Search key path...";
@@ -40,9 +42,10 @@ namespace RegistryExpert
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
 
-        public TimelineForm(OfflineRegistryParser parser, MainForm mainForm)
+        public TimelineForm(IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> parsers, MainForm mainForm)
         {
-            _parser = parser;
+            _parsers = parsers;
+            _parser = parsers[0].Parser;
             _mainForm = mainForm;
             InitializeComponent();
             this.Icon = mainForm.Icon;
@@ -236,7 +239,50 @@ namespace RegistryExpert
                 _searchDebounce.Start();
             };
 
-            filterFlow.Controls.AddRange(new Control[] { 
+            // Hive selector (only visible when multiple hives are loaded)
+            if (_parsers.Count > 1)
+            {
+                var hiveSelectorLabel = new Label
+                {
+                    Text = "Hive:",
+                    ForeColor = ModernTheme.TextSecondary,
+                    Font = ModernTheme.RegularFont,
+                    AutoSize = true,
+                    Margin = new Padding(0, 6, 5, 0)
+                };
+                _hiveSelector = new ComboBox
+                {
+                    Size = DpiHelper.ScaleSize(130, 28),
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = ModernTheme.RegularFont,
+                    Margin = new Padding(0, 0, 15, 0),
+                    BackColor = ModernTheme.Surface,
+                    ForeColor = ModernTheme.TextPrimary
+                };
+                foreach (var (_, name) in _parsers)
+                    _hiveSelector.Items.Add(name);
+                _hiveSelector.SelectedIndex = 0;
+                _hiveSelector.SelectedIndexChanged += (s, e) =>
+                {
+                    if (_hiveSelector.SelectedIndex >= 0 && _hiveSelector.SelectedIndex < _parsers.Count)
+                    {
+                        // Cancel any in-progress scan before switching parsers
+                        _scanCts?.Cancel();
+
+                        _parser = _parsers[_hiveSelector.SelectedIndex].Parser;
+                        // Clear existing data so next scan uses the new parser
+                        _allEntries.Clear();
+                        _filteredEntries.Clear();
+                        _timelineGrid.Rows.Clear();
+                        _currentDisplayCount = 0;
+                        _statusLabel.Text = $"Selected {_parsers[_hiveSelector.SelectedIndex].HiveTypeName} hive. Press Scan to load timeline.";
+                        _exportButton.Enabled = false;
+                    }
+                };
+                filterFlow.Controls.AddRange(new Control[] { hiveSelectorLabel, _hiveSelector });
+            }
+
+            filterFlow.Controls.AddRange(new Control[] {
                 filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
                 _refreshButton, _exportButton, _searchBox
             });

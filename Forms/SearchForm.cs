@@ -11,7 +11,7 @@ namespace RegistryExpert
 {
     public class SearchForm : Form
     {
-        private readonly OfflineRegistryParser _parser;
+        private readonly IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> _parsers;
         private readonly MainForm _mainForm;
         
         private TextBox _searchBox = null!;
@@ -24,7 +24,7 @@ namespace RegistryExpert
         private Label _previewPathLabel = null!;
         private RichTextBox _previewValueBox = null!;
         private List<SearchResult> _searchResults = new();
-        private List<SearchMatch> _allMatches = new();
+        private List<(SearchMatch Match, OfflineRegistryParser Parser)> _allMatches = new();
         private string _currentSearchTerm = "";
         private CancellationTokenSource? _searchCts;
         private Panel _loadMorePanel = null!;
@@ -36,9 +36,9 @@ namespace RegistryExpert
         // Public properties to preserve search state across theme changes
         public string SearchTerm => _searchBox?.Text ?? "";
 
-        public SearchForm(OfflineRegistryParser parser, MainForm mainForm, string? initialSearchTerm = null)
+        public SearchForm(IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> parsers, MainForm mainForm, string? initialSearchTerm = null)
         {
-            _parser = parser;
+            _parsers = parsers;
             _mainForm = mainForm;
             InitializeComponent();
             this.Icon = mainForm.Icon;
@@ -405,15 +405,25 @@ namespace RegistryExpert
 
             try
             {
-                // Run search on background thread (always case-insensitive, whole-word filtering done in backend)
+                // Run search on background thread across all loaded parsers
                 var wholeWord = _matchWholeWordCheckBox.Checked;
-                var results = await Task.Run(() => 
-                    _parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord, cancellationToken: token), token).ConfigureAwait(true);
+                foreach (var (parser, hiveTypeName) in _parsers)
+                {
+                    if (token.IsCancellationRequested) break;
+                    var results = await Task.Run(() =>
+                        parser.SearchAll(searchTerm, caseSensitive: false, wholeWord: wholeWord, cancellationToken: token), token).ConfigureAwait(true);
+
+                    if (token.IsCancellationRequested) break;
+
+                    foreach (var match in results)
+                    {
+                        _allMatches.Add((match, parser));
+                    }
+                }
                 
                 if (token.IsCancellationRequested) return;
 
                 // Store all matches for pagination
-                _allMatches = results;
                 _displayedMatchCount = 0;
 
                 // Display first page
@@ -469,8 +479,8 @@ namespace RegistryExpert
                 {
                     if (token.IsCancellationRequested) break;
 
-                    var match = _allMatches[i];
-                    var searchResult = new SearchResult { KeyPath = match.Key.KeyPath };
+                    var (match, matchParser) = _allMatches[i];
+                    var searchResult = new SearchResult { KeyPath = match.Key.KeyPath, SourceParser = matchParser };
 
                     if (match.MatchKind == "Key")
                     {
@@ -478,7 +488,7 @@ namespace RegistryExpert
                         searchResult.MatchType = "Key";
                         searchResult.Details = match.Key.KeyName;
                         searchResult.ValueData = "";
-                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath, matchParser)}";
                     }
                     else if (match.MatchedValue != null)
                     {
@@ -496,7 +506,7 @@ namespace RegistryExpert
                         searchResult.MatchType = "Key";
                         searchResult.Details = "";
                         searchResult.ValueData = "";
-                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath)}";
+                        searchResult.FullValue = $"Key: {GetDisplayPath(match.Key.KeyPath, matchParser)}";
                     }
 
                     _searchResults.Add(searchResult);
@@ -507,7 +517,7 @@ namespace RegistryExpert
                         : searchResult.ValueData;
 
                     var rowIndex = _resultsGrid.Rows.Add(
-                        GetDisplayPath(match.Key.KeyPath),
+                        GetDisplayPath(match.Key.KeyPath, matchParser),
                         searchResult.Details,
                         searchResult.MatchType,
                         gridData);
@@ -585,7 +595,7 @@ namespace RegistryExpert
         {
             if (_resultsGrid.SelectedRows.Count > 0 && _resultsGrid.SelectedRows[0].Tag is SearchResult result)
             {
-                _previewPathLabel.Text = GetDisplayPath(result.KeyPath);
+                _previewPathLabel.Text = result.SourceParser != null ? GetDisplayPath(result.KeyPath, result.SourceParser) : result.KeyPath;
                 SetPreviewWithHighlight(result.FullValue, _currentSearchTerm);
             }
         }
@@ -704,7 +714,8 @@ namespace RegistryExpert
                 {
                     try
                     {
-                        Clipboard.SetText(GetDisplayPath(result.KeyPath));
+                        var displayPath = result.SourceParser != null ? GetDisplayPath(result.KeyPath, result.SourceParser) : result.KeyPath;
+                        Clipboard.SetText(displayPath);
                     }
                     catch (System.Runtime.InteropServices.ExternalException)
                     {
@@ -892,7 +903,7 @@ namespace RegistryExpert
         /// <summary>
         /// Convert a KeyPath from ROOT\... to HIVENAME\... for display
         /// </summary>
-        private string GetDisplayPath(string keyPath) => _parser.ConvertRootPath(keyPath);
+        private static string GetDisplayPath(string keyPath, OfflineRegistryParser parser) => parser.ConvertRootPath(keyPath);
 
         private class SearchResult
         {
@@ -902,6 +913,7 @@ namespace RegistryExpert
             public string ValueName { get; set; } = "";
             public string ValueData { get; set; } = "";
             public string FullValue { get; set; } = "";
+            public OfflineRegistryParser? SourceParser { get; set; }
         }
     }
 }

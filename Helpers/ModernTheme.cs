@@ -357,6 +357,15 @@ namespace RegistryExpert
             using var bgBrush = new SolidBrush(TreeViewBack);
             e.Graphics.FillRectangle(bgBrush, rowBounds);
 
+            // 1b. Draw separator line above non-first root nodes (hive separator)
+            if (e.Node.Parent == null && e.Node.Index > 0)
+            {
+                var lineY = rowY;
+                var lineInset = DpiHelper.Scale(12);
+                using var linePen = new Pen(Border, 1f);
+                e.Graphics.DrawLine(linePen, lineInset, lineY, rowRight - lineInset, lineY);
+            }
+
             // 2. Calculate horizontal layout
             int indent = DpiHelper.Scale(4) + e.Node.Level * tree.Indent;
             int chevronSize = DpiHelper.Scale(16);
