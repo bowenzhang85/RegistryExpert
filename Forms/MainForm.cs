@@ -103,8 +103,55 @@ namespace RegistryExpert
 
     public partial class MainForm : Form
     {
-        private OfflineRegistryParser? _parser;
-        private RegistryInfoExtractor? _infoExtractor;
+        // Multi-hive support: stores all loaded hives keyed by HiveType
+        private readonly Dictionary<OfflineRegistryParser.HiveType, LoadedHive> _loadedHives = new();
+
+        private class LoadedHive : IDisposable
+        {
+            public required OfflineRegistryParser Parser { get; init; }
+            public required RegistryInfoExtractor InfoExtractor { get; init; }
+            public required string FilePath { get; init; }
+            public required TreeNode RootNode { get; init; }
+
+            public void Dispose()
+            {
+                Parser.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Returns the LoadedHive whose tree root is an ancestor of the currently selected TreeNode,
+        /// or the first loaded hive if nothing is selected.
+        /// </summary>
+        private LoadedHive? ActiveHive
+        {
+            get
+            {
+                if (_treeView?.SelectedNode != null)
+                {
+                    var hive = GetHiveForNode(_treeView.SelectedNode);
+                    if (hive != null) return hive;
+                }
+                return _loadedHives.Values.FirstOrDefault();
+            }
+        }
+
+        /// <summary>
+        /// Walk up from a tree node to find which LoadedHive it belongs to.
+        /// </summary>
+        private LoadedHive? GetHiveForNode(TreeNode node)
+        {
+            var current = node;
+            while (current.Parent != null)
+                current = current.Parent;
+            // current is now the root node — match against LoadedHive.RootNode
+            foreach (var hive in _loadedHives.Values)
+            {
+                if (hive.RootNode == current) return hive;
+            }
+            return null;
+        }
+
         private Form? _analyzeForm; // Track the analyze window for theme changes
         private SearchForm? _searchForm; // Track the search window for theme changes
         private Form? _statisticsForm; // Track the statistics window for theme changes
@@ -115,7 +162,6 @@ namespace RegistryExpert
         private ImageList? _valueImageList; // Track for disposal (value type icons)
         private ToolTip? _sharedToolTip; // Single shared ToolTip for the form
         private Icon? _customIcon; // Track custom icon for disposal
-        private string? _currentHivePath; // Track the current loaded hive file path
         private Dictionary<string, Image> _toolbarIcons = new(); // Track toolbar icons for disposal
 
         // Cached icon fonts for Paint handlers (avoid allocating on every paint)
@@ -133,6 +179,7 @@ namespace RegistryExpert
         private SplitContainer _mainSplitContainer = null!;
         private SplitContainer _rightSplitContainer = null!;
         private TreeView _treeView = null!;
+        private Button _addHiveBtn = null!;
         private ListView _listView = null!;
         private RichTextBox _detailsBox = null!;
         private Panel _statusPanel = null!;
@@ -185,7 +232,6 @@ namespace RegistryExpert
         public MainForm()
         {
             InitializeComponent();
-            _parser = new OfflineRegistryParser();
         }
 
         protected override void Dispose(bool disposing)
@@ -195,8 +241,10 @@ namespace RegistryExpert
                 // Dispose MenuStrip FIRST - critical to unsubscribe from SystemEvents.UserPreferenceChanged
                 // which holds a strong reference and prevents the application from closing
                 _menuStrip?.Dispose();
-                
-                _parser?.Dispose();
+
+                foreach (var hive in _loadedHives.Values)
+                    hive.Dispose();
+                _loadedHives.Clear();
                 _imageList?.Dispose();
                 _valueImageList?.Dispose();
                 _analyzeForm?.Dispose();
@@ -298,10 +346,10 @@ namespace RegistryExpert
                 }
             }
 
-            // Recalculate bookmark panel widths if a hive is loaded
-            if (_parser != null)
+            // Recalculate bookmark panel widths if any hive is loaded
+            if (_loadedHives.Count > 0)
             {
-                PopulateBookmarks(_parser.CurrentHiveType.ToString());
+                PopulateBookmarks();
             }
 
             // Update main splitter distance proportionally
@@ -485,7 +533,76 @@ namespace RegistryExpert
             // Left panel with header and tree
             var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = ModernTheme.Background };
             var treeHeader = CreateSectionHeader("Registry Keys", "\uE8B7");
-            
+
+            // Add "Load Hive" pill button to the tree header (same style as toolbar buttons)
+            _addHiveBtn = new Button
+            {
+                Text = "",
+                Font = ModernTheme.SmallFont,
+                FlatStyle = FlatStyle.Flat,
+                Size = new Size(DpiHelper.Scale(100), DpiHelper.Scale(28)),
+                Dock = DockStyle.Right,
+                Cursor = Cursors.Hand,
+                BackColor = Color.Transparent,
+                ForeColor = ModernTheme.TextSecondary,
+                AccessibleName = "Load Hive",
+                TabStop = false
+            };
+            _addHiveBtn.FlatAppearance.BorderSize = 0;
+            _addHiveBtn.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            _addHiveBtn.FlatAppearance.MouseDownBackColor = Color.Transparent;
+
+            bool addHiveBtnHovered = false;
+            bool addHiveBtnPressed = false;
+            _addHiveBtn.MouseEnter += (s, e) => { addHiveBtnHovered = true; _addHiveBtn.Invalidate(); };
+            _addHiveBtn.MouseLeave += (s, e) => { addHiveBtnHovered = false; addHiveBtnPressed = false; _addHiveBtn.Invalidate(); };
+            _addHiveBtn.MouseDown += (s, e) => { addHiveBtnPressed = true; _addHiveBtn.Invalidate(); };
+            _addHiveBtn.MouseUp += (s, e) => { addHiveBtnPressed = false; _addHiveBtn.Invalidate(); };
+
+            _addHiveBtn.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Pill-shaped hover/press background (matches toolbar buttons)
+                if (addHiveBtnHovered || addHiveBtnPressed)
+                {
+                    var hoverColor = addHiveBtnPressed ? ModernTheme.AccentDark : ModernTheme.SurfaceHover;
+                    using var hoverBrush = new SolidBrush(hoverColor);
+                    var rect = new Rectangle(1, 1, _addHiveBtn.Width - 2, _addHiveBtn.Height - 2);
+                    var radius = DpiHelper.Scale(6);
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                    int d = radius * 2;
+                    path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+                    path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+                    path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+                    path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+                    path.CloseFigure();
+                    g.FillPath(hoverBrush, path);
+                }
+
+                // Draw "+" icon in accent color
+                var iconFont = _iconFont10;
+                using var iconBrush = new SolidBrush(ModernTheme.Accent);
+                var iconSize = g.MeasureString("\uE710", iconFont);
+                var textSize = g.MeasureString("Load Hive", ModernTheme.SmallFont);
+                var totalWidth = iconSize.Width + DpiHelper.Scale(2) + textSize.Width;
+                var startX = (_addHiveBtn.Width - totalWidth) / 2;
+                var iconY = (_addHiveBtn.Height - iconSize.Height) / 2;
+                g.DrawString("\uE710", iconFont, iconBrush, startX, iconY);
+
+                // Draw "Load Hive" text in muted color (matches toolbar text style)
+                using var textBrush = new SolidBrush(ModernTheme.TextSecondary);
+                var textY = (_addHiveBtn.Height - textSize.Height) / 2;
+                g.DrawString("Load Hive", ModernTheme.SmallFont, textBrush, startX + iconSize.Width + DpiHelper.Scale(2), textY);
+            };
+
+            _addHiveBtn.Click += OpenHive_Click;
+            _sharedToolTip ??= new ToolTip();
+            _sharedToolTip.SetToolTip(_addHiveBtn, "Load another registry hive (Ctrl+O)");
+            treeHeader.Controls.Add(_addHiveBtn);
+
             _imageList = CreateImageList();
             _treeView = new TreeView
             {
@@ -511,6 +628,20 @@ namespace RegistryExpert
             });
             copyPathItem.ShortcutKeys = Keys.Control | Keys.C;
             treeContextMenu.Items.Add(copyPathItem);
+
+            var closeHiveItem = new ToolStripMenuItem("Unload Hive", null, (s, ev) =>
+            {
+                if (_treeView.SelectedNode == null) return;
+                var hive = GetHiveForNode(_treeView.SelectedNode);
+                if (hive != null)
+                {
+                    var hiveType = hive.Parser.CurrentHiveType;
+                    CloseHive(hiveType);
+                }
+            });
+            treeContextMenu.Items.Add(new ToolStripSeparator());
+            treeContextMenu.Items.Add(closeHiveItem);
+
             treeContextMenu.Opening += (s, ev) =>
             {
                 treeContextMenu.BackColor = ModernTheme.Surface;
@@ -522,6 +653,8 @@ namespace RegistryExpert
                 }
                 // Disable if no valid node selected
                 copyPathItem.Enabled = _treeView.SelectedNode?.Tag is RegistryKey;
+                // Only show Unload Hive on root-level nodes
+                closeHiveItem.Visible = _treeView.SelectedNode?.Parent == null && _treeView.SelectedNode != null;
             };
             _treeView.NodeMouseClick += (s, ev) =>
             {
@@ -762,7 +895,7 @@ namespace RegistryExpert
 
             var subtitleLabel = new Label
             {
-                Text = "Drag and drop a registry hive file here\nor click the button below to browse",
+                Text = "Drag and drop registry hive files here\nor click the button below to browse",
                 Font = ModernTheme.RegularFont,
                 ForeColor = ModernTheme.TextSecondary,
                 TextAlign = ContentAlignment.MiddleCenter,
@@ -770,7 +903,7 @@ namespace RegistryExpert
                 Location = DpiHelper.ScalePoint(0, 175)
             };
 
-            var openButton = ModernTheme.CreateButton("  Open Hive File  ", OpenHive_Click);
+            var openButton = ModernTheme.CreateButton("  Open Hive Files  ", OpenHive_Click);
             openButton.Size = DpiHelper.ScaleSize(220, 42);
             openButton.Location = DpiHelper.ScalePoint(140, 245);
 
@@ -1056,14 +1189,32 @@ namespace RegistryExpert
         }
 
         /// <summary>
-        /// Populate bookmark items for the current hive type. Hides the panel if no bookmarks exist.
+        /// Populate bookmark items for all loaded hive types. Hides the panel if no bookmarks exist.
+        /// When multiple hives are loaded, shows section headers for each hive type.
         /// </summary>
-        private void PopulateBookmarks(string hiveType)
+        private void PopulateBookmarks()
         {
             var container = _bookmarkBar.Parent;
             if (container == null) return;
 
-            if (!_bookmarksByHive.TryGetValue(hiveType, out var bookmarks) || bookmarks.Count == 0)
+            // Collect all bookmarks for loaded hive types
+            var allBookmarks = new List<(string? SectionHeader, string Name, string Path)>();
+            bool multiHive = _loadedHives.Count > 1;
+
+            foreach (var kvp in _loadedHives)
+            {
+                var hiveTypeName = kvp.Key.ToString();
+                if (!_bookmarksByHive.TryGetValue(hiveTypeName, out var bookmarks) || bookmarks.Count == 0)
+                    continue;
+
+                if (multiHive)
+                    allBookmarks.Add((hiveTypeName, "", "")); // Section header marker
+
+                foreach (var (name, path) in bookmarks)
+                    allBookmarks.Add((null, name, path));
+            }
+
+            if (allBookmarks.Count == 0)
             {
                 container.Visible = false;
                 return;
@@ -1088,10 +1239,21 @@ namespace RegistryExpert
             int maxTextWidth = 0;
             using (var g = this.CreateGraphics())
             {
-                foreach (var (name, _) in bookmarks)
+                foreach (var (sectionHeader, name, _) in allBookmarks)
                 {
-                    var text = $"  \u25B8  {name}";
-                    var textWidth = TextRenderer.MeasureText(g, text, ModernTheme.RegularFont).Width;
+                    string text;
+                    Font font;
+                    if (sectionHeader != null)
+                    {
+                        text = $"[{sectionHeader}]";
+                        font = ModernTheme.BoldFont;
+                    }
+                    else
+                    {
+                        text = $"  \u25B8  {name}";
+                        font = ModernTheme.RegularFont;
+                    }
+                    var textWidth = TextRenderer.MeasureText(g, text, font).Width;
                     if (textWidth > maxTextWidth)
                         maxTextWidth = textWidth;
                 }
@@ -1106,9 +1268,28 @@ namespace RegistryExpert
             int flowPadding = DpiHelper.Scale(4) * 2;
             _bookmarkExpandedWidth = itemWidth + barWidth + flowPadding;
 
-            // Add bookmark labels
-            foreach (var (name, path) in bookmarks)
+            // Add bookmark labels (and section headers)
+            foreach (var (sectionHeader, name, path) in allBookmarks)
             {
+                if (sectionHeader != null)
+                {
+                    // Section header label
+                    var header = new Label
+                    {
+                        Text = $"[{sectionHeader}]",
+                        Font = ModernTheme.BoldFont,
+                        ForeColor = ModernTheme.TextSecondary,
+                        BackColor = ModernTheme.Surface,
+                        AutoSize = false,
+                        Width = itemWidth,
+                        Height = DpiHelper.Scale(24),
+                        TextAlign = ContentAlignment.MiddleLeft,
+                        Padding = DpiHelper.ScalePadding(2, 0, 2, 0),
+                    };
+                    itemsPanel.Controls.Add(header);
+                    continue;
+                }
+
                 var btn = new Label
                 {
                     Text = $"  \u25B8  {name}",
@@ -1218,6 +1399,33 @@ namespace RegistryExpert
         {
             var fileMenu = new ToolStripMenuItem("&File");
             fileMenu.DropDownItems.Add(new ToolStripMenuItem("&Open Hive...", null, OpenHive_Click) { ShortcutKeys = Keys.Control | Keys.O });
+
+            var closeHiveMenu = new ToolStripMenuItem("&Unload Hive");
+            closeHiveMenu.Enabled = false;
+            fileMenu.DropDownItems.Add(closeHiveMenu);
+            fileMenu.DropDownOpening += (s, ev) =>
+            {
+                closeHiveMenu.DropDownItems.Clear();
+                if (_loadedHives.Count == 0)
+                {
+                    closeHiveMenu.Enabled = false;
+                    return;
+                }
+                closeHiveMenu.Enabled = true;
+                foreach (var kvp in _loadedHives)
+                {
+                    var hiveType = kvp.Key;
+                    var fileName = System.IO.Path.GetFileName(kvp.Value.FilePath);
+                    var item = new ToolStripMenuItem($"{hiveType} ({fileName})", null, (s2, e2) =>
+                    {
+                        CloseHive(hiveType);
+                    });
+                    item.ForeColor = ModernTheme.TextPrimary;
+                    item.BackColor = ModernTheme.Surface;
+                    closeHiveMenu.DropDownItems.Add(item);
+                }
+            };
+
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
             fileMenu.DropDownItems.Add(new ToolStripMenuItem("&Export Key...", null, ExportKey_Click) { ShortcutKeys = Keys.Control | Keys.E });
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -1408,7 +1616,7 @@ namespace RegistryExpert
             var files = e.Data?.GetData(DataFormats.FileDrop) as string[];
             if (files?.Length > 0)
             {
-                _ = LoadHiveFileAsync(files[0]);
+                _ = LoadMultipleHivesAsync(files);
             }
         }
 
@@ -1418,12 +1626,22 @@ namespace RegistryExpert
             {
                 Title = "Open Registry Hive",
                 Filter = "Registry Hives|NTUSER.DAT;SAM;SECURITY;SOFTWARE;SYSTEM;USRCLASS.DAT;DEFAULT;Amcache.hve;BCD|All Files|*.*",
-                FilterIndex = 2
+                FilterIndex = 2,
+                Multiselect = true
             };
 
             if (dialog.ShowDialog() == DialogResult.OK)
             {
-                _ = LoadHiveFileAsync(dialog.FileName);
+                _ = LoadMultipleHivesAsync(dialog.FileNames);
+            }
+        }
+
+        private async Task LoadMultipleHivesAsync(string[] filePaths)
+        {
+            foreach (var filePath in filePaths)
+            {
+                if (IsDisposed) break;
+                await LoadHiveFileAsync(filePath);
             }
         }
 
@@ -1472,6 +1690,7 @@ namespace RegistryExpert
 
         private async Task LoadHiveFileAsync(string filePath)
         {
+            OfflineRegistryParser? newParser = null;
             try
             {
                 var oldCts = _loadCts;
@@ -1489,8 +1708,7 @@ namespace RegistryExpert
                 _cancelWrapper.Visible = true;
                 _cancelLoadButton.Enabled = true;
 
-                _parser?.Dispose();
-                _parser = new OfflineRegistryParser();
+                newParser = new OfflineRegistryParser();
 
                 var lastPhase = string.Empty;
                 var stageNumber = 0;
@@ -1511,31 +1729,66 @@ namespace RegistryExpert
                         _loadProgressBar.Value = newValue;
                 });
 
-                await Task.Run(() => _parser.LoadHive(filePath, progress, token), token).ConfigureAwait(true);
+                await Task.Run(() => newParser.LoadHive(filePath, progress, token), token).ConfigureAwait(true);
 
-                _currentHivePath = filePath;
-                _infoExtractor = new RegistryInfoExtractor(_parser);
+                var hiveType = newParser.CurrentHiveType;
 
-                PopulateTreeView();
-                PopulateBookmarks(_parser.CurrentHiveType.ToString());
+                // Check for duplicate hive type
+                if (_loadedHives.ContainsKey(hiveType))
+                {
+                    var existingFile = Path.GetFileName(_loadedHives[hiveType].FilePath);
+                    var result = MessageBox.Show(this,
+                        $"A {hiveType} hive is already loaded ({existingFile}).\n\nReplace it?",
+                        "Duplicate Hive Type",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+                    if (result != DialogResult.Yes)
+                    {
+                        newParser.Dispose();
+                        newParser = null;
+                        SetStatusText("Load cancelled — duplicate hive type", ModernTheme.Warning);
+                        return;
+                    }
+                    // Remove old hive of same type
+                    CloseHive(hiveType);
+                }
 
-                // Show main view, hide drop panel
-                _dropPanel.Visible = false;
-                _mainSplitContainer.Visible = true;
-                _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+                var infoExtractor = new RegistryInfoExtractor(newParser);
+                var rootNode = AddHiveToTree(newParser);
 
-                _hiveTypeLabel.Text = $"● {_parser.CurrentHiveType}";
-                SetStatusText($"Loaded: {Path.GetFileName(filePath)}", ModernTheme.Success);
-                this.Text = $"Registry Expert - {Path.GetFileName(filePath)}";
+                var loadedHive = new LoadedHive
+                {
+                    Parser = newParser,
+                    InfoExtractor = infoExtractor,
+                    FilePath = filePath,
+                    RootNode = rootNode
+                };
+                _loadedHives[hiveType] = loadedHive;
+                newParser = null; // Prevent disposal in catch/finally — now owned by _loadedHives
+
+                PopulateBookmarks();
+
+                // Show main view, hide drop panel (on first load)
+                if (!_mainSplitContainer.Visible)
+                {
+                    _dropPanel.Visible = false;
+                    _mainSplitContainer.Visible = true;
+                    _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+                }
+
+                UpdateHiveStatusBar();
+                UpdateTitleBar();
+                var loadedNames = string.Join(" | ", _loadedHives.Values.Select(h => h.Parser.CurrentHiveType.ToString()));
+                SetStatusText($"Loaded: {loadedNames}", ModernTheme.Success);
             }
             catch (OperationCanceledException)
             {
-                _parser?.Dispose();
-                _parser = null;
+                newParser?.Dispose();
                 SetStatusText("Loading cancelled", ModernTheme.Warning);
             }
             catch (Exception ex)
             {
+                newParser?.Dispose();
                 ShowError($"Error loading hive: {ex.Message}");
                 SetStatusText("Failed to load hive", ModernTheme.Error);
             }
@@ -1547,20 +1800,78 @@ namespace RegistryExpert
             }
         }
 
-        private void PopulateTreeView()
+        /// <summary>
+        /// Add a hive's root node to the TreeView. Returns the root node.
+        /// </summary>
+        private TreeNode AddHiveToTree(OfflineRegistryParser parser)
         {
-            _treeView.Nodes.Clear();
-            _listView.Items.Clear();
-            _detailsBox.Clear();
-
-            var root = _parser?.GetRootKey();
-            if (root == null || _parser == null) return;
+            var root = parser.GetRootKey();
+            if (root == null) throw new InvalidOperationException("Hive has no root key");
 
             var rootNode = CreateTreeNode(root);
-            rootNode.Text = $"{_parser.CurrentHiveType}";
+            rootNode.Text = $"{parser.CurrentHiveType}";
             rootNode.NodeFont = ModernTheme.BoldFont;
             _treeView.Nodes.Add(rootNode);
             rootNode.Expand();
+            _treeView.SelectedNode = rootNode;
+            return rootNode;
+        }
+
+        /// <summary>
+        /// Unload a loaded hive by type. Removes from tree, disposes parser.
+        /// </summary>
+        private void CloseHive(OfflineRegistryParser.HiveType hiveType)
+        {
+            if (!_loadedHives.TryGetValue(hiveType, out var hive)) return;
+
+            _treeView.Nodes.Remove(hive.RootNode);
+            _loadedHives.Remove(hiveType);
+            hive.Dispose();
+
+            // If that was the last hive, show drop panel
+            if (_loadedHives.Count == 0)
+            {
+                _mainSplitContainer.Visible = false;
+                _dropPanel.Visible = true;
+                _listView.Items.Clear();
+                _detailsBox.Clear();
+                SetStatusText("Ready", ModernTheme.TextSecondary);
+            }
+            else
+            {
+                var loadedNames = string.Join(" | ", _loadedHives.Values.Select(h => h.Parser.CurrentHiveType.ToString()));
+                SetStatusText($"Loaded: {loadedNames}", ModernTheme.Success);
+            }
+
+            PopulateBookmarks();
+            UpdateHiveStatusBar();
+            UpdateTitleBar();
+        }
+
+        /// <summary>
+        /// Update the status bar hive type label for multi-hive.
+        /// </summary>
+        private void UpdateHiveStatusBar()
+        {
+            if (_loadedHives.Count == 0)
+                _hiveTypeLabel.Text = "";
+            else if (_loadedHives.Count == 1)
+                _hiveTypeLabel.Text = $"● {_loadedHives.Keys.First()}";
+            else
+                _hiveTypeLabel.Text = $"● {_loadedHives.Count} hives";
+        }
+
+        /// <summary>
+        /// Update the title bar for multi-hive.
+        /// </summary>
+        private void UpdateTitleBar()
+        {
+            if (_loadedHives.Count == 0)
+                this.Text = "Registry Expert";
+            else if (_loadedHives.Count == 1)
+                this.Text = $"Registry Expert - {Path.GetFileName(_loadedHives.Values.First().FilePath)}";
+            else
+                this.Text = $"Registry Expert - {string.Join(", ", _loadedHives.Keys.Select(k => k.ToString()))}";
         }
 
         private TreeNode CreateTreeNode(RegistryKey key)
@@ -1874,7 +2185,7 @@ namespace RegistryExpert
 
         private void ShowStatistics_Click(object? sender, EventArgs e)
         {
-            if (_parser == null || !_parser.IsLoaded)
+            if (ActiveHive == null)
             {
                 ShowInfo("Please load a registry hive first.");
                 return;
@@ -1899,9 +2210,12 @@ namespace RegistryExpert
                 return;
             
             // Capture data needed by the new thread (can't access UI controls cross-thread)
-            string? hivePath = (_parser != null && _parser.IsLoaded && !string.IsNullOrEmpty(_currentHivePath))
-                ? _currentHivePath : null;
+            string? hivePath = (ActiveHive != null && !string.IsNullOrEmpty(ActiveHive.FilePath))
+                ? ActiveHive.FilePath : null;
             Icon? iconCopy = this.Icon != null ? (Icon)this.Icon.Clone() : null;
+            var availableHives = _loadedHives.Values
+                .Select(h => (h.FilePath, h.Parser.CurrentHiveType.ToString()))
+                .ToList();
             
             // Run CompareForm on its own STA thread so its heavy cleanup
             // (destroying 500K+ TreeView nodes) never blocks the main UI thread
@@ -1909,6 +2223,7 @@ namespace RegistryExpert
             {
                 var form = new CompareForm();
                 if (iconCopy != null) form.Icon = iconCopy;
+                form.AvailableHives = availableHives;
                 
                 form.FormClosed += (s, ev) =>
                 {
@@ -1919,11 +2234,9 @@ namespace RegistryExpert
                 
                 _compareForm = form;
                 
-                // Pre-load left hive if one is loaded in main form.
-                // Must be deferred to Shown event — SetLeftHive fires async loading
-                // that needs a SynchronizationContext (established by Application.Run),
-                // and the form must be fully painted first to avoid rendering issues.
-                if (hivePath != null)
+                // Pre-load left hive only when a single hive is loaded in main form.
+                // When multiple hives are loaded, let the user pick via the dropdown.
+                if (hivePath != null && availableHives.Count == 1)
                 {
                     form.Shown += (s, ev) => form.SetLeftHive(hivePath);
                 }
@@ -1942,7 +2255,7 @@ namespace RegistryExpert
 
         private void ShowTimeline_Click(object? sender, EventArgs e)
         {
-            if (_parser == null || !_parser.IsLoaded)
+            if (ActiveHive == null)
             {
                 ShowInfo("Please load a registry hive first.");
                 return;
@@ -1956,24 +2269,29 @@ namespace RegistryExpert
                 return;
             }
 
-            _timelineForm = new TimelineForm(_parser, this);
+            var timelineParserList = _loadedHives.Values
+                .Select(h => (h.Parser, h.Parser.CurrentHiveType.ToString()))
+                .ToList();
+            _timelineForm = new TimelineForm(timelineParserList, this);
             _timelineForm.FormClosed += (s, ev) => { _timelineForm = null; };
             _timelineForm.Show();
         }
 
         private void ShowStatisticsDialog()
         {
-            if (_parser == null) return;
-            
+            if (ActiveHive == null) return;
+
             // Close existing statistics form if open
             if (_statisticsForm != null && !_statisticsForm.IsDisposed)
             {
                 _statisticsForm.Close();
             }
 
+            var selectedHive = ActiveHive!;
+
             var form = new Form
             {
-                Text = $"Registry Statistics - {_parser.CurrentHiveType}",
+                Text = $"Registry Statistics - {selectedHive.Parser.CurrentHiveType}",
                 Size = DpiHelper.ScaleSize(900, 650),
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimumSize = DpiHelper.ScaleSize(700, 500),
@@ -1994,7 +2312,7 @@ namespace RegistryExpert
             var headerPanel = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = DpiHelper.Scale(110),  // Increased for stat cards
+                Height = _loadedHives.Count > 1 ? DpiHelper.Scale(145) : DpiHelper.Scale(110),
                 BackColor = ModernTheme.Surface
             };
             headerPanel.Paint += (s, ev) =>
@@ -2003,8 +2321,8 @@ namespace RegistryExpert
                 ev.Graphics.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
             };
 
-            var stats = _parser.GetStatistics();
-            
+            var stats = selectedHive.Parser.GetStatistics();
+
             // Summary labels in header
             var titleLabel = new Label
             {
@@ -2023,10 +2341,42 @@ namespace RegistryExpert
                 ev.Graphics.DrawString("\uE9D9", iconFont, iconBrush, 0, 2);
             };
 
+            // Hive selector (only visible when multiple hives loaded)
+            ComboBox? hiveSelector = null;
+            if (_loadedHives.Count > 1)
+            {
+                var hiveSelectorLabel = new Label
+                {
+                    Text = "Hive:",
+                    Font = ModernTheme.RegularFont,
+                    ForeColor = ModernTheme.TextSecondary,
+                    Location = DpiHelper.ScalePoint(20, 45),
+                    AutoSize = true
+                };
+                headerPanel.Controls.Add(hiveSelectorLabel);
+
+                hiveSelector = new ComboBox
+                {
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Font = ModernTheme.RegularFont,
+                    Location = DpiHelper.ScalePoint(65, 42),
+                    Width = DpiHelper.Scale(200),
+                    BackColor = ModernTheme.Surface,
+                    ForeColor = ModernTheme.TextPrimary
+                };
+                foreach (var kvp in _loadedHives)
+                {
+                    hiveSelector.Items.Add(kvp.Key.ToString());
+                }
+                hiveSelector.SelectedItem = selectedHive.Parser.CurrentHiveType.ToString();
+                headerPanel.Controls.Add(hiveSelector);
+            }
+
+            int summaryY = _loadedHives.Count > 1 ? 75 : 50;
             var summaryFlow = new FlowLayoutPanel
             {
-                Location = DpiHelper.ScalePoint(20, 50),
-                Size = DpiHelper.ScaleSize(850, 50),  // Increased height for stat cards
+                Location = DpiHelper.ScalePoint(20, summaryY),
+                Size = DpiHelper.ScaleSize(850, 50),
                 FlowDirection = FlowDirection.LeftToRight,
                 BackColor = Color.Transparent
             };
@@ -2094,47 +2444,73 @@ namespace RegistryExpert
             form.Show();
 
             // Capture parser reference to avoid race condition if user loads new hive
-            var parser = _parser;
+            var parser = selectedHive.Parser;
             if (parser == null) return;
 
-            // Analyze in background - only top level initially for speed
-            System.Threading.Tasks.Task.Run(() =>
+            // Helper to reload stats for a given parser
+            void LoadStatsForParser(OfflineRegistryParser p)
             {
-                try
-                {
-                    var keyStats = AnalyzeTopLevelKeys(parser);
-                    
-                    if (form.IsDisposed) return;
-                    
-                    form.Invoke(() =>
-                    {
-                        if (form.IsDisposed) return;
-                        
-                        keyCountTab.Controls.Clear();
-                        keySizeTab.Controls.Clear();
-                        
-                        // Create expandable Key Count tree panel
-                        var keyCountPanel = CreateExpandableStatsPanel(
-                            keyStats.OrderByDescending(k => k.SubKeyCount).ToList(),
-                            "Subkey Count",
-                            k => k.SubKeyCount,
-                            ModernTheme.Accent);
-                        keyCountPanel.Dock = DockStyle.Fill;
-                        keyCountTab.Controls.Add(keyCountPanel);
+                // Update summary cards
+                var newStats = p.GetStatistics();
+                summaryFlow.Controls.Clear();
+                summaryFlow.Controls.Add(CreateStatCard("File Size", newStats.FormattedFileSize, ModernTheme.Accent));
+                summaryFlow.Controls.Add(CreateStatCard("Total Keys", newStats.TotalKeys.ToString("N0"), ModernTheme.Success));
+                summaryFlow.Controls.Add(CreateStatCard("Total Values", newStats.TotalValues.ToString("N0"), ModernTheme.Warning));
+                summaryFlow.Controls.Add(CreateStatCard("Hive Type", newStats.HiveType.ToString(), ModernTheme.Info));
 
-                        // Create expandable Key Size tree panel
-                        var keySizePanel = CreateExpandableStatsPanel(
-                            keyStats.OrderByDescending(k => k.TotalSize).ToList(),
-                            "Size (bytes)",
-                            k => k.TotalSize,
-                            ModernTheme.Success);
-                        keySizePanel.Dock = DockStyle.Fill;
-                        keySizeTab.Controls.Add(keySizePanel);
-                    });
-                }
-                catch (ObjectDisposedException) { }
-                catch (InvalidOperationException) { }
-            });
+                // Reset tabs
+                keyCountTab.Controls.Clear();
+                keySizeTab.Controls.Clear();
+                var loading1 = new Label { Text = "Analyzing registry structure...", Font = ModernTheme.RegularFont, ForeColor = ModernTheme.TextSecondary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
+                var loading2 = new Label { Text = "Analyzing registry structure...", Font = ModernTheme.RegularFont, ForeColor = ModernTheme.TextSecondary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
+                keyCountTab.Controls.Add(loading1);
+                keySizeTab.Controls.Add(loading2);
+
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        var keyStats = AnalyzeTopLevelKeys(p);
+                        if (form.IsDisposed) return;
+                        form.Invoke(() =>
+                        {
+                            if (form.IsDisposed) return;
+                            keyCountTab.Controls.Clear();
+                            keySizeTab.Controls.Clear();
+                            var keyCountPanel = CreateExpandableStatsPanel(
+                                keyStats.OrderByDescending(k => k.SubKeyCount).ToList(),
+                                "Subkey Count", k => k.SubKeyCount, ModernTheme.Accent);
+                            keyCountPanel.Dock = DockStyle.Fill;
+                            keyCountTab.Controls.Add(keyCountPanel);
+                            var keySizePanel = CreateExpandableStatsPanel(
+                                keyStats.OrderByDescending(k => k.TotalSize).ToList(),
+                                "Size (bytes)", k => k.TotalSize, ModernTheme.Success);
+                            keySizePanel.Dock = DockStyle.Fill;
+                            keySizeTab.Controls.Add(keySizePanel);
+                        });
+                    }
+                    catch (ObjectDisposedException) { }
+                    catch (InvalidOperationException) { }
+                });
+            }
+
+            // Wire up hive selector change
+            if (hiveSelector != null)
+            {
+                hiveSelector.SelectedIndexChanged += (s, ev) =>
+                {
+                    var selectedName = hiveSelector.SelectedItem?.ToString();
+                    if (selectedName != null && Enum.TryParse<OfflineRegistryParser.HiveType>(selectedName, out var ht)
+                        && _loadedHives.TryGetValue(ht, out var hive))
+                    {
+                        form.Text = $"Registry Statistics - {ht}";
+                        LoadStatsForParser(hive.Parser);
+                    }
+                };
+            }
+
+            // Initial load
+            LoadStatsForParser(parser);
         }
 
         private Panel CreateExpandableStatsPanel(List<KeyStatistics> data, string valueLabel, Func<KeyStatistics, long> valueSelector, Color barColor)
@@ -2446,17 +2822,18 @@ namespace RegistryExpert
         private List<KeyStatistics> GetChildKeyStats(string parentPath, bool calculateSize)
         {
             var results = new List<KeyStatistics>();
-            if (_parser == null) return results;
-            
-            var parentKey = _parser.GetKey(parentPath);
+            var hive = ActiveHive;
+            if (hive == null) return results;
+
+            var parentKey = hive.Parser.GetKey(parentPath);
             if (parentKey?.SubKeys == null) return results;
 
             foreach (var subKey in parentKey.SubKeys)
             {
                 var childPath = $"{parentPath}\\{subKey.KeyName}";
                 // Get the fully loaded key to ensure SubKeys are populated
-                var fullChildKey = _parser.GetKey(childPath);
-                
+                var fullChildKey = hive.Parser.GetKey(childPath);
+
                 var (subKeyCount, valueCount, totalSize) = CalculateKeyStatisticsRecursive(fullChildKey);
                 var stat = new KeyStatistics
                 {
@@ -2607,7 +2984,7 @@ namespace RegistryExpert
 
         private void Search_Click(object? sender, EventArgs e)
         {
-            if (_parser == null || !_parser.IsLoaded)
+            if (ActiveHive == null)
             {
                 ShowInfo("Please load a registry hive first.");
                 return;
@@ -2619,18 +2996,62 @@ namespace RegistryExpert
                 _searchForm.Close();
             }
 
-            _searchForm = new SearchForm(_parser, this);
+            var parserList = _loadedHives.Values
+                .Select(h => (h.Parser, h.Parser.CurrentHiveType.ToString()))
+                .ToList();
+            _searchForm = new SearchForm(parserList, this);
             _searchForm.FormClosed += (s, ev) => { _searchForm = null; };
             _searchForm.Show();
         }
 
         private void ShowAnalyzeDialog_Click(object? sender, EventArgs e)
         {
-            if (_infoExtractor == null || _parser == null || !_parser.IsLoaded)
+            if (ActiveHive == null)
             {
                 ShowInfo("Please load a registry hive first.");
                 return;
             }
+
+            // Capture local references for closures (mutable — reassigned per category selection)
+            var activeParser = ActiveHive!.Parser;
+            var activeExtractor = ActiveHive!.InfoExtractor;
+
+            // Build category-to-hive mapping from all loaded hives (union across all hives)
+            var categoryHiveMap = new Dictionary<string, List<LoadedHive>>();
+            var enabledCategories = new HashSet<string>();
+
+            // Helper to register a hive for one or more categories
+            void MapHiveToCategories(LoadedHive hive, params string[] categories)
+            {
+                foreach (var cat in categories)
+                {
+                    enabledCategories.Add(cat);
+                    if (!categoryHiveMap.TryGetValue(cat, out var list))
+                        categoryHiveMap[cat] = list = new List<LoadedHive>();
+                    list.Add(hive);
+                }
+            }
+
+            foreach (var hive in _loadedHives.Values)
+            {
+                var ht = hive.Parser.CurrentHiveType;
+
+                if (ht == OfflineRegistryParser.HiveType.SYSTEM)
+                    MapHiveToCategories(hive, "System", "Services", "Storage", "Network", "RDP");
+                else if (ht == OfflineRegistryParser.HiveType.SOFTWARE)
+                    MapHiveToCategories(hive, "Profiles", "System", "Software", "Update");
+                else if (ht == OfflineRegistryParser.HiveType.COMPONENTS)
+                    MapHiveToCategories(hive, "Update");
+                else if (ht == OfflineRegistryParser.HiveType.SAM)
+                    MapHiveToCategories(hive, "Profiles");
+                else if (ht == OfflineRegistryParser.HiveType.NTUSER)
+                    MapHiveToCategories(hive, "Profiles", "Software");
+            }
+
+            // Track which hive produced each analysis section (for setting activeExtractor on subcategory click).
+            // Uses reference equality — AnalysisSection instances from the merge loop are the same objects
+            // stored in contentCache and btn.Tag, so lookups work correctly.
+            var sectionHiveMap = new Dictionary<AnalysisSection, LoadedHive>();
 
             // If existing analyze window is open, bring it to front instead of recreating
             if (_analyzeForm != null && !_analyzeForm.IsDisposed)
@@ -2644,7 +3065,7 @@ namespace RegistryExpert
 
             var form = new Form
             {
-                Text = $"Analyze Registry - {_parser.CurrentHiveType}",
+                Text = $"Analyze Registry - {string.Join(", ", _loadedHives.Keys.Select(k => k.ToString()))}",
                 Size = DpiHelper.ScaleSize(1100, 700),
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimumSize = DpiHelper.ScaleSize(900, 500),
@@ -2761,44 +3182,6 @@ namespace RegistryExpert
                 }
             }
             themeData.CategoryIcons = categoryIcons;
-
-            // Determine which categories are available based on hive type
-            var currentHiveType = _parser.CurrentHiveType;
-            var enabledCategories = new HashSet<string>();
-            
-            if (currentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
-            {
-                enabledCategories.Add("System");
-                enabledCategories.Add("Services");
-                enabledCategories.Add("Storage");
-                enabledCategories.Add("Network");
-                enabledCategories.Add("RDP");
-            }
-            else if (currentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
-            {
-                enabledCategories.Add("Profiles");
-                enabledCategories.Add("System"); // Activation subcategory is available in SOFTWARE hive
-                enabledCategories.Add("Software"); // Installed Programs and Appx
-                enabledCategories.Add("Update"); // Windows Update settings
-            }
-            else if (currentHiveType == OfflineRegistryParser.HiveType.COMPONENTS)
-            {
-                // COMPONENTS hive only enables Update category (for CBS Components)
-                enabledCategories.Add("Update");
-            }
-            else if (currentHiveType == OfflineRegistryParser.HiveType.SAM)
-            {
-                // SAM hive contains user account information
-                enabledCategories.Add("Profiles");
-            }
-            else if (currentHiveType == OfflineRegistryParser.HiveType.NTUSER)
-            {
-                // NTUSER.DAT contains user-specific settings
-                enabledCategories.Add("Profiles");
-                enabledCategories.Add("Software"); // User-specific software settings
-            }
-            // For BCD, SECURITY, USRCLASS, DEFAULT, AMCACHE, Unknown - no categories are enabled
-            // as the Analyze feature doesn't have specific support for these hive types
 
             // Add categories with enabled ones first, then disabled ones
             var availableCats = new List<(string text, string key)>();
@@ -3275,7 +3658,7 @@ namespace RegistryExpert
                 firewallRulesLabel.Text = $"Firewall Rules - {profileDisplayName}";
 
                 // Get rules for this profile
-                currentFirewallRules = _infoExtractor.GetFirewallRulesForProfile(profileKey);
+                currentFirewallRules = activeExtractor!.GetFirewallRulesForProfile(profileKey);
 
                 // Sort: Active Block rules first, then Active Allow, then Inactive
                 var sortedRules = currentFirewallRules
@@ -3926,7 +4309,7 @@ namespace RegistryExpert
                 contentGrid.Columns["version"].FillWeight = 25;
                 contentGrid.Columns["arch"].FillWeight = 20;
 
-                var packages = _infoExtractor.GetAppxPackages(filter);
+                var packages = activeExtractor.GetAppxPackages(filter);
 
                 foreach (var pkg in packages)
                 {
@@ -3950,8 +4333,8 @@ namespace RegistryExpert
                 appxFilterPanel.Controls.Clear();
                 appxFilterButtons.Clear();
 
-                var inboxPackages = _infoExtractor.GetAppxPackages("InBox");
-                var userPackages = _infoExtractor.GetAppxPackages("UserInstalled");
+                var inboxPackages = activeExtractor.GetAppxPackages("InBox");
+                var userPackages = activeExtractor.GetAppxPackages("UserInstalled");
 
                 var filters = new[]
                 {
@@ -4010,7 +4393,7 @@ namespace RegistryExpert
                     diskPartitionDetails.Rows.Clear();
                     diskPartitionDetailsLabel.Text = "Device Details";
 
-                    var mountedDevices = _infoExtractor.GetMountedDevices();
+                    var mountedDevices = activeExtractor.GetMountedDevices();
                     foreach (var device in mountedDevices)
                     {
                         var deviceDisplay = !string.IsNullOrEmpty(device.FriendlyName) 
@@ -4044,9 +4427,9 @@ namespace RegistryExpert
                     contentGrid.Columns["name"]!.FillWeight = 30;
                     contentGrid.Columns["value"]!.FillWeight = 70;
 
-                    var items = filter == "Disk" 
-                        ? _infoExtractor.GetDiskFilters() 
-                        : _infoExtractor.GetVolumeFilters();
+                    var items = filter == "Disk"
+                        ? activeExtractor.GetDiskFilters()
+                        : activeExtractor.GetVolumeFilters();
 
                     foreach (var item in items)
                     {
@@ -4268,7 +4651,7 @@ namespace RegistryExpert
                 // Load packages data if not cached
                 if (cbsPackagesSections == null)
                 {
-                    cbsPackagesSections = _infoExtractor!.GetPackagesAnalysis();
+                    cbsPackagesSections = activeExtractor!.GetPackagesAnalysis();
                 }
 
                 if (cbsPackagesSections.Count == 0)
@@ -4344,7 +4727,7 @@ namespace RegistryExpert
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
 
-                var sessions = _infoExtractor!.GetCbsPendingSessionsAnalysis();
+                var sessions = activeExtractor!.GetCbsPendingSessionsAnalysis();
 
                 if (sessions.Count == 0 || sessions.All(s => s.Items.Count == 0))
                 {
@@ -4383,7 +4766,7 @@ namespace RegistryExpert
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
 
-                var packages = _infoExtractor!.GetCbsPendingPackagesAnalysis();
+                var packages = activeExtractor!.GetCbsPendingPackagesAnalysis();
 
                 if (packages.Count == 0 || packages.All(s => s.Items.Count == 0))
                 {
@@ -4422,7 +4805,7 @@ namespace RegistryExpert
                 contentGrid.Columns.Clear();
                 contentGrid.Rows.Clear();
 
-                var status = _infoExtractor!.GetCbsRebootStatusAnalysis();
+                var status = activeExtractor!.GetCbsRebootStatusAnalysis();
 
                 if (status.Count == 0 || status.All(s => s.Items.Count == 0))
                 {
@@ -4644,7 +5027,7 @@ namespace RegistryExpert
             // Function to create Guest Agent sub-buttons (Extensions tab)
             createGuestAgentSubButtons = () =>
             {
-                var isSoftware = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+                var isSoftware = _loadedHives.ContainsKey(OfflineRegistryParser.HiveType.SOFTWARE);
                 
                 appxFilterPanel.Controls.Clear();
                 appxFilterPanel.Visible = true;
@@ -4700,7 +5083,7 @@ namespace RegistryExpert
             // Function to update Guest Agent sub-button states
             updateGuestAgentSubButtonStates = () =>
             {
-                var isSoftware = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+                var isSoftware = _loadedHives.ContainsKey(OfflineRegistryParser.HiveType.SOFTWARE);
                 
                 foreach (Control ctrl in appxFilterPanel.Controls)
                 {
@@ -4724,7 +5107,7 @@ namespace RegistryExpert
                 if (viewKey == "Extensions")
                 {
                     // Display Extensions in the grid
-                    var extensionsSection = _infoExtractor.GetAzureExtensionsAnalysis();
+                    var extensionsSection = _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.GetAzureExtensionsAnalysis();
                     
                     currentSection = extensionsSection;
                     contentGrid.Columns.Clear();
@@ -4970,7 +5353,7 @@ namespace RegistryExpert
                 // Load components data if not cached
                 if (cbsComponentsFullList == null)
                 {
-                    cbsComponentsFullList = _infoExtractor!.GetAllComponentsList();
+                    cbsComponentsFullList = activeExtractor!.GetAllComponentsList();
                 }
 
                 if (cbsComponentsFullList.Count == 0)
@@ -5084,7 +5467,7 @@ namespace RegistryExpert
                     Cursor.Current = Cursors.WaitCursor;
                     try
                     {
-                        cbsIdentitiesFullList = _infoExtractor!.GetComponentIdentitiesAnalysis();
+                        cbsIdentitiesFullList = activeExtractor!.GetComponentIdentitiesAnalysis();
                     }
                     finally
                     {
@@ -5399,7 +5782,7 @@ namespace RegistryExpert
                     rolesDetailsLabel.Text = "Details";
 
                     // Get flat data from extractor
-                    var allItems = _infoExtractor.GetRolesAndFeaturesData();
+                    var allItems = _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.GetRolesAndFeaturesData();
                     var itemsByKey = allItems.ToDictionary(i => i.KeyName, StringComparer.OrdinalIgnoreCase);
 
                     // Build parent-child lookup
@@ -5515,7 +5898,7 @@ namespace RegistryExpert
                     // Create profile buttons with enabled/disabled status
                     foreach (var (registryKey, profileKey, displayName) in profiles)
                     {
-                        var isEnabled = _infoExtractor.IsFirewallProfileEnabled(registryKey);
+                        var isEnabled = activeExtractor.IsFirewallProfileEnabled(registryKey);
                         var statusIcon = isEnabled ? "✅" : "❌";
                         var statusText = isEnabled ? "Enabled" : "Disabled";
                         
@@ -5657,7 +6040,7 @@ namespace RegistryExpert
                     physicalDisksDetails.Rows.Clear();
                     physicalDisksDetailsLabel.Text = "Disk Details";
 
-                    var physicalDisks = _infoExtractor.GetPhysicalDisks();
+                    var physicalDisks = activeExtractor.GetPhysicalDisks();
                     foreach (var disk in physicalDisks)
                     {
                         var diskDisplay = !string.IsNullOrEmpty(disk.FriendlyName)
@@ -5813,6 +6196,19 @@ namespace RegistryExpert
                     {
                         var rowIdx = contentGrid.Rows.Add(item.Name);
                         contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+                    }
+                }
+
+                // Style hive separator rows (used when multiple hives contribute to the same section)
+                foreach (DataGridViewRow row in contentGrid.Rows)
+                {
+                    if (row.Tag is AnalysisItem ai && ai.RegistryPath == "__hive_separator__")
+                    {
+                        row.DefaultCellStyle.Font = ModernTheme.BoldFont;
+                        row.DefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                        row.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                        row.DefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+                        row.DefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
                     }
                 }
 
@@ -6562,6 +6958,13 @@ namespace RegistryExpert
                 var selected = ((string text, string key))categoryList.SelectedItem;
                 var key = selected.key;
 
+                // Resolve the correct hive for this category (use the first hive as default active)
+                if (categoryHiveMap.TryGetValue(key, out var categoryHives) && categoryHives.Count > 0)
+                {
+                    activeParser = categoryHives[0].Parser;
+                    activeExtractor = categoryHives[0].InfoExtractor;
+                }
+
                 // Skip if category is disabled (MouseDown handler shows the message)
                 if (!enabledCategories.Contains(key)) return;
 
@@ -6574,7 +6977,7 @@ namespace RegistryExpert
 
                 // Hide appx filter panel when changing categories
                 appxFilterPanel.Visible = false;
-                
+
                 // Hide CBS Components search panel when changing categories
                 if (cbsComponentsSearchPanel != null) cbsComponentsSearchPanel.Visible = false;
 
@@ -6587,31 +6990,100 @@ namespace RegistryExpert
                     hideAllPanels();
                     contentGrid.Visible = true;
 
-                    if (allServicesCache.Count == 0)
-                    {
-                        allServicesCache = _infoExtractor.GetAllServices();
-                    }
+                    // Always reload services when entering the category — the activeExtractor
+                    // may have changed (e.g., user loaded a different SYSTEM hive).
+                    allServicesCache = activeExtractor.GetAllServices();
 
                     createServiceFilterButtons();
                     displayServicesWithFilter("All");
                     return;
                 }
 
-                // Regular category handling
+                // Regular category handling — merge sections from ALL relevant hives
                 if (!contentCache.ContainsKey(key))
                 {
-                    List<AnalysisSection> sections = key switch
+                    var allHives = categoryHiveMap.TryGetValue(key, out var hives) ? hives : new List<LoadedHive>();
+
+                    // Collect sections from each hive, merging by title
+                    var mergedSections = new List<AnalysisSection>();
+                    var sectionTitles = new HashSet<string>();
+
+                    foreach (var hive in allHives)
                     {
-                        "System" => _infoExtractor.GetSystemAnalysis(),
-                        "Profiles" => _infoExtractor.GetUserAnalysis(),
-                        "Network" => _infoExtractor.GetNetworkAnalysis(),
-                        "RDP" => _infoExtractor.GetRdpAnalysis(),
-                        "Update" => _infoExtractor.GetUpdateAnalysis(),
-                        "Storage" => _infoExtractor.GetStorageAnalysis(),
-                        "Software" => _infoExtractor.GetSoftwareAnalysis(),
-                        _ => new List<AnalysisSection>()
-                    };
-                    contentCache[key] = sections;
+                        var ext = hive.InfoExtractor;
+                        List<AnalysisSection> hiveSections = key switch
+                        {
+                            "System" => ext.GetSystemAnalysis(),
+                            "Profiles" => ext.GetUserAnalysis(),
+                            "Network" => ext.GetNetworkAnalysis(),
+                            "RDP" => ext.GetRdpAnalysis(),
+                            "Update" => ext.GetUpdateAnalysis(),
+                            "Storage" => ext.GetStorageAnalysis(),
+                            "Software" => ext.GetSoftwareAnalysis(),
+                            _ => new List<AnalysisSection>()
+                        };
+
+                        foreach (var section in hiveSections)
+                        {
+                            if (sectionTitles.Contains(section.Title))
+                            {
+                                // Duplicate section title from another hive — merge items
+                                var existing = mergedSections.Find(s => s.Title == section.Title);
+                                if (existing != null && section.Items != null && section.Items.Count > 0)
+                                {
+                                    if (existing.Items == null || existing.Items.Count == 0)
+                                    {
+                                        // Existing was empty, replace entirely
+                                        var idx = mergedSections.IndexOf(existing);
+                                        mergedSections[idx] = section;
+                                        sectionHiveMap[section] = hive;
+                                    }
+                                    else
+                                    {
+                                        // Both have data — merge items with hive separator headers
+                                        var prevHive = sectionHiveMap.TryGetValue(existing, out var ph) ? ph : null;
+                                        var prevHiveType = prevHive?.Parser.CurrentHiveType.ToString() ?? "Unknown";
+                                        var curHiveType = hive.Parser.CurrentHiveType.ToString();
+
+                                        // Prepend a separator for the first hive's items (if not already done)
+                                        if (existing.Items.Count > 0 && existing.Items[0].RegistryPath != "__hive_separator__")
+                                        {
+                                            existing.Items.Insert(0, new AnalysisItem
+                                            {
+                                                Name = $"── {prevHiveType} ──",
+                                                Value = "",
+                                                RegistryPath = "__hive_separator__"
+                                            });
+                                        }
+
+                                        // Add separator for the current hive
+                                        existing.Items.Add(new AnalysisItem
+                                        {
+                                            Name = $"── {curHiveType} ──",
+                                            Value = "",
+                                            RegistryPath = "__hive_separator__"
+                                        });
+
+                                        // Append all items from the current hive
+                                        existing.Items.AddRange(section.Items);
+
+                                        // Merged section has data from multiple hives — remove from sectionHiveMap
+                                        // so the subcategory click handler won't incorrectly switch activeExtractor
+                                        // to a single hive (the items are already fully merged inline).
+                                        sectionHiveMap.Remove(existing);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                sectionTitles.Add(section.Title);
+                                mergedSections.Add(section);
+                                sectionHiveMap[section] = hive;
+                            }
+                        }
+                    }
+
+                    contentCache[key] = mergedSections;
                 }
 
                 currentSections = contentCache[key];
@@ -6645,9 +7117,9 @@ namespace RegistryExpert
                     "📦 CBS Packages"
                 };
                 
-                var isSoftwareHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
-                var isSystemHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM;
-                var isComponentsHive = _parser.CurrentHiveType == OfflineRegistryParser.HiveType.COMPONENTS;
+                var isSoftwareHive = _loadedHives.ContainsKey(OfflineRegistryParser.HiveType.SOFTWARE);
+                var isSystemHive = _loadedHives.ContainsKey(OfflineRegistryParser.HiveType.SYSTEM);
+                var isComponentsHive = _loadedHives.ContainsKey(OfflineRegistryParser.HiveType.COMPONENTS);
                 // Use theme-aware color for grayed out buttons
                 var grayedOutColor = ModernTheme.TextDisabled;
 
@@ -6660,16 +7132,15 @@ namespace RegistryExpert
                 {
                     reqHive = "";
                     
-                    // For Update category: all subcategories require SOFTWARE hive (except CBS Components for COMPONENTS hive)
+                    // For Update category: SOFTWARE-based subcategories require SOFTWARE hive
                     if (key == "Update")
                     {
-                        if (isComponentsHive)
+                        if (!isSoftwareHive)
                         {
-                            // COMPONENTS hive: all SOFTWARE-based subcategories are unavailable
                             reqHive = "SOFTWARE";
                             return false;
                         }
-                        return isSoftwareHive;
+                        return true;
                     }
                     
                     if (key != "System") return true;
@@ -6693,7 +7164,7 @@ namespace RegistryExpert
                 {
                     // Skip "Notice" sections for Update category when COMPONENTS hive is loaded
                     // These are placeholder sections that don't provide useful functionality
-                    if (key == "Update" && isComponentsHive && section.Title.Contains("Notice"))
+                    if (key == "Update" && isComponentsHive && !isSoftwareHive && section.Title.Contains("Notice"))
                     {
                         continue;
                     }
@@ -6752,6 +7223,7 @@ namespace RegistryExpert
                     }
 
                     var capturedRequiredHive = requiredHive;
+                    var capturedSection = section;
                     btn.Click += (sender, args) =>
                     {
                         if (!sectionAvailable)
@@ -6765,7 +7237,14 @@ namespace RegistryExpert
                         }
                         else
                         {
-                            displaySection((AnalysisSection)btn.Tag);
+                            // Switch activeParser/activeExtractor to the hive that produced this section
+                            var sectionData = (AnalysisSection)btn.Tag;
+                            if (sectionHiveMap.TryGetValue(sectionData, out var sectionHive))
+                            {
+                                activeParser = sectionHive.Parser;
+                                activeExtractor = sectionHive.InfoExtractor;
+                            }
+                            displaySection(sectionData);
                         }
                     };
 
@@ -6777,8 +7256,8 @@ namespace RegistryExpert
                         unavailableButtons.Add(btn);
                 }
 
-                // Add grayed-out SOFTWARE-based Update subcategory buttons when COMPONENTS hive is loaded
-                if (key == "Update" && isComponentsHive)
+                // Add grayed-out SOFTWARE-based Update subcategory buttons when only COMPONENTS hive is loaded
+                if (key == "Update" && isComponentsHive && !isSoftwareHive)
                 {
                     foreach (var subcatTitle in updateSoftwareSubcategories)
                     {
@@ -6856,7 +7335,7 @@ namespace RegistryExpert
                         Size = DpiHelper.ScaleSize(110, 28),
                         Margin = DpiHelper.ScalePadding(2),
                         Cursor = isSoftwareHive ? Cursors.Hand : Cursors.Default,
-                        Tag = isSoftwareHive ? _infoExtractor.GetActivationAnalysis() : null,
+                        Tag = isSoftwareHive ? _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.GetActivationAnalysis() : null,
                         AccessibleName = "Activation"
                     };
                     activationBtn.FlatAppearance.BorderColor = isSoftwareHive ? ModernTheme.Border : grayedOutColor;
@@ -6915,7 +7394,7 @@ namespace RegistryExpert
                         unavailableButtons.Add(activationBtn);
 
                     // Add Roles/Features button (requires SOFTWARE hive from a Windows Server)
-                    bool hasRolesFeatures = isSoftwareHive && _infoExtractor.HasServerRolesAndFeatures();
+                    bool hasRolesFeatures = isSoftwareHive && _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.HasServerRolesAndFeatures();
                     var rolesSection = hasRolesFeatures
                         ? new AnalysisSection { Title = "\U0001f527 Roles & Features" }
                         : null;
@@ -7061,8 +7540,8 @@ namespace RegistryExpert
                 // Select first available section by default
                 AnalysisSection? firstAvailable = null;
                 
-                // For COMPONENTS hive + Update category, show Components overview (no auto-load)
-                if (key == "Update" && isComponentsHive)
+                // For COMPONENTS-only hive + Update category, show Components overview (no auto-load)
+                if (key == "Update" && isComponentsHive && !isSoftwareHive)
                 {
                     // Show Components overview when clicking Update category with COMPONENTS hive
                     displayComponentsOverview();
@@ -7105,7 +7584,7 @@ namespace RegistryExpert
                     else if (key == "System" && isSoftwareHive)
                     {
                         // For SOFTWARE hive, show Activation by default
-                        var activationSection = _infoExtractor.GetActivationAnalysis();
+                        var activationSection = _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.GetActivationAnalysis();
                         displaySection(activationSection);
                     }
                 }
@@ -7156,7 +7635,21 @@ namespace RegistryExpert
             if (_treeView.Nodes.Count == 0) return;
 
             var parts = keyPath.Split('\\');
-            TreeNode? currentNode = _treeView.Nodes[0];
+            if (parts.Length == 0) return;
+
+            // Find the correct root node by hive type prefix (e.g., "SYSTEM", "SOFTWARE")
+            TreeNode? currentNode = null;
+            foreach (TreeNode rootNode in _treeView.Nodes)
+            {
+                if (rootNode.Text.Equals(parts[0], StringComparison.OrdinalIgnoreCase))
+                {
+                    currentNode = rootNode;
+                    break;
+                }
+            }
+            // Fallback: if no match by hive type, try the first root node (single-hive compat)
+            if (currentNode == null)
+                currentNode = _treeView.Nodes[0];
             
             foreach (var part in parts.Skip(1))
             {
@@ -7720,6 +8213,9 @@ namespace RegistryExpert
             _treeView.LineColor = ModernTheme.Border;
             _treeView.Invalidate();
 
+            // Apply to add-hive button in tree header (owner-drawn, reads theme colors in Paint)
+            _addHiveBtn.Invalidate();
+
             // Apply to list view - need to re-apply theme for owner-draw
             ModernTheme.ApplyTo(_listView);
             _listView.Refresh();
@@ -8274,17 +8770,9 @@ namespace RegistryExpert
                 }
             }
             catch { }
-            
-            // Dispose the parser to release memory
-            try
-            {
-                _parser?.Dispose();
-                _parser = null;
-            }
-            catch { }
-            
-            _infoExtractor = null;
-            
+
+            // Disposal of parsers is handled by iterating _loadedHives in Dispose
+
             base.OnFormClosing(e);
         }
 
