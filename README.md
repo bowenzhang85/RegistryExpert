@@ -85,3 +85,9 @@ Side-by-side comparison of two registry hives of the same type. Color-coded diff
 6. **Compare** — Press **Ctrl+M** to compare two hives. Load a second hive of the same type and run the diff. Green nodes are unique to one side; red nodes have value differences.
 
 7. **Statistics** — Press **Ctrl+I** to see key counts and data sizes. Use the bloat detection tab to find keys with excessive subkeys or large data.
+
+## License
+
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+Licensed under the MIT license.
