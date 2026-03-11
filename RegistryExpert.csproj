@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RegistryExpert</AssemblyName>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
     <Company>RegistryExpert</Company>
     <Product>Registry Expert - Offline Registry Viewer</Product>
     <Description>A lightweight tool for viewing and analyzing offline Windows registry hive files</Description>
@@ -26,6 +26,11 @@
     <Content Remove="DevTools\**" />
     <EmbeddedResource Remove="DevTools\**" />
     <None Remove="DevTools\**" />
+    <Compile Remove="TempParser\**" />
+    <Content Remove="TempParser\**" />
+    <EmbeddedResource Remove="TempParser\**" />
+    <None Remove="TempParser\**" />
+    <Compile Remove="ParseTriggers.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -78,6 +83,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="Assets\registry_icon_timeline.png">
       <LogicalName>RegistryExpert.icons.toolbar_timeline.png</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_load-hive.png">
+      <LogicalName>RegistryExpert.icons.toolbar_load-hive.png</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="docs\images\reg_bin.png">
       <LogicalName>RegistryExpert.icons.reg_bin.png</LogicalName>

@@ -9,7 +9,7 @@ namespace RegistryExpert
     /// <summary>
     /// Extracts useful information from registry hives
     /// </summary>
-    public class RegistryInfoExtractor
+    public class RegistryInfoExtractor : IDisposable
     {
         private readonly OfflineRegistryParser _parser;
         
@@ -38,6 +38,14 @@ namespace RegistryExpert
                 }
             }
             catch { /* default to ControlSet001 */ }
+        }
+
+        public void Dispose()
+        {
+            _keyCache.Clear();
+            _valueCache.Clear();
+            _diskPartitionRegistry = null;
+            _activeStorageVolumeDiskIds = null;
         }
 
         /// <summary>
@@ -678,23 +686,6 @@ namespace RegistryExpert
                     });
                 }
                 
-                // Show grayed out agent status with hint to load SYSTEM hive
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "WindowsAzureGuestAgent",
-                    Value = "(Load SYSTEM hive to view)",
-                    RegistryPath = $@"{_currentControlSet}\Services\WindowsAzureGuestAgent",
-                    RegistryValue = "Agent service information requires SYSTEM hive.\nLoad the SYSTEM hive to see agent version and path."
-                });
-                
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "RdAgent",
-                    Value = "(Load SYSTEM hive to view)",
-                    RegistryPath = $@"{_currentControlSet}\Services\RdAgent",
-                    RegistryValue = "Agent service information requires SYSTEM hive.\nLoad the SYSTEM hive to see agent version and path."
-                });
-                
                 // Extensions are now shown via separate sub-tab (↳ Extensions)
             }
             else
@@ -720,15 +711,6 @@ namespace RegistryExpert
                     Value = string.IsNullOrEmpty(rdImagePath) ? "Not Found" : (string.IsNullOrEmpty(rdVersion) ? TruncatePath(rdImagePath, 100) : rdVersion),
                     RegistryPath = rdAgentPath,
                     RegistryValue = string.IsNullOrEmpty(rdImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(rdImagePath, 140)}"
-                });
-                
-                // Show hint about VmId in SOFTWARE hive
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "VmId",
-                    Value = "(Load SOFTWARE hive to view)",
-                    RegistryPath = @"Microsoft\Windows Azure",
-                    RegistryValue = "VM identification requires SOFTWARE hive.\nLoad the SOFTWARE hive to see VmId and Extensions."
                 });
             }
 
@@ -4915,16 +4897,12 @@ namespace RegistryExpert
             var backupKey = GetValue(backupProductKeyPath, "BackupProductKeyDefault");
             if (!string.IsNullOrEmpty(backupKey))
             {
-                // Only show last 5 chars for privacy
-                var maskedKey = backupKey.Length > 5 
-                    ? new string('*', backupKey.Length - 5) + backupKey.Substring(backupKey.Length - 5) 
-                    : backupKey;
                 section.Items.Add(new AnalysisItem
                 {
                     Name = "BackupProductKeyDefault",
-                    Value = maskedKey,
+                    Value = backupKey,
                     RegistryPath = backupProductKeyPath,
-                    RegistryValue = $"BackupProductKeyDefault = {maskedKey}"
+                    RegistryValue = $"BackupProductKeyDefault = {backupKey}"
                 });
             }
 
@@ -6358,6 +6336,9 @@ namespace RegistryExpert
             // .NET Framework versions
             sections.Add(GetDotNetFrameworkAnalysis());
 
+            // Scheduled Tasks
+            sections.Add(GetScheduledTasksAnalysis());
+
             return sections;
         }
 
@@ -6863,6 +6844,15 @@ namespace RegistryExpert
         }
 
         /// <summary>
+        /// Checks whether this SOFTWARE hive contains Scheduled Tasks data.
+        /// </summary>
+        public bool HasScheduledTasks()
+        {
+            var key = _parser.GetKey(@"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree");
+            return key?.SubKeys != null && key.SubKeys.Count > 0;
+        }
+
+        /// <summary>
         /// Extracts all server roles and features from ServerComponentCache
         /// </summary>
         public List<RoleFeatureItem> GetRolesAndFeaturesData()
@@ -6935,6 +6925,991 @@ namespace RegistryExpert
             }
 
             return results;
+        }
+
+        /// <summary>
+        /// Get scheduled tasks from TaskCache as a hierarchical section.
+        /// Tree entries map task names to GUIDs; Tasks entries hold the decoded details.
+        /// </summary>
+        public AnalysisSection GetScheduledTasksAnalysis()
+        {
+            var section = new AnalysisSection { Title = "📅 Scheduled Tasks" };
+
+            try
+            {
+                string treePath = @"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree";
+                string tasksPath = @"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks";
+                var treeKey = GetCachedKey(treePath);
+                if (treeKey == null)
+                {
+                    section.Items.Add(new AnalysisItem
+                    {
+                        Name = "No Data",
+                        Value = "TaskCache\\Tree not found in this hive"
+                    });
+                    return section;
+                }
+
+                // Build trigger-type lookup: GUID -> trigger type(s)
+                var triggerTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var triggerFolder in new[] { "Boot", "Logon", "Maintenance", "Plain" })
+                {
+                    var folderKey = GetCachedKey($@"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\{triggerFolder}");
+                    if (folderKey?.SubKeys != null)
+                    {
+                        foreach (var sub in folderKey.SubKeys)
+                        {
+                            var guid = sub.KeyName;
+                            if (triggerTypes.ContainsKey(guid))
+                                triggerTypes[guid] += ", " + triggerFolder;
+                            else
+                                triggerTypes[guid] = triggerFolder;
+                        }
+                    }
+                }
+
+                // Recursively walk the Tree, building hierarchical AnalysisItems
+                CollectTreeTasks(treeKey, treePath, tasksPath, triggerTypes, section.Items);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error reading scheduled tasks: {ex.Message}");
+                section.Items.Add(new AnalysisItem { Name = "Error", Value = ex.Message });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// Recursively collect tasks from the TaskCache\Tree hierarchy.
+        /// Folder keys (those with subkeys and no Id value) become parent items with IsSubSection=true.
+        /// Leaf task keys (those with an Id value) become task items with SubItems for decoded details.
+        /// </summary>
+        private void CollectTreeTasks(RegistryKey parentKey, string treePath, string tasksPath,
+            Dictionary<string, string> triggerTypes, List<AnalysisItem> items)
+        {
+            if (parentKey.SubKeys == null) return;
+
+            foreach (var subKey in parentKey.SubKeys.OrderBy(k => k.KeyName))
+            {
+                var keyPath = $@"{treePath}\{subKey.KeyName}";
+                var idValue = subKey.Values?.FirstOrDefault(v => v.ValueName == "Id")?.ValueData?.ToString();
+
+                if (!string.IsNullOrEmpty(idValue))
+                {
+                    // Skip orphaned tree entries whose GUID has no matching Tasks\{GUID} key
+                    var taskKeyPath = $@"{tasksPath}\{idValue}";
+                    if (GetCachedKey(taskKeyPath) == null)
+                        continue;
+
+                    // This is a task leaf node - look up details from Tasks\{GUID}
+                    var taskItem = BuildTaskItem(subKey.KeyName, idValue, tasksPath, triggerTypes, keyPath);
+                    items.Add(taskItem);
+                }
+                else if (subKey.SubKeys != null && subKey.SubKeys.Count > 0)
+                {
+                    // This is a folder node - recurse
+                    var subItems = new List<AnalysisItem>();
+                    CollectTreeTasks(subKey, keyPath, tasksPath, triggerTypes, subItems);
+
+                    // Skip empty folders (all children were orphaned)
+                    if (subItems.Count == 0) continue;
+
+                    var folderItem = new AnalysisItem
+                    {
+                        Name = subKey.KeyName,
+                        Value = $"{subItems.Count} item(s)",
+                        IsSubSection = true,
+                        RegistryPath = keyPath,
+                        SubItems = subItems
+                    };
+
+                    items.Add(folderItem);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Build an AnalysisItem for a single scheduled task by reading its Tasks\{GUID} entry.
+        /// </summary>
+        private AnalysisItem BuildTaskItem(string taskName, string guid, string tasksPath,
+            Dictionary<string, string> triggerTypes, string treeKeyPath)
+        {
+            var taskKeyPath = $@"{tasksPath}\{guid}";
+            var taskKey = GetCachedKey(taskKeyPath);
+
+            var item = new AnalysisItem
+            {
+                Name = taskName,
+                Value = guid,
+                RegistryPath = treeKeyPath,
+                RegistryValue = "Id",
+                SubItems = new List<AnalysisItem>()
+            };
+
+            if (taskKey == null)
+            {
+                item.SubItems.Add(new AnalysisItem { Name = "Status", Value = "Task details not found" });
+                return item;
+            }
+
+            // Determine task-level Enabled/Disabled status from Triggers blob
+            // The JobBucket flags DWORD is at offset 0x28 in the Triggers binary.
+            // Bit 0x400000 = enabled flag. If set, task is enabled; if not, disabled.
+            var triggersRaw = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Triggers")?.ValueDataRaw;
+            bool isTaskEnabled = true; // default to enabled if no Triggers data
+            if (triggersRaw != null && triggersRaw.Length >= 0x2C)
+            {
+                uint jobBucketFlags = BitConverter.ToUInt32(triggersRaw, 0x28);
+                isTaskEnabled = (jobBucketFlags & 0x400000) != 0;
+            }
+
+            item.SubItems.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = isTaskEnabled ? "Ready" : "Disabled",
+                RegistryPath = taskKeyPath,
+                RegistryValue = "Triggers"
+            });
+
+            if (!isTaskEnabled)
+                item.Name = taskName + " [Disabled]";
+
+            // Read string values
+            var path = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Path")?.ValueData?.ToString();
+            var author = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Author")?.ValueData?.ToString();
+            var description = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Description")?.ValueData?.ToString();
+            var source = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Source")?.ValueData?.ToString();
+            var uri = taskKey.Values?.FirstOrDefault(v => v.ValueName == "URI")?.ValueData?.ToString();
+            var version = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Version")?.ValueData?.ToString();
+            var securityDescriptor = taskKey.Values?.FirstOrDefault(v => v.ValueName == "SecurityDescriptor")?.ValueData?.ToString();
+            var dateStr = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Date")?.ValueData?.ToString();
+
+            if (!string.IsNullOrEmpty(path))
+                item.SubItems.Add(new AnalysisItem { Name = "Path", Value = path, RegistryPath = taskKeyPath, RegistryValue = "Path" });
+            if (!string.IsNullOrEmpty(uri) && uri != path)
+                item.SubItems.Add(new AnalysisItem { Name = "URI", Value = uri, RegistryPath = taskKeyPath, RegistryValue = "URI" });
+            if (!string.IsNullOrEmpty(author))
+                item.SubItems.Add(new AnalysisItem { Name = "Author", Value = author, RegistryPath = taskKeyPath, RegistryValue = "Author" });
+            if (!string.IsNullOrEmpty(description))
+                item.SubItems.Add(new AnalysisItem { Name = "Description", Value = description, RegistryPath = taskKeyPath, RegistryValue = "Description" });
+            if (!string.IsNullOrEmpty(source))
+                item.SubItems.Add(new AnalysisItem { Name = "Source", Value = source, RegistryPath = taskKeyPath, RegistryValue = "Source" });
+            if (!string.IsNullOrEmpty(version))
+                item.SubItems.Add(new AnalysisItem { Name = "Version", Value = version, RegistryPath = taskKeyPath, RegistryValue = "Version" });
+
+            // Trigger type from folder lookup
+            if (triggerTypes.TryGetValue(guid, out var triggerType))
+                item.SubItems.Add(new AnalysisItem { Name = "Trigger Type", Value = triggerType });
+
+            // Decode Actions binary
+            var actionsData = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Actions")?.ValueDataRaw;
+            if (actionsData != null && actionsData.Length > 0)
+            {
+                var actionsText = DecodeTaskActions(actionsData);
+                item.SubItems.Add(new AnalysisItem { Name = "Action", Value = actionsText, RegistryPath = taskKeyPath, RegistryValue = "Actions" });
+            }
+
+            // Decode Triggers binary
+            var triggersData = taskKey.Values?.FirstOrDefault(v => v.ValueName == "Triggers")?.ValueDataRaw;
+            if (triggersData != null && triggersData.Length > 0)
+            {
+                var triggerDescriptions = DecodeTaskTriggers(triggersData);
+                if (triggerDescriptions.Count > 0)
+                {
+                    for (int i = 0; i < triggerDescriptions.Count; i++)
+                    {
+                        var label = triggerDescriptions.Count == 1 ? "Trigger" : $"Trigger {i + 1}";
+                        item.SubItems.Add(new AnalysisItem { Name = label, Value = triggerDescriptions[i], RegistryPath = taskKeyPath, RegistryValue = "Triggers" });
+                    }
+                }
+            }
+
+            // Decode DynamicInfo binary (timestamps)
+            var dynamicData = taskKey.Values?.FirstOrDefault(v => v.ValueName == "DynamicInfo")?.ValueDataRaw;
+            if (dynamicData != null && dynamicData.Length >= 28)
+            {
+                var (registered, lastRun, lastSuccessfulRun) = DecodeTaskDynamicInfo(dynamicData);
+
+                // Show "Created" from the Date string value (original task creation date)
+                if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var createdDate))
+                    item.SubItems.Add(new AnalysisItem { Name = "Created", Value = createdDate.ToString("yyyy-MM-dd HH:mm:ss"), RegistryPath = taskKeyPath, RegistryValue = "Date" });
+
+                // Show "Last Registered" from DynamicInfo (when task was last re-registered with the service)
+                if (registered.HasValue)
+                    item.SubItems.Add(new AnalysisItem { Name = "Last Registered", Value = registered.Value.ToString("yyyy-MM-dd HH:mm:ss UTC"), RegistryPath = taskKeyPath, RegistryValue = "DynamicInfo" });
+
+                if (lastSuccessfulRun.HasValue)
+                    item.SubItems.Add(new AnalysisItem { Name = "Last Successful Run", Value = lastSuccessfulRun.Value.ToString("yyyy-MM-dd HH:mm:ss UTC"), RegistryPath = taskKeyPath, RegistryValue = "DynamicInfo" });
+            }
+            else if (!string.IsNullOrEmpty(dateStr) && DateTime.TryParse(dateStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var createdDateOnly))
+            {
+                // No DynamicInfo but we still have a Date value
+                item.SubItems.Add(new AnalysisItem { Name = "Created", Value = createdDateOnly.ToString("yyyy-MM-dd HH:mm:ss"), RegistryPath = taskKeyPath, RegistryValue = "Date" });
+            }
+
+
+            return item;
+        }
+
+        /// <summary>
+        /// Decode the Actions binary value from a scheduled task.
+        /// Format: version(2) + context_len(4) + context_utf16 + action_type(2+2+2) + payload
+        /// Action type 0x6666 = command line, 0x7777 = COM handler
+        /// </summary>
+        private string DecodeTaskActions(byte[] data)
+        {
+            try
+            {
+                if (data.Length < 8) return BitConverter.ToString(data);
+
+                int offset = 0;
+
+                // Version (2 bytes, typically 0x0003)
+                offset += 2;
+
+                // Context string length in bytes
+                int contextLen = BitConverter.ToInt32(data, offset);
+                offset += 4;
+
+                // Skip context string (UTF-16LE, contextLen bytes)
+                if (contextLen > 0 && offset + contextLen <= data.Length)
+                    offset += contextLen;
+
+                // Decode one or more actions
+                var actions = new List<string>();
+                while (offset + 6 <= data.Length)
+                {
+                    ushort marker = BitConverter.ToUInt16(data, offset);
+                    if (marker == 0) break; // end of actions
+
+                    offset += 2; // marker
+                    offset += 4; // 4 zero bytes after marker
+
+                    string actionText;
+                    if (marker == 0x6666)
+                    {
+                        actionText = DecodeCommandLineAction(data, offset);
+                    }
+                    else if (marker == 0x7777)
+                    {
+                        actionText = DecodeComHandlerAction(data, offset);
+                    }
+                    else if (marker == 0x8888)
+                    {
+                        actionText = "(Send Email - deprecated)";
+                    }
+                    else if (marker == 0x9999)
+                    {
+                        actionText = "(Show Message - deprecated)";
+                    }
+                    else
+                    {
+                        actionText = $"(action type 0x{marker:X4})";
+                    }
+
+                    actions.Add(actionText);
+
+                    // Single-action tasks are ~99% of real tasks.
+                    // Multi-action iteration would need ref-offset versions of decoders.
+                    break;
+                }
+
+                return actions.Count > 0 ? string.Join(" | ", actions) : "(no actions)";
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error decoding task actions: {ex.Message}");
+                return "(decode error)";
+            }
+        }
+
+        /// <summary>
+        /// Decode a command-line action from the Actions binary.
+        /// Format: command_len(4) + command_utf16 + args_len(4) + args_utf16 + workdir_len(4) + workdir_utf16
+        /// </summary>
+        private string DecodeCommandLineAction(byte[] data, int offset)
+        {
+            string command = ReadActionString(data, ref offset);
+            string args = ReadActionString(data, ref offset);
+            string workDir = ReadActionString(data, ref offset);
+
+            var result = command;
+            if (!string.IsNullOrEmpty(args))
+                result += " " + args;
+            if (!string.IsNullOrEmpty(workDir))
+                result += $" (in {workDir})";
+
+            return string.IsNullOrEmpty(result) ? "(empty command)" : result;
+        }
+
+        /// <summary>
+        /// Decode a COM handler action from the Actions binary.
+        /// Format: CLSID(16 bytes) + data_len(4) + data_utf16
+        /// </summary>
+        private string DecodeComHandlerAction(byte[] data, int offset)
+        {
+            return "Custom Handler";
+        }
+
+        /// <summary>
+        /// Read a length-prefixed UTF-16LE string from the Actions binary.
+        /// Format: length_in_bytes(4 bytes) + utf16_data (length bytes)
+        /// </summary>
+        private string ReadActionString(byte[] data, ref int offset)
+        {
+            if (offset + 4 > data.Length) return "";
+
+            int byteCount = BitConverter.ToInt32(data, offset);
+            offset += 4;
+
+            if (byteCount <= 0 || offset + byteCount > data.Length) return "";
+
+            var str = Encoding.Unicode.GetString(data, offset, byteCount).TrimEnd('\0');
+            offset += byteCount;
+            return str;
+        }
+
+        /// <summary>
+        /// Decode the DynamicInfo binary value from a scheduled task.
+        /// 36 bytes: version(4) + created_filetime(8) + last_run_filetime(8) + unknown(8) + last_successful_run_filetime(8)
+        /// </summary>
+        private (DateTime? Created, DateTime? LastRun, DateTime? LastSuccessfulRun) DecodeTaskDynamicInfo(byte[] data)
+        {
+            DateTime? created = null;
+            DateTime? lastRun = null;
+            DateTime? lastSuccessfulRun = null;
+
+            try
+            {
+                if (data.Length >= 12)
+                    created = FileTimeToDateTimeUtc(BitConverter.ToInt64(data, 4));
+                if (data.Length >= 20)
+                    lastRun = FileTimeToDateTimeUtc(BitConverter.ToInt64(data, 12));
+                if (data.Length >= 36)
+                    lastSuccessfulRun = FileTimeToDateTimeUtc(BitConverter.ToInt64(data, 28));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error decoding DynamicInfo: {ex.Message}");
+            }
+
+            return (created, lastRun, lastSuccessfulRun);
+        }
+
+        /// <summary>
+        /// Convert a Windows FILETIME (100-nanosecond intervals since 1601-01-01) to UTC DateTime.
+        /// Returns null for zero/invalid values.
+        /// </summary>
+        private DateTime? FileTimeToDateTimeUtc(long fileTime)
+        {
+            if (fileTime <= 0) return null;
+            try
+            {
+                return DateTime.FromFileTimeUtc(fileTime);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Align a position to the next 8-byte boundary.
+        /// </summary>
+        private static int Align8(int v) => (v + 7) & ~7;
+
+        /// <summary>
+        /// Compute the size of a string block in the Triggers binary.
+        /// If len == 0: 8 bytes (zero DWORD + 4 pad bytes).
+        /// If len > 0: Align8(4 + len) bytes (4-byte length prefix + string data + pad).
+        /// </summary>
+        private static int TriggerStrBlock(uint len) => len == 0 ? 8 : Align8(4 + (int)len);
+
+        /// <summary>
+        /// Format a number of seconds into a human-readable duration string.
+        /// </summary>
+        private static string FormatSeconds(uint seconds)
+        {
+            if (seconds >= 86400 && seconds % 86400 == 0)
+                return seconds / 86400 == 1 ? "1 day" : $"{seconds / 86400} days";
+            if (seconds >= 3600 && seconds % 3600 == 0)
+                return seconds / 3600 == 1 ? "1 hour" : $"{seconds / 3600} hours";
+            if (seconds >= 60 && seconds % 60 == 0)
+                return seconds / 60 == 1 ? "1 minute" : $"{seconds / 60} minutes";
+            return $"{seconds}s";
+        }
+
+        /// <summary>
+        /// Check if a trigger marker is a top-level marker (starts an independent trigger entry).
+        /// </summary>
+        private static bool IsTopLevelTriggerMarker(ushort marker) =>
+            marker == 0xFFFF || marker == 0xDDDD || marker == 0xAAAA ||
+            marker == 0x8888 || marker == 0x6666 || marker == 0xCCCC || marker == 0xBBBB;
+
+        /// <summary>
+        /// Check if a trigger marker is a sub-trigger marker (embedded inside a compound trigger).
+        /// </summary>
+        private static bool IsSubTriggerMarker(ushort marker) => marker == 0x7777 || marker == 0xEEEE;
+
+        /// <summary>
+        /// Convert a trigger type marker to a human-readable name.
+        /// </summary>
+        private static string TriggerMarkerToType(ushort marker) => marker switch
+        {
+            0xFFFF => "At startup",
+            0xDDDD => "On a schedule",
+            0xAAAA => "At log on",
+            0x8888 => "On idle",
+            0x6666 => "Custom Trigger",
+            0xCCCC => "At task creation/modification",
+            0xBBBB => "Session State Change",
+            0x7777 => "Session State Change",
+            0xEEEE => "Custom",
+            _ => $"Unknown (0x{marker:X4})"
+        };
+
+        /// <summary>
+        /// Convert a session state change code to a human-readable description.
+        /// Used by BBBB/7777 (Session) triggers.
+        /// </summary>
+        private static string SessionStateToDescription(uint stateCode) => stateCode switch
+        {
+            1 => "On connection to local session",
+            2 => "On disconnect from local session",
+            3 => "On connection to remote session",
+            4 => "On disconnect from remote session",
+            5 => "On session logon",
+            6 => "On session logoff",
+            7 => "On session lock",
+            8 => "On session unlock",
+            _ => $"Session state change ({stateCode})"
+        };
+
+        /// <summary>
+        /// Parse the Triggers binary header and return the byte offset where trigger entries begin.
+        /// The header contains: version(4) + reserved(4) + 3 FILETIMEs(24) + duration(8) = 40 fixed bytes,
+        /// followed by padded fields (job buckets, user string, flags, SID, display name, settings).
+        /// All fields use 8-byte alignment with 0x48 as the padding byte.
+        /// Returns -1 if the blob is too small or malformed.
+        /// </summary>
+        private static int SkipTriggerHeader(byte[] data)
+        {
+            if (data.Length < 0x30) return -1;
+
+            try
+            {
+                int pos = 0x28; // After 40-byte fixed header
+
+                // JobBucket1 (DWORD padded = 8 bytes) + JobBucket2 (DWORD padded = 8 bytes)
+                pos += 16;
+                if (pos + 8 > data.Length) return -1;
+
+                // UserStrLen (DWORD padded = 8 bytes) + UserString data + align
+                uint usrLen = BitConverter.ToUInt32(data, pos);
+                pos += 8;
+                if (usrLen > 0x1000 || pos + (int)usrLen > data.Length) return -1;
+                pos += (int)usrLen;
+                pos = Align8(pos);
+
+                // PostStr (DWORD padded) + Flags1 (BYTE padded) + Flags2 (BYTE padded) = 24 bytes
+                pos += 24;
+                if (pos + 8 > data.Length) return -1;
+
+                // SidSubAuthCount (DWORD padded = 8 bytes)
+                pos += 8;
+                if (pos + 8 > data.Length) return -1;
+
+                // SidByteLen (DWORD padded = 8 bytes) + SID data + align
+                uint sidLen = BitConverter.ToUInt32(data, pos);
+                pos += 8;
+                if (sidLen > 0x200 || pos + (int)sidLen > data.Length) return -1;
+                pos += (int)sidLen;
+                pos = Align8(pos);
+                if (pos + 8 > data.Length) return -1;
+
+                // DisplayNameLen (DWORD padded = 8 bytes) + optional DisplayName data + align
+                uint dispLen = BitConverter.ToUInt32(data, pos);
+                pos += 8;
+                if (dispLen > 0 && dispLen < 0x200)
+                {
+                    if (pos + (int)dispLen > data.Length) return -1;
+                    pos += (int)dispLen;
+                    pos = Align8(pos);
+                }
+                if (pos + 8 > data.Length) return -1;
+
+                // SettingsSize (DWORD padded = 8 bytes) + Settings data (NOT aligned)
+                uint setLen = BitConverter.ToUInt32(data, pos);
+                pos += 8;
+                if (setLen > 0x1000 || pos + (int)setLen > data.Length) return -1;
+                pos += (int)setLen;
+
+                // Optional trailing 0x48484848 pad
+                if (pos + 4 <= data.Length && data[pos] == 0x48 && data[pos + 1] == 0x48
+                    && data[pos + 2] == 0x48 && data[pos + 3] == 0x48)
+                    pos += 4;
+
+                return pos;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Walk embedded sub-triggers (0x7777 SESSION or 0xEEEE UNKNOWN) starting at the given position.
+        /// Returns the total bytes consumed by all sub-triggers.
+        /// </summary>
+        private static int WalkSubTriggers(byte[] data, int startPos)
+        {
+            int pos = startPos;
+            while (pos + 48 <= data.Length)
+            {
+                ushort sm = BitConverter.ToUInt16(data, pos);
+                if (!IsSubTriggerMarker(sm)) break;
+                if (pos + 8 > data.Length) break;
+                if (BitConverter.ToUInt16(data, pos + 2) != 0 || BitConverter.ToUInt32(data, pos + 4) != 0) break;
+
+                int sz = ComputeTriggerEntrySize(data, pos, sm);
+                if (sz <= 0) break;
+                pos += sz;
+            }
+            return pos - startPos;
+        }
+
+        /// <summary>
+        /// Compute the total size (48-byte header + tail) of a trigger entry at the given offset.
+        /// Returns -1 if the data is malformed.
+        /// </summary>
+        private static int ComputeTriggerEntrySize(byte[] data, int trigOffset, ushort marker)
+        {
+            int t = trigOffset + 48; // tail start
+            if (t > data.Length) return -1;
+
+            try
+            {
+                switch (marker)
+                {
+                    case 0xFFFF: // BOOT
+                    case 0x8888: // IDLE
+                    case 0xEEEE: // UNKNOWN sub-trigger
+                    {
+                        // Tail: 32-byte prefix + StrBlock(nameLen)
+                        if (t + 0x24 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen > 0x2000) return -1;
+                        int tailSize = 32 + TriggerStrBlock(nameLen);
+                        return 48 + tailSize;
+                    }
+
+                    case 0xDDDD: // TIME
+                    {
+                        // Tail: 48-byte prefix + StrBlock(nameLen) + optional sub-triggers
+                        if (t + 0x34 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x30);
+                        if (nameLen > 0x2000) return -1;
+                        int baseTail = 48 + TriggerStrBlock(nameLen);
+                        int subs = WalkSubTriggers(data, t + baseTail);
+                        return 48 + baseTail + subs;
+                    }
+
+                    case 0x6666: // EVENT
+                    {
+                        // Tail: 32-byte prefix + StrBlock(nameLen) + WNF(8) + subCount(4) + pad(4) + subData + optional sub-triggers
+                        if (t + 0x24 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen > 0x2000) return -1;
+                        int strBlk = TriggerStrBlock(nameLen);
+                        int afterStr = t + 32 + strBlk;
+                        if (afterStr + 12 > data.Length) return -1;
+                        uint subCount = BitConverter.ToUInt32(data, afterStr + 8);
+                        if (subCount > 0x10000) return -1;
+                        int baseTail = 32 + strBlk + 8 + 8 + (int)subCount;
+                        int subs = WalkSubTriggers(data, t + baseTail);
+                        return 48 + baseTail + subs;
+                    }
+
+                    case 0xAAAA: // LOGON
+                    {
+                        // Tail: 32-byte prefix + StrBlock(nameLen) + filterFlag(8) [+ user identity block]
+                        if (t + 0x24 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen > 0x2000) return -1;
+                        int strBlk = TriggerStrBlock(nameLen);
+                        int flagPos = t + 32 + strBlk;
+                        if (flagPos >= data.Length) return -1;
+                        byte filterFlag = data[flagPos];
+                        int baseTail = 32 + strBlk + 8;
+
+                        if (filterFlag == 0x00)
+                        {
+                            // Specific user: UnknownByte(8) + SidSubAuthCount(8) + SidByteLen(8) + SidData + DisplayNameLen(8) + DisplayName
+                            int pos = t + baseTail;
+                            pos += 8; // UnknownByte
+                            pos += 8; // SidSubAuthCount
+                            if (pos + 4 > data.Length) return -1;
+                            uint sidLen = BitConverter.ToUInt32(data, pos);
+                            if (sidLen > 0x200) return -1;
+                            pos += 8; // SidByteLen field
+                            pos += (int)sidLen;
+                            pos = Align8(pos);
+                            if (pos + 4 > data.Length) return -1;
+                            uint dispLen = BitConverter.ToUInt32(data, pos);
+                            if (dispLen > 0x2000) return -1;
+                            pos += 8; // DisplayNameLen field
+                            pos += (int)dispLen;
+                            pos = Align8(pos);
+                            return pos - trigOffset;
+                        }
+                        else
+                        {
+                            int subs = WalkSubTriggers(data, t + baseTail);
+                            return 48 + baseTail + subs;
+                        }
+                    }
+
+                    case 0xCCCC: // REGISTRATION
+                    {
+                        // Tail: 32-byte prefix + StrBlock(nameLen) + xmlLenChars(8) + xmlData + align + trailing(24)
+                        if (t + 0x24 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen > 0x2000) return -1;
+                        int strBlk = TriggerStrBlock(nameLen);
+                        int xmlLenPos = t + 32 + strBlk;
+                        if (xmlLenPos + 8 > data.Length) return -1;
+                        uint xmlChars = BitConverter.ToUInt32(data, xmlLenPos);
+                        if (xmlChars > 0x10000) return -1;
+                        int xmlBytes = (int)xmlChars * 2 + 2; // UTF-16 + null terminator
+                        int xmlEnd = xmlLenPos + 8 + xmlBytes;
+                        int xmlAligned = Align8(xmlEnd);
+                        return (xmlAligned - trigOffset) + 24;
+                    }
+
+                    case 0xBBBB: // SESSION (top-level)
+                    case 0x7777: // SESSION (sub-trigger)
+                    {
+                        // Tail: 32-byte prefix + StrBlock(nameLen) + sessionStateChange(8) + trailingByte(8) = +16
+                        if (t + 0x24 > data.Length) return -1;
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen > 0x2000) return -1;
+                        int tailSize = 32 + TriggerStrBlock(nameLen) + 16;
+                        return 48 + tailSize;
+                    }
+
+                    default:
+                        return -1;
+                }
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        /// <summary>
+        /// Decode the Triggers binary value from a scheduled task.
+        /// Returns a list of human-readable trigger descriptions.
+        /// Format: header (variable, 0x48-padded fields) + trigger entries (48-byte header + variable tail each).
+        /// Trigger types: 0xFFFF=Boot, 0xDDDD=Time, 0xAAAA=Logon, 0x8888=Idle,
+        ///   0x6666=Event, 0xCCCC=Registration, 0xBBBB/0x7777=Session, 0xEEEE=Custom.
+        /// </summary>
+        private List<string> DecodeTaskTriggers(byte[] data)
+        {
+            var results = new List<string>();
+
+            try
+            {
+                int pos = SkipTriggerHeader(data);
+                if (pos < 0 || pos >= data.Length) return results;
+
+                while (pos + 48 <= data.Length)
+                {
+                    ushort marker = BitConverter.ToUInt16(data, pos);
+                    if (!IsTopLevelTriggerMarker(marker)) break;
+
+                    // Validate marker signature: marker(2) + 00 00 + 00 00 00 00
+                    if (pos + 8 > data.Length) break;
+                    if (BitConverter.ToUInt16(data, pos + 2) != 0 || BitConverter.ToUInt32(data, pos + 4) != 0) break;
+
+                    string typeName = TriggerMarkerToType(marker);
+
+                    // Extract trigger name from tail
+                    int t = pos + 48;
+                    string? triggerName = null;
+                    string? xmlQuery = null;
+
+                    int nameOffset = (marker == 0xDDDD) ? 0x30 : 0x20;
+                    if (t + nameOffset + 4 <= data.Length)
+                    {
+                        uint nameLen = BitConverter.ToUInt32(data, t + nameOffset);
+                        if (nameLen > 0 && nameLen < 0x1000 && t + nameOffset + 4 + (int)nameLen <= data.Length)
+                        {
+                            triggerName = Encoding.Unicode.GetString(data, t + nameOffset + 4, (int)nameLen).TrimEnd('\0');
+                        }
+                    }
+
+                    // Extract repetition interval and per-trigger enabled/disabled flag.
+                    // GenericData triggers (Boot, Idle, Event, Logon, Registration, Session) store
+                    // repetition_interval at entry offset +0x30 and enabled at +0x40.
+                    // JobSchedule triggers (DDDD Time/Calendar) store repetition_interval at +0x38
+                    // and enabled at +0x44 (different layout).
+                    string? repetitionInfo = null;
+                    bool triggerEnabled = true;
+                    if (marker == 0xDDDD)
+                    {
+                        // DDDD uses JobSchedule: interval at tail+0x08 (pos+0x38), enabled at tail+0x14 (pos+0x44)
+                        int repPos = pos + 0x38;
+                        if (repPos + 8 <= data.Length)
+                        {
+                            uint repInterval = BitConverter.ToUInt32(data, repPos);
+                            uint repDuration = BitConverter.ToUInt32(data, repPos + 4);
+                            if (repInterval > 0 && repInterval != 0xFFFFFFFF)
+                            {
+                                var parts = new List<string>();
+                                parts.Add($"repeat every {FormatSeconds(repInterval)}");
+                                if (repDuration > 0 && repDuration != 0xFFFFFFFF)
+                                    parts.Add($"for {FormatSeconds(repDuration)}");
+                                repetitionInfo = string.Join(" ", parts);
+                            }
+                        }
+
+                        int enabledPos = pos + 0x44;
+                        if (enabledPos + 4 <= data.Length)
+                        {
+                            uint enabledFlag = BitConverter.ToUInt32(data, enabledPos);
+                            triggerEnabled = enabledFlag != 0;
+                        }
+                    }
+                    else
+                    {
+                        // GenericData layout: interval at entry+0x30, duration at +0x34, enabled at +0x40
+                        int repPos = pos + 0x30;
+                        if (repPos + 8 <= data.Length)
+                        {
+                            uint repInterval = BitConverter.ToUInt32(data, repPos);
+                            uint repDuration = BitConverter.ToUInt32(data, repPos + 4);
+                            if (repInterval > 0 && repInterval != 0xFFFFFFFF)
+                            {
+                                var parts = new List<string>();
+                                parts.Add($"repeat every {FormatSeconds(repInterval)}");
+                                if (repDuration > 0 && repDuration != 0xFFFFFFFF)
+                                    parts.Add($"for {FormatSeconds(repDuration)}");
+                                repetitionInfo = string.Join(" ", parts);
+                            }
+                        }
+
+                        int enabledPos = pos + 0x40;
+                        if (enabledPos + 1 <= data.Length)
+                        {
+                            triggerEnabled = data[enabledPos] != 0;
+                        }
+                    }
+
+                    // Extract XML query for Registration triggers
+                    if (marker == 0xCCCC && t + 0x24 <= data.Length)
+                    {
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        int strBlk = TriggerStrBlock(nameLen);
+                        int xmlPos = t + 32 + strBlk;
+                        if (xmlPos + 8 <= data.Length)
+                        {
+                            uint xmlChars = BitConverter.ToUInt32(data, xmlPos);
+                            if (xmlChars > 0 && xmlChars < 0x10000 && xmlPos + 8 + (int)xmlChars * 2 <= data.Length)
+                            {
+                                xmlQuery = Encoding.Unicode.GetString(data, xmlPos + 8, (int)xmlChars * 2).TrimEnd('\0');
+                            }
+                        }
+                    }
+
+                    // Extract user info for Logon triggers
+                    string? logonUserInfo = null;
+                    if (marker == 0xAAAA && t + 0x24 <= data.Length)
+                    {
+                        uint nameLen = BitConverter.ToUInt32(data, t + 0x20);
+                        if (nameLen <= 0x2000)
+                        {
+                            int strBlk = TriggerStrBlock(nameLen);
+                            int filterFlagPos = t + 32 + strBlk;
+                            if (filterFlagPos < data.Length)
+                            {
+                                byte filterFlag = data[filterFlagPos];
+                                if (filterFlag != 0x00)
+                                {
+                                    // Any user
+                                    logonUserInfo = "of any user";
+                                }
+                                else
+                                {
+                                    // Specific user — try to extract display name
+                                    // Layout after filterFlag: filterFlag(8) + UnknownByte(8) + SidSubAuthCount(8)
+                                    //   + SidByteLen(8) + SidData + align + DisplayNameLen(8) + DisplayName
+                                    int userPos = filterFlagPos + 8; // skip filterFlag padded field
+                                    userPos += 8; // skip UnknownByte
+                                    userPos += 8; // skip SidSubAuthCount
+                                    if (userPos + 4 <= data.Length)
+                                    {
+                                        uint sidLen = BitConverter.ToUInt32(data, userPos);
+                                        if (sidLen > 0 && sidLen <= 0x200)
+                                        {
+                                            userPos += 8; // skip SidByteLen field (padded)
+                                            userPos += (int)sidLen;
+                                            userPos = Align8(userPos);
+                                            if (userPos + 4 <= data.Length)
+                                            {
+                                                uint dispLen = BitConverter.ToUInt32(data, userPos);
+                                                if (dispLen > 0 && dispLen < 0x2000)
+                                                {
+                                                    userPos += 8; // skip DisplayNameLen field (padded)
+                                                    if (userPos + (int)dispLen <= data.Length)
+                                                    {
+                                                        string displayName = Encoding.Unicode.GetString(data, userPos, (int)dispLen).TrimEnd('\0');
+                                                        if (!string.IsNullOrEmpty(displayName))
+                                                            logonUserInfo = $"of {displayName}";
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Build human-readable description
+                    var desc = new StringBuilder(typeName);
+
+                    if (!string.IsNullOrEmpty(logonUserInfo))
+                        desc.Append($" {logonUserInfo}");
+
+                    if (!string.IsNullOrEmpty(triggerName))
+                        desc.Append($": {triggerName}");
+
+                    if (!string.IsNullOrEmpty(repetitionInfo))
+                        desc.Append($" ({repetitionInfo})");
+
+                    if (!string.IsNullOrEmpty(xmlQuery))
+                    {
+                        // Try to extract EventID from XML query for a cleaner display
+                        var eventIdMatch = System.Text.RegularExpressions.Regex.Match(xmlQuery, @"EventID=(\d+)");
+                        if (eventIdMatch.Success)
+                            desc.Append($" [EventID={eventIdMatch.Groups[1].Value}]");
+                        else
+                            desc.Append($" [{xmlQuery}]");
+                    }
+
+                    if (!triggerEnabled)
+                        desc.Append(" [Disabled]");
+
+                    results.Add(desc.ToString());
+
+                    // Decode sub-triggers (7777 Session / EEEE Custom) embedded in compound triggers
+                    int entrySize = ComputeTriggerEntrySize(data, pos, marker);
+                    if (entrySize > 0)
+                    {
+                        int subStart = -1;
+                        if (marker == 0xDDDD && t + 0x34 <= data.Length)
+                        {
+                            uint nLen = BitConverter.ToUInt32(data, t + 0x30);
+                            if (nLen <= 0x2000)
+                                subStart = t + 48 + TriggerStrBlock(nLen);
+                        }
+                        else if (marker == 0x6666 && t + 0x24 <= data.Length)
+                        {
+                            uint nLen = BitConverter.ToUInt32(data, t + 0x20);
+                            if (nLen <= 0x2000)
+                            {
+                                int strBlk = TriggerStrBlock(nLen);
+                                int afterStr = t + 32 + strBlk;
+                                if (afterStr + 12 <= data.Length)
+                                {
+                                    uint subCount = BitConverter.ToUInt32(data, afterStr + 8);
+                                    if (subCount <= 0x10000)
+                                        subStart = t + 32 + strBlk + 8 + 8 + (int)subCount;
+                                }
+                            }
+                        }
+
+                        if (subStart > 0)
+                        {
+                            int subEnd = pos + entrySize;
+                            DecodeSubTriggers(data, subStart, subEnd, results);
+                        }
+                    }
+
+                    // Advance past this trigger entry (including its sub-triggers)
+                    if (entrySize <= 0) break;
+                    pos += entrySize;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error decoding task triggers: {ex.Message}");
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Decode embedded sub-triggers (0x7777 Session or 0xEEEE Custom) and add their descriptions to results.
+        /// Sub-triggers are found inside compound triggers (DDDD Time/Calendar and 6666 Event).
+        /// </summary>
+        private void DecodeSubTriggers(byte[] data, int startPos, int endPos, List<string> results)
+        {
+            int pos = startPos;
+            while (pos + 48 <= endPos && pos + 48 <= data.Length)
+            {
+                ushort sm = BitConverter.ToUInt16(data, pos);
+                if (!IsSubTriggerMarker(sm)) break;
+                if (pos + 8 > data.Length) break;
+                if (BitConverter.ToUInt16(data, pos + 2) != 0 || BitConverter.ToUInt32(data, pos + 4) != 0) break;
+
+                string typeName = TriggerMarkerToType(sm);
+                int st = pos + 48; // sub-trigger tail start
+
+                // For 7777 (Session) sub-triggers: extract session state change type
+                // Tail: 32-byte prefix + StrBlock(nameLen) + sessionStateChange(8) + disabledFlag(8)
+                if (sm == 0x7777 && st + 0x24 <= data.Length)
+                {
+                    uint nameLen = BitConverter.ToUInt32(data, st + 0x20);
+                    if (nameLen <= 0x2000)
+                    {
+                        int strBlk = TriggerStrBlock(nameLen);
+                        int statePos = st + 32 + strBlk;
+                        if (statePos + 8 <= data.Length)
+                        {
+                            uint stateCode = BitConverter.ToUInt32(data, statePos);
+                            var desc = new StringBuilder(SessionStateToDescription(stateCode));
+
+                            // Disabled flag: byte at statePos + 8 (padded to 8 bytes)
+                            // Observed: 0x01 = disabled for all known disabled 7777 triggers
+                            int flagPos = statePos + 8;
+                            if (flagPos < data.Length && data[flagPos] == 0x01)
+                                desc.Append(" [Disabled]");
+
+                            results.Add(desc.ToString());
+                        }
+                        else
+                        {
+                            results.Add(typeName);
+                        }
+                    }
+                    else
+                    {
+                        results.Add(typeName);
+                    }
+                }
+                else
+                {
+                    // EEEE (Custom) or unknown sub-trigger — just show the type name
+                    results.Add(typeName);
+                }
+
+                int sz = ComputeTriggerEntrySize(data, pos, sm);
+                if (sz <= 0) break;
+                pos += sz;
+            }
         }
 
         #endregion

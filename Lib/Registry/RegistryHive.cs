@@ -1654,4 +1654,17 @@ public class RegistryHive : RegistryBase
                 }
             }
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            CellRecords?.Clear();
+            ListRecords?.Clear();
+            DeletedRegistryKeys?.Clear();
+            UnassociatedRegistryValues?.Clear();
+            Root = null!;
+        }
+        base.Dispose(disposing);
+    }
 }

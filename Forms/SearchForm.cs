@@ -893,9 +893,14 @@ namespace RegistryExpert
         {
             if (disposing)
             {
-                _searchCts?.Cancel();
-                _searchCts?.Dispose();
+                var cts = _searchCts;
+                _searchCts = null;
+                try { cts?.Cancel(); } catch (ObjectDisposedException) { }
+                cts?.Dispose();
                 _searchIconList?.Dispose();
+                _allMatches.Clear();
+                _searchResults.Clear();
+                _resultsGrid.Rows.Clear();
             }
             base.Dispose(disposing);
         }

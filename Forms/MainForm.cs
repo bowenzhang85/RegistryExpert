@@ -83,6 +83,14 @@ namespace RegistryExpert
         public Panel? RolesDetailsHeader { get; set; }
         public Label? RolesDetailsLabel { get; set; }
         public DataGridView? RolesDetailsGrid { get; set; }
+        // Scheduled Tasks panel controls
+        public SplitContainer? ScheduledTasksSplit { get; set; }
+        public TreeView? ScheduledTasksTree { get; set; }
+        public Panel? ScheduledTasksTreeHeader { get; set; }
+        public Label? ScheduledTasksTreeLabel { get; set; }
+        public Panel? ScheduledTasksDetailsHeader { get; set; }
+        public Label? ScheduledTasksDetailsLabel { get; set; }
+        public DataGridView? ScheduledTasksDetailsGrid { get; set; }
         // Fonts used in drawing (need explicit disposal)
         public Font? CategoryTextFont { get; set; }
         public ToolTip? CategoryToolTip { get; set; }
@@ -115,6 +123,7 @@ namespace RegistryExpert
 
             public void Dispose()
             {
+                InfoExtractor.Dispose();
                 Parser.Dispose();
             }
         }
@@ -582,20 +591,24 @@ namespace RegistryExpert
                     g.FillPath(hoverBrush, path);
                 }
 
-                // Draw "+" icon in accent color
-                var iconFont = _iconFont10;
-                using var iconBrush = new SolidBrush(ModernTheme.Accent);
-                var iconSize = g.MeasureString("\uE710", iconFont);
+                // Draw load-hive icon from cached toolbar icons
+                int iconDim = DpiHelper.Scale(20);
                 var textSize = g.MeasureString("Load Hive", ModernTheme.SmallFont);
-                var totalWidth = iconSize.Width + DpiHelper.Scale(2) + textSize.Width;
+                var gap = DpiHelper.Scale(4);
+                var totalWidth = iconDim + gap + textSize.Width;
                 var startX = (_addHiveBtn.Width - totalWidth) / 2;
-                var iconY = (_addHiveBtn.Height - iconSize.Height) / 2;
-                g.DrawString("\uE710", iconFont, iconBrush, startX, iconY);
+                var iconY = (_addHiveBtn.Height - iconDim) / 2;
+
+                if (_toolbarIcons.TryGetValue("load-hive", out var cachedIcon))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(cachedIcon, startX, iconY, iconDim, iconDim);
+                }
 
                 // Draw "Load Hive" text in muted color (matches toolbar text style)
                 using var textBrush = new SolidBrush(ModernTheme.TextSecondary);
                 var textY = (_addHiveBtn.Height - textSize.Height) / 2;
-                g.DrawString("Load Hive", ModernTheme.SmallFont, textBrush, startX + iconSize.Width + DpiHelper.Scale(2), textY);
+                g.DrawString("Load Hive", ModernTheme.SmallFont, textBrush, startX + iconDim + gap, textY);
             };
 
             _addHiveBtn.Click += OpenHive_Click;
@@ -903,18 +916,11 @@ namespace RegistryExpert
                 Location = DpiHelper.ScalePoint(0, 175)
             };
 
-            var openButton = ModernTheme.CreateButton("  Open Hive Files  ", OpenHive_Click);
-            openButton.Size = DpiHelper.ScaleSize(220, 42);
+            var openButton = CreateWelcomeButton("Open Hive Files", OpenHive_Click);
             openButton.Location = DpiHelper.ScalePoint(140, 245);
 
-            // Compare button
-            var compareButton = ModernTheme.CreateButton("  Compare Hives  ", (s, e) => ShowCompare_Click(s, e));
-            compareButton.Size = DpiHelper.ScaleSize(220, 42);
+            var compareButton = CreateWelcomeButton("Compare Hives", (s, e) => ShowCompare_Click(s, e));
             compareButton.Location = DpiHelper.ScalePoint(140, 300);
-            compareButton.BackColor = ModernTheme.Surface;
-            compareButton.ForeColor = ModernTheme.TextPrimary;
-            compareButton.FlatAppearance.BorderColor = ModernTheme.Accent;
-            compareButton.FlatAppearance.BorderSize = 1;
 
             // Hint text
             var hintLabel = new Label
@@ -940,6 +946,74 @@ namespace RegistryExpert
             };
 
             return panel;
+        }
+
+        /// <summary>
+        /// Creates an owner-drawn rounded-rect button for the welcome screen,
+        /// matching the toolbar pill-button aesthetic.
+        /// </summary>
+        private Button CreateWelcomeButton(string text, EventHandler onClick)
+        {
+            var btn = new Button
+            {
+                Size = DpiHelper.ScaleSize(220, 42),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = ModernTheme.Surface,
+                Cursor = Cursors.Hand,
+                TabStop = false,
+                Text = "" // We owner-draw the text
+            };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            btn.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            btn.Click += onClick;
+
+            bool isHovered = false;
+            bool isPressed = false;
+            btn.MouseEnter += (s, e) => { isHovered = true; btn.Invalidate(); };
+            btn.MouseLeave += (s, e) => { isHovered = false; isPressed = false; btn.Invalidate(); };
+            btn.MouseDown += (s, e) => { isPressed = true; btn.Invalidate(); };
+            btn.MouseUp += (s, e) => { isPressed = false; btn.Invalidate(); };
+
+            btn.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                var rect = new Rectangle(0, 0, btn.Width - 1, btn.Height - 1);
+                var radius = DpiHelper.Scale(8);
+                int d = radius * 2;
+
+                using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+                path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+                path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+                path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+
+                // Background fill
+                var bgColor = isPressed ? ModernTheme.SurfaceLight
+                            : isHovered ? ModernTheme.SurfaceHover
+                            : ModernTheme.Surface;
+                using var bgBrush = new SolidBrush(bgColor);
+                g.FillPath(bgBrush, path);
+
+                // Border
+                var borderColor = isHovered ? ModernTheme.TextSecondary : Color.FromArgb(90, 90, 100);
+                using var borderPen = new Pen(borderColor, 1f);
+                g.DrawPath(borderPen, path);
+
+                // Centered text
+                var textColor = isPressed ? Color.White : ModernTheme.TextPrimary;
+                using var textBrush = new SolidBrush(textColor);
+                var textSize = g.MeasureString(text, ModernTheme.RegularFont);
+                var textX = (btn.Width - textSize.Width) / 2f;
+                var textY = (btn.Height - textSize.Height) / 2f;
+                g.DrawString(text, ModernTheme.RegularFont, textBrush, textX, textY);
+            };
+
+            return btn;
         }
 
         private void RefreshDropPanel()
@@ -1491,6 +1565,22 @@ namespace RegistryExpert
                 }
             }
 
+            // Cache load-hive icon at smaller size (used in tree header, not toolbar)
+            int loadHiveIconSize = DpiHelper.Scale(20);
+            using var loadHiveStream = assembly.GetManifestResourceStream("RegistryExpert.icons.toolbar_load-hive.png");
+            if (loadHiveStream != null)
+            {
+                using var original = Image.FromStream(loadHiveStream);
+                var scaled = new Bitmap(loadHiveIconSize, loadHiveIconSize);
+                using (var g = Graphics.FromImage(scaled))
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.HighQuality;
+                    g.DrawImage(original, 0, 0, loadHiveIconSize, loadHiveIconSize);
+                }
+                _toolbarIcons["load-hive"] = scaled;
+            }
+
             var flow = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -1824,6 +1914,29 @@ namespace RegistryExpert
         {
             if (!_loadedHives.TryGetValue(hiveType, out var hive)) return;
 
+            // Close child forms that may hold references to hive data
+            _searchForm?.Close();
+            _searchForm = null;
+
+            _analyzeForm?.Close();
+            _analyzeForm = null;
+
+            _statisticsForm?.Close();
+            _statisticsForm = null;
+
+            _timelineForm?.Close();
+            _timelineForm = null;
+
+            // CompareForm runs on its own STA thread - marshal Close() to its thread
+            // Use Invoke (synchronous) so the form is fully closed before we dispose the hive
+            var cf = _compareForm;
+            if (cf != null && !cf.IsDisposed)
+            {
+                try { cf.Invoke(() => cf.Close()); } catch { }
+            }
+            _compareForm = null;
+            _compareThread = null;
+
             _treeView.Nodes.Remove(hive.RootNode);
             _loadedHives.Remove(hiveType);
             hive.Dispose();
@@ -1846,6 +1959,10 @@ namespace RegistryExpert
             PopulateBookmarks();
             UpdateHiveStatusBar();
             UpdateTitleBar();
+
+            // Force GC to reclaim memory from disposed hive structures
+            GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+            GC.WaitForPendingFinalizers();
         }
 
         /// <summary>
@@ -2244,6 +2361,10 @@ namespace RegistryExpert
                 // Run the message pump for this form on this thread
                 Application.Run(form);
                 
+                // Force GC to reclaim memory from disposed CompareForm (500K+ TreeView nodes)
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+                
                 // Clean up cloned icon after form is done
                 iconCopy?.Dispose();
             });
@@ -2273,7 +2394,14 @@ namespace RegistryExpert
                 .Select(h => (h.Parser, h.Parser.CurrentHiveType.ToString()))
                 .ToList();
             _timelineForm = new TimelineForm(timelineParserList, this);
-            _timelineForm.FormClosed += (s, ev) => { _timelineForm = null; };
+            _timelineForm.FormClosed += (s, ev) =>
+            {
+                _timelineForm = null;
+                ((Form)s!).Dispose();
+                // Force GC to reclaim memory from disposed Timeline form (large entry lists)
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+            };
             _timelineForm.Show();
         }
 
@@ -2440,7 +2568,14 @@ namespace RegistryExpert
             mainPanel.Controls.Add(headerPanel);
             form.Controls.Add(mainPanel);
 
-            form.FormClosed += (s, ev) => { _statisticsForm = null; };
+            form.FormClosed += (s, ev) =>
+            {
+                _statisticsForm = null;
+                form.Dispose();
+                // Force GC to reclaim memory from disposed Statistics form controls
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+            };
             form.Show();
 
             // Capture parser reference to avoid race condition if user loads new hive
@@ -2452,6 +2587,7 @@ namespace RegistryExpert
             {
                 // Update summary cards
                 var newStats = p.GetStatistics();
+                foreach (Control c in summaryFlow.Controls) c.Dispose();
                 summaryFlow.Controls.Clear();
                 summaryFlow.Controls.Add(CreateStatCard("File Size", newStats.FormattedFileSize, ModernTheme.Accent));
                 summaryFlow.Controls.Add(CreateStatCard("Total Keys", newStats.TotalKeys.ToString("N0"), ModernTheme.Success));
@@ -2459,7 +2595,9 @@ namespace RegistryExpert
                 summaryFlow.Controls.Add(CreateStatCard("Hive Type", newStats.HiveType.ToString(), ModernTheme.Info));
 
                 // Reset tabs
+                foreach (Control c in keyCountTab.Controls) c.Dispose();
                 keyCountTab.Controls.Clear();
+                foreach (Control c in keySizeTab.Controls) c.Dispose();
                 keySizeTab.Controls.Clear();
                 var loading1 = new Label { Text = "Analyzing registry structure...", Font = ModernTheme.RegularFont, ForeColor = ModernTheme.TextSecondary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
                 var loading2 = new Label { Text = "Analyzing registry structure...", Font = ModernTheme.RegularFont, ForeColor = ModernTheme.TextSecondary, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter };
@@ -2475,7 +2613,9 @@ namespace RegistryExpert
                         form.Invoke(() =>
                         {
                             if (form.IsDisposed) return;
+                            foreach (Control c in keyCountTab.Controls) c.Dispose();
                             keyCountTab.Controls.Clear();
+                            foreach (Control c in keySizeTab.Controls) c.Dispose();
                             keySizeTab.Controls.Clear();
                             var keyCountPanel = CreateExpandableStatsPanel(
                                 keyStats.OrderByDescending(k => k.SubKeyCount).ToList(),
@@ -2789,8 +2929,8 @@ namespace RegistryExpert
                 }
             };
             
-            // Dispose tooltip when panel is disposed
-            panel.Disposed += (s, e) => treeToolTip.Dispose();
+            // Dispose tooltip and clear node dictionary when panel is disposed
+            panel.Disposed += (s, e) => { treeToolTip.Dispose(); nodeValues.Clear(); };
 
             panel.Controls.Add(tree);
             return panel;
@@ -3000,7 +3140,13 @@ namespace RegistryExpert
                 .Select(h => (h.Parser, h.Parser.CurrentHiveType.ToString()))
                 .ToList();
             _searchForm = new SearchForm(parserList, this);
-            _searchForm.FormClosed += (s, ev) => { _searchForm = null; };
+            _searchForm.FormClosed += (s, ev) =>
+            {
+                _searchForm = null;
+                ((Form)s!).Dispose();
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
+            };
             _searchForm.Show();
         }
 
@@ -4031,6 +4177,105 @@ namespace RegistryExpert
 
             rolesFeaturesSplit.Panel2.Controls.Add(rolesDetailsPanel);
 
+            // ==================== Scheduled Tasks Panel ====================
+            var scheduledTasksSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = 100,
+                Panel2MinSize = 100,
+                Visible = false
+            };
+            scheduledTasksSplit.Panel1.BackColor = ModernTheme.Background;
+            scheduledTasksSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.ScheduledTasksSplit = scheduledTasksSplit;
+
+            scheduledTasksSplit.VisibleChanged += (s, ev) =>
+            {
+                if (scheduledTasksSplit.Visible && scheduledTasksSplit.Width > 300)
+                {
+                    try { scheduledTasksSplit.SplitterDistance = DpiHelper.Scale(320); } catch { }
+                }
+            };
+
+            // Scheduled Tasks tree (left)
+            var scheduledTasksTree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                Font = ModernTheme.RegularFont,
+                BorderStyle = BorderStyle.None,
+                FullRowSelect = true,
+                HideSelection = false,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                ItemHeight = DpiHelper.Scale(22),
+                AccessibleName = "Scheduled Tasks Tree",
+                AccessibleRole = AccessibleRole.Outline
+            };
+            themeData.ScheduledTasksTree = scheduledTasksTree;
+
+            var scheduledTasksTreeHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.ScheduledTasksTreeHeader = scheduledTasksTreeHeader;
+            var scheduledTasksTreeLabel = new Label
+            {
+                Text = "Task Folders",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            scheduledTasksTreeHeader.Controls.Add(scheduledTasksTreeLabel);
+            themeData.ScheduledTasksTreeLabel = scheduledTasksTreeLabel;
+
+            scheduledTasksSplit.Panel1.Controls.Add(scheduledTasksTree);
+            scheduledTasksSplit.Panel1.Controls.Add(scheduledTasksTreeHeader);
+
+            // Scheduled Tasks details (right)
+            var scheduledTasksDetailsPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Background
+            };
+
+            var scheduledTasksDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
+            };
+            themeData.ScheduledTasksDetailsHeader = scheduledTasksDetailsHeader;
+            var scheduledTasksDetailsLabel = new Label
+            {
+                Text = "Task Details",
+                Font = new Font("Segoe UI Semibold", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            scheduledTasksDetailsHeader.Controls.Add(scheduledTasksDetailsLabel);
+            themeData.ScheduledTasksDetailsLabel = scheduledTasksDetailsLabel;
+
+            var scheduledTasksDetailsGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(scheduledTasksDetailsGrid);
+            themeData.ScheduledTasksDetailsGrid = scheduledTasksDetailsGrid;
+
+            scheduledTasksDetailsPanel.Controls.Add(scheduledTasksDetailsGrid);
+            scheduledTasksDetailsPanel.Controls.Add(scheduledTasksDetailsHeader);
+
+            scheduledTasksSplit.Panel2.Controls.Add(scheduledTasksDetailsPanel);
+
             // ===== Disk/Partition Split Pane =====
             var diskPartitionSplit = new SplitContainer
             {
@@ -4276,6 +4521,9 @@ namespace RegistryExpert
 
             // Device Manager state
             DeviceItem? selectedDevice = null;
+
+            // Scheduled Tasks state
+            TreeViewEventHandler? scheduledTasksTree_AfterSelect = null;
 
             // Cache for network adapters
             List<NetworkAdapterItem> networkAdaptersCache = new();
@@ -4873,6 +5121,7 @@ namespace RegistryExpert
                 firewallPanel.Visible = false;
                 deviceManagerSplit.Visible = false;
                 rolesFeaturesSplit.Visible = false;
+                scheduledTasksSplit.Visible = false;
                 diskPartitionSplit.Visible = false;
                 physicalDisksSplit.Visible = false;
                 appxFilterPanel.Visible = false;
@@ -4886,6 +5135,7 @@ namespace RegistryExpert
 
                 hideAllPanels();
                 contentGrid.Visible = true;
+                appxFilterPanel.Visible = true; // Restore after hideAllPanels - keeps CBS sub-buttons visible
 
                 switch (viewKey)
                 {
@@ -5860,6 +6110,175 @@ namespace RegistryExpert
                     {
                         rolesTree.SelectedNode = rolesTree.Nodes[0];
                         rolesDetailsGrid.ClearSelection();
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Scheduled Tasks - use tree + detail view
+                if (section.Title.Contains("Scheduled Tasks"))
+                {
+                    contentGrid.Visible = false;
+                    scheduledTasksSplit.Visible = true;
+
+                    scheduledTasksTree.Nodes.Clear();
+                    scheduledTasksDetailsGrid.Columns.Clear();
+                    scheduledTasksDetailsGrid.Rows.Clear();
+                    scheduledTasksDetailsLabel.Text = "Task Details";
+
+                    // Count total tasks for the header
+                    int totalTasks = 0;
+
+                    // Check if a tree node (folder) contains any Ready (non-disabled) task recursively
+                    bool HasReadyTask(TreeNode folderNode)
+                    {
+                        foreach (TreeNode child in folderNode.Nodes)
+                        {
+                            if (child.Nodes.Count > 0)
+                            {
+                                // Sub-folder - recurse
+                                if (HasReadyTask(child)) return true;
+                            }
+                            else
+                            {
+                                // Leaf task - check if not disabled
+                                if (!child.Text.EndsWith(" [Disabled]", StringComparison.Ordinal))
+                                    return true;
+                            }
+                        }
+                        return false;
+                    }
+
+                    // Recursive tree builder from hierarchical AnalysisItems
+                    void AddScheduledTaskNodes(List<AnalysisItem> sourceItems, TreeNodeCollection targetNodes)
+                    {
+                        foreach (var item in sourceItems)
+                        {
+                            var node = new TreeNode(item.Name)
+                            {
+                                Tag = item
+                            };
+
+                            if (item.IsSubSection && item.SubItems != null)
+                            {
+                                // Folder node - recurse into children
+                                node.ForeColor = ModernTheme.TextPrimary;
+                                AddScheduledTaskNodes(item.SubItems, node.Nodes);
+                            }
+                            else
+                            {
+                                // Task leaf node
+                                totalTasks++;
+                                // Dim disabled tasks for visual distinction
+                                bool isDisabled = item.Name.EndsWith(" [Disabled]", StringComparison.Ordinal);
+                                node.ForeColor = isDisabled ? ModernTheme.TextSecondary : ModernTheme.TextPrimary;
+                            }
+
+                            targetNodes.Add(node);
+                        }
+
+                        // Grey out folders with no Ready tasks and move them to the bottom
+                        var disabledFolders = new List<TreeNode>();
+                        foreach (TreeNode node in targetNodes)
+                        {
+                            if (node.Nodes.Count > 0 && !HasReadyTask(node))
+                            {
+                                node.ForeColor = ModernTheme.TextSecondary;
+                                disabledFolders.Add(node);
+                            }
+                        }
+                        foreach (var node in disabledFolders)
+                        {
+                            targetNodes.Remove(node);
+                            targetNodes.Add(node);
+                        }
+                    }
+
+                    AddScheduledTaskNodes(section.Items, scheduledTasksTree.Nodes);
+
+                    scheduledTasksTreeLabel.Text = $"Task Folders ({totalTasks} tasks)";
+
+                    // Tree starts collapsed by default
+
+                    // Handle tree selection -> show details in grid
+                    scheduledTasksTree.AfterSelect -= scheduledTasksTree_AfterSelect!;
+                    scheduledTasksTree_AfterSelect = (s, ev) =>
+                    {
+                        scheduledTasksDetailsGrid.Columns.Clear();
+                        scheduledTasksDetailsGrid.Rows.Clear();
+
+                        if (ev.Node?.Tag is AnalysisItem selectedItem)
+                        {
+                            if (selectedItem.IsSubSection)
+                            {
+                                // Folder selected - show summary of child tasks
+                                scheduledTasksDetailsLabel.Text = $"Folder: {selectedItem.Name}";
+
+                                scheduledTasksDetailsGrid.Columns.Add("Property", "Property");
+                                scheduledTasksDetailsGrid.Columns.Add("Value", "Value");
+                                scheduledTasksDetailsGrid.Columns[0].Width = DpiHelper.Scale(150);
+                                scheduledTasksDetailsGrid.Columns[1].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+
+                                // Count tasks recursively in this folder
+                                int CountTasks(AnalysisItem folder)
+                                {
+                                    int count = 0;
+                                    if (folder.SubItems == null) return 0;
+                                    foreach (var sub in folder.SubItems)
+                                    {
+                                        if (sub.IsSubSection)
+                                            count += CountTasks(sub);
+                                        else
+                                            count++;
+                                    }
+                                    return count;
+                                }
+
+                                int folderTaskCount = CountTasks(selectedItem);
+                                int subFolderCount = selectedItem.SubItems?.Count(i => i.IsSubSection) ?? 0;
+                                int directTaskCount = selectedItem.SubItems?.Count(i => !i.IsSubSection) ?? 0;
+
+                                scheduledTasksDetailsGrid.Rows.Add("Total Tasks", folderTaskCount.ToString());
+                                scheduledTasksDetailsGrid.Rows.Add("Sub-folders", subFolderCount.ToString());
+                                scheduledTasksDetailsGrid.Rows.Add("Direct Tasks", directTaskCount.ToString());
+                                scheduledTasksDetailsGrid.Rows.Add("Registry Path", selectedItem.RegistryPath ?? "");
+                            }
+                            else if (selectedItem.SubItems != null)
+                            {
+                                // Task leaf selected - show all properties
+                                scheduledTasksDetailsLabel.Text = $"Task: {selectedItem.Name}";
+
+                                scheduledTasksDetailsGrid.Columns.Add("Property", "Property");
+                                scheduledTasksDetailsGrid.Columns.Add("Value", "Value");
+                                scheduledTasksDetailsGrid.Columns[0].Width = DpiHelper.Scale(170);
+                                scheduledTasksDetailsGrid.Columns[1].AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
+
+                                // Add GUID as first row
+                                scheduledTasksDetailsGrid.Rows.Add("GUID", selectedItem.Value ?? "");
+
+                                foreach (var prop in selectedItem.SubItems)
+                                {
+                                    scheduledTasksDetailsGrid.Rows.Add(prop.Name, prop.Value ?? "");
+                                }
+                            }
+
+                            scheduledTasksDetailsGrid.ClearSelection();
+                        }
+                    };
+                    scheduledTasksTree.AfterSelect += scheduledTasksTree_AfterSelect!;
+
+                    // Select first root folder node (keeps tree collapsed)
+                    if (scheduledTasksTree.Nodes.Count > 0)
+                    {
+                        scheduledTasksTree.SelectedNode = scheduledTasksTree.Nodes[0];
+                        scheduledTasksDetailsGrid.ClearSelection();
                     }
 
                     // Update subcategory button states
@@ -6936,6 +7355,7 @@ namespace RegistryExpert
             // Add content controls to Panel1 of the split container
             contentDetailSplit.Panel1.Controls.Add(physicalDisksSplit);
             contentDetailSplit.Panel1.Controls.Add(diskPartitionSplit);
+            contentDetailSplit.Panel1.Controls.Add(scheduledTasksSplit);
             contentDetailSplit.Panel1.Controls.Add(rolesFeaturesSplit);
             contentDetailSplit.Panel1.Controls.Add(deviceManagerSplit);
             contentDetailSplit.Panel1.Controls.Add(firewallPanel);
@@ -7609,7 +8029,10 @@ namespace RegistryExpert
             form.FormClosed += (s, ev) => { 
                 themeData.Dispose();  // Dispose fonts and tooltips tracked by themeData
                 _analyzeForm = null; // Clear the reference
-                form.Dispose(); 
+                form.Dispose();
+                // Force GC to reclaim memory from disposed Analyze form
+                GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                GC.WaitForPendingFinalizers();
             };
             
             // Show form immediately, then load data after it's visible
@@ -8027,6 +8450,65 @@ namespace RegistryExpert
             if (themeData.RolesDetailsGrid != null)
             {
                 ApplyThemeToDataGridView(themeData.RolesDetailsGrid);
+            }
+
+            // Update Scheduled Tasks panel
+            if (themeData.ScheduledTasksSplit != null)
+            {
+                themeData.ScheduledTasksSplit.BackColor = ModernTheme.Border;
+                themeData.ScheduledTasksSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.ScheduledTasksSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+            if (themeData.ScheduledTasksTree != null)
+            {
+                themeData.ScheduledTasksTree.BackColor = ModernTheme.TreeViewBack;
+                themeData.ScheduledTasksTree.ForeColor = ModernTheme.TextPrimary;
+                themeData.ScheduledTasksTree.LineColor = ModernTheme.Border;
+                // Update all node colors, preserving disabled dimming
+                bool HasReadyTaskForTheme(TreeNode folderNode)
+                {
+                    foreach (TreeNode child in folderNode.Nodes)
+                    {
+                        if (child.Nodes.Count > 0)
+                        {
+                            if (HasReadyTaskForTheme(child)) return true;
+                        }
+                        else
+                        {
+                            if (!child.Text.EndsWith(" [Disabled]", StringComparison.Ordinal))
+                                return true;
+                        }
+                    }
+                    return false;
+                }
+                void UpdateScheduledTaskNodeColors(TreeNode node)
+                {
+                    if (node.Nodes.Count > 0)
+                    {
+                        // Folder node - dim if all tasks inside are disabled
+                        node.ForeColor = HasReadyTaskForTheme(node) ? ModernTheme.TextPrimary : ModernTheme.TextSecondary;
+                    }
+                    else
+                    {
+                        // Leaf task node - dim if disabled
+                        node.ForeColor = node.Text.EndsWith(" [Disabled]", StringComparison.Ordinal)
+                            ? ModernTheme.TextSecondary : ModernTheme.TextPrimary;
+                    }
+                    foreach (TreeNode child in node.Nodes)
+                        UpdateScheduledTaskNodeColors(child);
+                }
+                foreach (TreeNode node in themeData.ScheduledTasksTree.Nodes)
+                    UpdateScheduledTaskNodeColors(node);
+                themeData.ScheduledTasksTree.Invalidate();
+            }
+            if (themeData.ScheduledTasksTreeHeader != null) themeData.ScheduledTasksTreeHeader.BackColor = ModernTheme.Surface;
+            if (themeData.ScheduledTasksTreeLabel != null) themeData.ScheduledTasksTreeLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.ScheduledTasksDetailsHeader != null) themeData.ScheduledTasksDetailsHeader.BackColor = ModernTheme.Surface;
+            if (themeData.ScheduledTasksDetailsLabel != null) themeData.ScheduledTasksDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+
+            if (themeData.ScheduledTasksDetailsGrid != null)
+            {
+                ApplyThemeToDataGridView(themeData.ScheduledTasksDetailsGrid);
             }
 
             // Update Disk Partition (Mounted Devices) split pane
@@ -8736,11 +9218,11 @@ namespace RegistryExpert
                 _statisticsForm = null;
                 
                 // CompareForm runs on its own STA thread - marshal Close() to its thread
-                // Capture local to avoid null field access when the async lambda executes
+                // Use Invoke (synchronous) so the form is fully closed before disposal proceeds
                 var cf = _compareForm;
                 if (cf != null && !cf.IsDisposed)
                 {
-                    try { cf.BeginInvoke(() => cf.Close()); } catch { }
+                    try { cf.Invoke(() => cf.Close()); } catch { }
                 }
                 _compareForm = null;
                 _compareThread = null;

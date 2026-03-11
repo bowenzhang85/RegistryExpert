@@ -28,8 +28,13 @@ namespace RegistryExpert
         private FlowLayoutPanel _customDatePanel = null!;
         private Button _refreshButton = null!;
         private Button _exportButton = null!;
-        private Label _statusLabel = null!;
+        private Panel _statusPanel = null!;
+        private string _statusText = "Click 'Scan' to analyze registry key timestamps";
+        private Color _statusForeColor;
         private ProgressBar _progressBar = null!;
+        private List<Panel> _separators = new();
+        private Panel _filterPanel = null!;
+        private Panel _searchRow = null!;
         
         private List<TimelineEntry> _allEntries = new();
         private List<TimelineEntry> _filteredEntries = new();
@@ -41,6 +46,13 @@ namespace RegistryExpert
         private int _pageSize = 100;
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
+        
+        // Collapse/Expand state
+        private Button _collapseButton = null!;
+        private bool _isCollapsed;
+        private List<CollapsedGroup> _collapsedGroups = new();
+        private HashSet<int> _expandedGroupIndices = new();
+        private int _currentGroupDisplayCount;
 
         public TimelineForm(IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> parsers, MainForm mainForm)
         {
@@ -66,6 +78,13 @@ namespace RegistryExpert
                 _scanCts = null;
                 _searchDebounce?.Stop();
                 _searchDebounce?.Dispose();
+
+                // Clear large data collections to release references before GC
+                _allEntries.Clear();
+                _filteredEntries.Clear();
+                _collapsedGroups.Clear();
+                _expandedGroupIndices.Clear();
+                _timelineGrid.Rows.Clear();
             }
             base.Dispose(disposing);
         }
@@ -85,11 +104,28 @@ namespace RegistryExpert
             _timelineGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
             _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
 
-            // Rescale button minimum sizes and margins for new DPI
-            _refreshButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _refreshButton.Margin = DpiHelper.ScalePadding(0, 0, 8, 0);
-            _exportButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _exportButton.Margin = DpiHelper.ScalePadding(0, 0, 12, 0);
+            // Rescale button sizes for new DPI
+            foreach (var btn in new[] { _refreshButton, _exportButton, _collapseButton })
+            {
+                btn.Size = DpiHelper.ScaleSize(90, 30);
+                btn.Margin = DpiHelper.ScalePadding(2);
+            }
+            
+            // Rescale separators
+            foreach (var sep in _separators)
+            {
+                sep.Width = DpiHelper.Scale(1);
+                sep.Height = DpiHelper.Scale(16);
+                sep.Margin = DpiHelper.ScalePadding(4, 7, 4, 7);
+            }
+            
+            // Rescale status panel
+            _statusPanel.Height = DpiHelper.Scale(28);
+            _statusPanel.Padding = DpiHelper.ScalePadding(10, 0, 10, 0);
+
+            // Rescale filter panel and search row
+            _filterPanel.Height = DpiHelper.Scale(100);
+            _searchRow.Height = DpiHelper.Scale(32);
         }
 
         private void InitializeComponent()
@@ -102,12 +138,12 @@ namespace RegistryExpert
             ModernTheme.ApplyTo(this);
 
             // Top filter panel
-            var filterPanel = new Panel
+            _filterPanel = new Panel
             {
                 Dock = DockStyle.Top,
                 Height = DpiHelper.Scale(100),
                 BackColor = ModernTheme.Surface,
-                Padding = new Padding(16)
+                Padding = new Padding(12, 12, 12, 0)
             };
 
             // First row - use FlowLayoutPanel for proper DPI scaling
@@ -128,7 +164,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Margin = new Padding(0, 6, 5, 0)
+                Margin = new Padding(0, 8, 5, 0)
             };
 
             _filterCombo = new ComboBox
@@ -136,7 +172,7 @@ namespace RegistryExpert
                 Size = DpiHelper.ScaleSize(150, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Font = ModernTheme.RegularFont,
-                Margin = new Padding(0, 0, 15, 0)
+                Margin = new Padding(0, 2, 10, 0)
             };
             _filterCombo.Items.AddRange(new object[] { 
                 "All Times", 
@@ -157,7 +193,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Margin = new Padding(0, 6, 5, 0)
+                Margin = new Padding(0, 8, 5, 0)
             };
 
             _limitCombo = new ComboBox
@@ -165,7 +201,7 @@ namespace RegistryExpert
                 Size = DpiHelper.ScaleSize(80, 28),
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Font = ModernTheme.RegularFont,
-                Margin = new Padding(0, 0, 5, 0)
+                Margin = new Padding(0, 2, 5, 0)
             };
             _limitCombo.Items.AddRange(new object[] { "50", "100", "500", "1000", "All" });
             _limitCombo.SelectedIndex = 1; // Default to 100
@@ -179,21 +215,16 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Margin = new Padding(0, 6, 20, 0)
+                Margin = new Padding(0, 8, 0, 0)
             };
 
-            _refreshButton = ModernTheme.CreateSecondaryButton("Scan", RefreshButton_Click);
-            _refreshButton.AutoSize = true;
-            _refreshButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _refreshButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _refreshButton.Margin = DpiHelper.ScalePadding(0, 0, 8, 0);
-
-            _exportButton = ModernTheme.CreateSecondaryButton("Export", ExportButton_Click);
-            _exportButton.AutoSize = true;
-            _exportButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _exportButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _exportButton.Margin = DpiHelper.ScalePadding(0, 0, 12, 0);
+            // Create pill-shaped action buttons (matching MainForm toolbar style)
+            _refreshButton = CreatePillButton("Scan", RefreshButton_Click);
+            _exportButton = CreatePillButton("Export", ExportButton_Click);
             _exportButton.Enabled = false;
+            _collapseButton = CreatePillButton("Collapse View", CollapseButton_Click);
+            _collapseButton.Size = DpiHelper.ScaleSize(110, 30);
+            _collapseButton.Enabled = false;
 
             // Search box with placeholder
             _searchBox = new TextBox
@@ -204,7 +235,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 BackColor = ModernTheme.Surface,
                 BorderStyle = BorderStyle.FixedSingle,
-                Margin = new Padding(0, 0, 0, 0),
+                Margin = new Padding(0, 2, 0, 0),
                 AccessibleName = "Search key path"
             };
             _searchBox.GotFocus += (s, e) =>
@@ -248,14 +279,14 @@ namespace RegistryExpert
                     ForeColor = ModernTheme.TextSecondary,
                     Font = ModernTheme.RegularFont,
                     AutoSize = true,
-                    Margin = new Padding(0, 6, 5, 0)
+                    Margin = new Padding(0, 8, 5, 0)
                 };
                 _hiveSelector = new ComboBox
                 {
                     Size = DpiHelper.ScaleSize(130, 28),
                     DropDownStyle = ComboBoxStyle.DropDownList,
                     Font = ModernTheme.RegularFont,
-                    Margin = new Padding(0, 0, 15, 0),
+                    Margin = new Padding(0, 2, 10, 0),
                     BackColor = ModernTheme.Surface,
                     ForeColor = ModernTheme.TextPrimary
                 };
@@ -273,19 +304,51 @@ namespace RegistryExpert
                         // Clear existing data so next scan uses the new parser
                         _allEntries.Clear();
                         _filteredEntries.Clear();
+                        _collapsedGroups.Clear();
+                        _expandedGroupIndices.Clear();
                         _timelineGrid.Rows.Clear();
                         _currentDisplayCount = 0;
-                        _statusLabel.Text = $"Selected {_parsers[_hiveSelector.SelectedIndex].HiveTypeName} hive. Press Scan to load timeline.";
+
+                        // Reset collapse state so UI is consistent for the new hive
+                        if (_isCollapsed)
+                        {
+                            _isCollapsed = false;
+                            _collapseButton.Text = "Collapse View";
+                            foreach (DataGridViewColumn col in _timelineGrid.Columns)
+                                col.SortMode = DataGridViewColumnSortMode.Automatic;
+                        }
+
+                        UpdateStatus($"Selected {_parsers[_hiveSelector.SelectedIndex].HiveTypeName} hive. Press Scan to load timeline.");
                         _exportButton.Enabled = false;
+                        _collapseButton.Enabled = false;
                     }
                 };
                 filterFlow.Controls.AddRange(new Control[] { hiveSelectorLabel, _hiveSelector });
             }
 
+            // Build filter flow: combos, separators, buttons
+            _separators.Clear();
+            var sep1 = CreateFilterSeparator();
+            var sep2 = CreateFilterSeparator();
+            var sep3 = CreateFilterSeparator();
+
             filterFlow.Controls.AddRange(new Control[] {
                 filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
-                _refreshButton, _exportButton, _searchBox
+                sep1, _refreshButton, sep2, _exportButton, sep3, _collapseButton
             });
+
+            // Search row - full-width search box on second row
+            _searchRow = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = new Padding(0, 2, 0, 4)
+            };
+            _searchBox.Dock = DockStyle.Fill;
+            _searchBox.Size = default; // Clear fixed size; Dock.Fill handles sizing
+            _searchBox.Margin = new Padding(0);
+            _searchRow.Controls.Add(_searchBox);
 
             // Custom date range panel (hidden by default) - also use FlowLayoutPanel
             _customDatePanel = new FlowLayoutPanel
@@ -305,7 +368,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Margin = new Padding(0, 6, 5, 0)
+                Margin = new Padding(0, 8, 5, 0)
             };
 
             _fromDatePicker = new DateTimePicker
@@ -314,7 +377,7 @@ namespace RegistryExpert
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "yyyy-MM-dd HH:mm",
                 Font = ModernTheme.RegularFont,
-                Margin = new Padding(0, 0, 15, 0)
+                Margin = new Padding(0, 2, 15, 0)
             };
             _fromDatePicker.Value = DateTime.Now.AddDays(-7);
             _fromDatePicker.ValueChanged += (s, e) => ApplyFilter();
@@ -325,7 +388,7 @@ namespace RegistryExpert
                 ForeColor = ModernTheme.TextSecondary,
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Margin = new Padding(0, 6, 5, 0)
+                Margin = new Padding(0, 8, 5, 0)
             };
 
             _toDatePicker = new DateTimePicker
@@ -334,34 +397,43 @@ namespace RegistryExpert
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "yyyy-MM-dd HH:mm",
                 Font = ModernTheme.RegularFont,
-                Margin = new Padding(0, 0, 0, 0)
+                Margin = new Padding(0, 2, 0, 0)
             };
             _toDatePicker.Value = DateTime.Now;
             _toDatePicker.ValueChanged += (s, e) => ApplyFilter();
 
             _customDatePanel.Controls.AddRange(new Control[] { fromLabel, _fromDatePicker, toLabel, _toDatePicker });
 
-            // Add flow panels to filter panel (order matters - bottom to top for Dock.Top)
-            filterPanel.Controls.Add(_customDatePanel);
-            filterPanel.Controls.Add(filterFlow);
-
-            // Status bar
-            var statusPanel = new Panel
+            // Bottom separator line for filter panel
+            var filterSeparator = new Panel
             {
                 Dock = DockStyle.Bottom,
-                Height = DpiHelper.Scale(36),
-                BackColor = ModernTheme.Surface,
-                Padding = new Padding(16, 0, 16, 0)
+                Height = 1,
+                BackColor = ModernTheme.Border
             };
+            filterSeparator.Tag = "filterBottomSep";
 
-            _statusLabel = new Label
+            // Add flow panels to filter panel (order matters - bottom to top for Dock.Top)
+            _filterPanel.Controls.Add(filterSeparator);
+            _filterPanel.Controls.Add(_customDatePanel);
+            _filterPanel.Controls.Add(_searchRow);
+            _filterPanel.Controls.Add(filterFlow);
+
+            // Status bar (matching MainForm: 28px, owner-drawn)
+            _statusPanel = new Panel
             {
-                Text = "Click 'Scan' to analyze registry key timestamps",
-                ForeColor = ModernTheme.TextSecondary,
-                Font = ModernTheme.RegularFont,
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleLeft
+                Dock = DockStyle.Bottom,
+                Height = DpiHelper.Scale(28),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 10, 0)
             };
+            _statusForeColor = ModernTheme.TextSecondary;
+
+            // Owner-draw status text (matches MainForm pattern)
+            typeof(Panel).InvokeMember("DoubleBuffered",
+                System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, _statusPanel, new object[] { true });
+            _statusPanel.Paint += StatusPanel_Paint;
 
             _progressBar = new ProgressBar
             {
@@ -371,8 +443,7 @@ namespace RegistryExpert
                 Visible = false
             };
 
-            statusPanel.Controls.Add(_statusLabel);
-            statusPanel.Controls.Add(_progressBar);
+            _statusPanel.Controls.Add(_progressBar);
 
             // Timeline grid
             _timelineGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Timeline Results" };
@@ -403,6 +474,7 @@ namespace RegistryExpert
             }
 
             _timelineGrid.CellDoubleClick += TimelineGrid_CellDoubleClick;
+            _timelineGrid.CellClick += TimelineGrid_CellClick;
             _timelineGrid.KeyDown += TimelineGrid_KeyDown;
 
             // Context menu
@@ -464,8 +536,8 @@ namespace RegistryExpert
             // Add controls (order matters for docking)
             this.Controls.Add(_timelineGrid);
             this.Controls.Add(_loadMorePanel);
-            this.Controls.Add(filterPanel);
-            this.Controls.Add(statusPanel);
+            this.Controls.Add(_filterPanel);
+            this.Controls.Add(_statusPanel);
 
             // Handle form closing
             this.FormClosing += (s, e) =>
@@ -506,8 +578,9 @@ namespace RegistryExpert
 
             _refreshButton.Text = "Stop";
             _progressBar.Visible = true;
-            _statusLabel.Text = "Scanning registry keys...";
+            UpdateStatus("Scanning registry keys...");
             _exportButton.Enabled = false;
+            _collapseButton.Enabled = false;
             _timelineGrid.Rows.Clear();
             _allEntries.Clear();
 
@@ -516,7 +589,7 @@ namespace RegistryExpert
                 var rootKey = _parser.GetRootKey();
                 if (rootKey == null)
                 {
-                    _statusLabel.Text = "No registry hive loaded";
+                    UpdateStatus("No registry hive loaded");
                     return;
                 }
 
@@ -530,25 +603,28 @@ namespace RegistryExpert
 
                 if (token.IsCancellationRequested)
                 {
-                    _statusLabel.Text = $"Scan cancelled - found {entries.Count:N0} keys";
+                    UpdateStatus($"Scan cancelled - found {entries.Count:N0} keys");
                 }
                 else
                 {
-                    _allEntries = entries.OrderByDescending(e => e.LastModified).ToList();
-                    _statusLabel.Text = $"Scanned {scannedCount:N0} keys - {_allEntries.Count:N0} have timestamps";
+                    _allEntries = entries.OrderByDescending(e => e.LastModified)
+                        .ThenBy(e => e.DisplayPath, StringComparer.OrdinalIgnoreCase).ToList();
+                    UpdateStatus($"Scanned {scannedCount:N0} keys - {_allEntries.Count:N0} have timestamps");
                 }
 
                 ApplyFilter();
                 _exportButton.Enabled = _filteredEntries.Count > 0;
+                _collapseButton.Enabled = _filteredEntries.Count > 0;
             }
             catch (OperationCanceledException)
             {
-                _statusLabel.Text = $"Scan cancelled - found {_allEntries.Count:N0} keys";
+                UpdateStatus($"Scan cancelled - found {_allEntries.Count:N0} keys");
             }
             catch (Exception ex)
             {
-                _statusLabel.Text = $"Error: {ex.Message}";
-                _statusLabel.ForeColor = ModernTheme.Error;
+                UpdateStatus($"Error: {ex.Message}");
+                _statusForeColor = ModernTheme.Error;
+                _statusPanel.Invalidate();
             }
             finally
             {
@@ -573,7 +649,7 @@ namespace RegistryExpert
                     this.BeginInvoke(() =>
                     {
                         if (!this.IsDisposed)
-                            _statusLabel.Text = $"Scanning... {count:N0} keys processed";
+                            UpdateStatus($"Scanning... {count:N0} keys processed");
                     });
                 }
             }
@@ -670,6 +746,16 @@ namespace RegistryExpert
 
             _filteredEntries = filtered.ToList();
 
+            // Rebuild collapsed groups if in collapsed mode
+            if (_isCollapsed)
+            {
+                BuildCollapsedGroups();
+                _expandedGroupIndices.Clear();
+                _currentGroupDisplayCount = _limitCombo.SelectedItem?.ToString() == "All" 
+                    ? _collapsedGroups.Count 
+                    : _pageSize;
+            }
+
             // Reset pagination - show first page
             _currentDisplayCount = Math.Min(_pageSize, _filteredEntries.Count);
 
@@ -679,10 +765,17 @@ namespace RegistryExpert
             
             UpdateGridDisplay();
             _exportButton.Enabled = _filteredEntries.Count > 0;
+            _collapseButton.Enabled = _filteredEntries.Count > 0;
         }
 
         private void UpdateGridDisplay()
         {
+            if (_isCollapsed)
+            {
+                UpdateCollapsedGridDisplay();
+                return;
+            }
+
             _timelineGrid.SuspendLayout();
             try
             {
@@ -721,27 +814,347 @@ namespace RegistryExpert
             UpdateStatusLabel();
         }
 
+        private void CollapseButton_Click(object? sender, EventArgs e)
+        {
+            _isCollapsed = !_isCollapsed;
+            _collapseButton.Text = _isCollapsed ? "Expand View" : "Collapse View";
+            
+            // Disable column sorting in collapsed mode (would break group ordering)
+            foreach (DataGridViewColumn col in _timelineGrid.Columns)
+                col.SortMode = _isCollapsed ? DataGridViewColumnSortMode.NotSortable : DataGridViewColumnSortMode.Automatic;
+            
+            if (_isCollapsed)
+            {
+                BuildCollapsedGroups();
+                _expandedGroupIndices.Clear();
+                _currentGroupDisplayCount = _pageSize;
+            }
+            else
+            {
+                _collapsedGroups.Clear();
+                _expandedGroupIndices.Clear();
+            }
+            
+            UpdateGridDisplay();
+        }
+
+        private void BuildCollapsedGroups()
+        {
+            _collapsedGroups.Clear();
+            
+            if (_filteredEntries.Count == 0) return;
+            
+            // Sort by timestamp (truncated to seconds) descending, then by path to ensure
+            // related entries are adjacent for grouping. Sub-second precision is not displayed
+            // and would cause interleaving of paths that appear to share the same timestamp.
+            _filteredEntries = _filteredEntries
+                .OrderByDescending(e => e.LastModified.Ticks / TimeSpan.TicksPerSecond)
+                .ThenBy(e => e.DisplayPath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            
+            // Minimum number of path segments required for a common ancestor to be considered "related"
+            // e.g., 3 means SYSTEM\ControlSet001\Control is the minimum grouping depth
+            const int minAncestorSegments = 3;
+            
+            CollapsedGroup? currentGroup = null;
+            bool groupEstablished = false; // True after first merge sets the actual group root
+            
+            foreach (var entry in _filteredEntries)
+            {
+                if (currentGroup == null)
+                {
+                    currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
+                    currentGroup.Entries.Add(entry);
+                    groupEstablished = false;
+                }
+                else
+                {
+                    // Find the common ancestor between this entry and the group's root
+                    var commonAncestor = GetCommonAncestor(entry.DisplayPath, currentGroup.RootPath);
+                    int ancestorSegments = string.IsNullOrEmpty(commonAncestor) ? 0 : commonAncestor.Split('\\').Length;
+                    
+                    if (ancestorSegments < minAncestorSegments)
+                    {
+                        // Not related enough - close current group and start a new one
+                        _collapsedGroups.Add(currentGroup);
+                        currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
+                        currentGroup.Entries.Add(entry);
+                        groupEstablished = false;
+                    }
+                    else if (!groupEstablished)
+                    {
+                        // First merge - establish the group's deepest common root
+                        currentGroup.Entries.Add(entry);
+                        currentGroup.RootPath = commonAncestor;
+                        groupEstablished = true;
+                    }
+                    else
+                    {
+                        // Group established - only merge if ancestor doesn't shrink the root
+                        int currentRootSegments = currentGroup.RootPath.Split('\\').Length;
+                        if (ancestorSegments >= currentRootSegments)
+                        {
+                            currentGroup.Entries.Add(entry);
+                        }
+                        else
+                        {
+                            // Would shrink the root - start new group
+                            _collapsedGroups.Add(currentGroup);
+                            currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
+                            currentGroup.Entries.Add(entry);
+                            groupEstablished = false;
+                        }
+                    }
+                }
+            }
+            
+            if (currentGroup != null)
+                _collapsedGroups.Add(currentGroup);
+        }
+
+        private static string GetCommonAncestor(string path1, string path2)
+        {
+            var segments1 = path1.Split('\\');
+            var segments2 = path2.Split('\\');
+            int minLen = Math.Min(segments1.Length, segments2.Length);
+            
+            int commonCount = 0;
+            for (int i = 0; i < minLen; i++)
+            {
+                if (segments1[i].Equals(segments2[i], StringComparison.OrdinalIgnoreCase))
+                    commonCount++;
+                else
+                    break;
+            }
+            
+            if (commonCount == 0) return "";
+            return string.Join("\\", segments1.Take(commonCount));
+        }
+
+        private void UpdateCollapsedGridDisplay()
+        {
+            _timelineGrid.SuspendLayout();
+            try
+            {
+                _timelineGrid.Rows.Clear();
+                
+                int groupsToShow = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
+                
+                for (int i = 0; i < groupsToShow; i++)
+                {
+                    var group = _collapsedGroups[i];
+                    bool isExpanded = _expandedGroupIndices.Contains(i);
+                    
+                    if (group.Entries.Count == 1)
+                    {
+                        // Single entry - show as normal row
+                        var entry = group.Entries[0];
+                        var rowIndex = _timelineGrid.Rows.Add(
+                            entry.LastModified,
+                            entry.DisplayPath
+                        );
+                        _timelineGrid.Rows[rowIndex].Tag = entry;
+                    }
+                    else
+                    {
+                        // Multi-entry group - show collapsed summary or expanded
+                        var minTime = group.Entries.Min(e => e.LastModified);
+                        var maxTime = group.Entries.Max(e => e.LastModified);
+                        
+                        // Format time for display - single timestamp if all entries share the same second
+                        string timeDisplay;
+                        bool sameSecond = minTime.Year == maxTime.Year && minTime.Month == maxTime.Month
+                            && minTime.Day == maxTime.Day && minTime.Hour == maxTime.Hour
+                            && minTime.Minute == maxTime.Minute && minTime.Second == maxTime.Second;
+                        if (sameSecond)
+                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss}";
+                        else if (minTime.Date == maxTime.Date)
+                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss} - {maxTime:HH:mm:ss}";
+                        else
+                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss} - {maxTime:yyyy-MM-dd HH:mm:ss}";
+                        
+                        string indicator = isExpanded ? "[-]" : "[+]";
+                        string pathDisplay = $"{indicator} {group.RootPath} ({group.Entries.Count} keys)";
+                        
+                        var groupRowIndex = _timelineGrid.Rows.Add(
+                            timeDisplay,
+                            pathDisplay
+                        );
+                        _timelineGrid.Rows[groupRowIndex].Tag = group;
+                        _timelineGrid.Rows[groupRowIndex].DefaultCellStyle.ForeColor = ModernTheme.Accent;
+                        _timelineGrid.Rows[groupRowIndex].DefaultCellStyle.SelectionForeColor = ModernTheme.Accent;
+                        
+                        if (isExpanded)
+                        {
+                            // Show individual entries indented below the group header
+                            foreach (var entry in group.Entries.OrderByDescending(e => e.LastModified))
+                            {
+                                var childRowIndex = _timelineGrid.Rows.Add(
+                                    entry.LastModified,
+                                    $"    {entry.DisplayPath}"
+                                );
+                                _timelineGrid.Rows[childRowIndex].Tag = entry;
+                            }
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _timelineGrid.ResumeLayout();
+            }
+            
+            // Update Load More button visibility for collapsed mode
+            int remainingGroups = _collapsedGroups.Count - Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
+            if (remainingGroups > 0)
+            {
+                _loadMorePanel.Visible = true;
+                _loadMoreButton.Text = $"Load More ({remainingGroups:N0} groups remaining)";
+            }
+            else
+            {
+                _loadMorePanel.Visible = false;
+            }
+            
+            // Update status
+            int shownGroups = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
+            int totalEntries = _collapsedGroups.Take(shownGroups).Sum(g => g.Entries.Count);
+            int allEntries = _collapsedGroups.Sum(g => g.Entries.Count);
+            int groupCount = _collapsedGroups.Take(shownGroups).Count(g => g.Entries.Count > 1);
+            var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
+            if (shownGroups < _collapsedGroups.Count)
+                UpdateStatus($"Showing {shownGroups:N0} of {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} of {allEntries:N0} keys) ({filterText})");
+            else
+                UpdateStatus($"Collapsed: {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} keys) ({filterText})");
+        }
+
+        private void TimelineGrid_CellClick(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (!_isCollapsed || e.RowIndex < 0) return;
+            
+            var row = _timelineGrid.Rows[e.RowIndex];
+            if (row.Tag is CollapsedGroup group)
+            {
+                int groupIndex = FindGroupIndex(e.RowIndex);
+                if (groupIndex < 0) return;
+                
+                _timelineGrid.SuspendLayout();
+                try
+                {
+                    if (_expandedGroupIndices.Contains(groupIndex))
+                    {
+                        // Collapse: remove child rows below this header
+                        _expandedGroupIndices.Remove(groupIndex);
+                        int childCount = group.Entries.Count;
+                        for (int i = 0; i < childCount; i++)
+                            _timelineGrid.Rows.RemoveAt(e.RowIndex + 1);
+                        
+                        // Update header text to [+]
+                        row.Cells[1].Value = $"[+] {group.RootPath} ({group.Entries.Count} keys)";
+                    }
+                    else
+                    {
+                        // Expand: insert child rows below this header
+                        _expandedGroupIndices.Add(groupIndex);
+                        int insertAt = e.RowIndex + 1;
+                        foreach (var entry in group.Entries.OrderByDescending(en => en.LastModified))
+                        {
+                            var newRow = new DataGridViewRow();
+                            newRow.CreateCells(_timelineGrid, entry.LastModified, $"    {entry.DisplayPath}");
+                            newRow.Tag = entry;
+                            _timelineGrid.Rows.Insert(insertAt, newRow);
+                            insertAt++;
+                        }
+                        
+                        // Update header text to [-]
+                        row.Cells[1].Value = $"[-] {group.RootPath} ({group.Entries.Count} keys)";
+                    }
+                }
+                finally
+                {
+                    _timelineGrid.ResumeLayout();
+                }
+                
+                // Update status to reflect expand/collapse change
+                int shownGroups = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
+                int totalEntries = _collapsedGroups.Take(shownGroups).Sum(g => g.Entries.Count);
+                int allEntries = _collapsedGroups.Sum(g => g.Entries.Count);
+                int groupCount = _collapsedGroups.Take(shownGroups).Count(g => g.Entries.Count > 1);
+                var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
+                if (shownGroups < _collapsedGroups.Count)
+                    UpdateStatus($"Showing {shownGroups:N0} of {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} of {allEntries:N0} keys) ({filterText})");
+                else
+                    UpdateStatus($"Collapsed: {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} keys) ({filterText})");
+            }
+        }
+
+        private int FindGroupIndex(int rowIndex)
+        {
+            // Walk through displayed groups to find which group the clicked row belongs to
+            int currentRow = 0;
+            int groupsToShow = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
+            for (int i = 0; i < groupsToShow; i++)
+            {
+                var group = _collapsedGroups[i];
+                if (currentRow == rowIndex)
+                    return i;
+                
+                currentRow++; // The group/entry header row
+                
+                if (group.Entries.Count > 1 && _expandedGroupIndices.Contains(i))
+                    currentRow += group.Entries.Count; // Expanded child rows
+            }
+            return -1;
+        }
+
         private void UpdateStatusLabel()
         {
             var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
             
             if (_filteredEntries.Count == 0)
             {
-                _statusLabel.Text = $"No keys found ({filterText})";
+                UpdateStatus($"No keys found ({filterText})");
             }
             else if (_currentDisplayCount >= _filteredEntries.Count)
             {
-                _statusLabel.Text = $"Showing all {_filteredEntries.Count:N0} of {_allEntries.Count:N0} keys ({filterText})";
+                UpdateStatus($"Showing all {_filteredEntries.Count:N0} of {_allEntries.Count:N0} keys ({filterText})");
             }
             else
             {
-                _statusLabel.Text = $"Showing {_currentDisplayCount:N0} of {_filteredEntries.Count:N0} keys ({filterText})";
+                UpdateStatus($"Showing {_currentDisplayCount:N0} of {_filteredEntries.Count:N0} keys ({filterText})");
             }
-            _statusLabel.ForeColor = ModernTheme.TextSecondary;
         }
 
         private void LoadMore_Click(object? sender, EventArgs e)
         {
+            if (_isCollapsed)
+            {
+                // Load more groups in collapsed mode
+                int previousGroupCount = _currentGroupDisplayCount;
+                int remainingGroups = _collapsedGroups.Count - _currentGroupDisplayCount;
+                int groupsToAdd = Math.Min(_pageSize, remainingGroups);
+                _currentGroupDisplayCount += groupsToAdd;
+                
+                // Rebuild the full display (collapsed mode doesn't support incremental append)
+                UpdateCollapsedGridDisplay();
+                
+                // Scroll to show some of the new content
+                if (_timelineGrid.Rows.Count > 0)
+                {
+                    // Find the row index where new groups start
+                    int rowIndex = 0;
+                    for (int i = 0; i < previousGroupCount && i < _collapsedGroups.Count; i++)
+                    {
+                        rowIndex++; // Group header or single-entry row
+                        if (_collapsedGroups[i].Entries.Count > 1 && _expandedGroupIndices.Contains(i))
+                            rowIndex += _collapsedGroups[i].Entries.Count;
+                    }
+                    if (rowIndex < _timelineGrid.Rows.Count)
+                        _timelineGrid.FirstDisplayedScrollingRowIndex = rowIndex;
+                }
+                return;
+            }
+            
             // Add another page of results
             int previousCount = _currentDisplayCount;
             int remaining = _filteredEntries.Count - _currentDisplayCount;
@@ -785,6 +1198,9 @@ namespace RegistryExpert
         {
             if (e.RowIndex >= 0)
             {
+                var row = _timelineGrid.Rows[e.RowIndex];
+                // In collapsed mode, don't navigate on group header rows (toggle expand instead)
+                if (row.Tag is CollapsedGroup) return;
                 NavigateToSelectedKey();
             }
         }
@@ -827,11 +1243,11 @@ namespace RegistryExpert
                     try
                     {
                         Clipboard.SetText(entry.DisplayPath);
-                        _statusLabel.Text = "Path copied to clipboard";
+                        UpdateStatus("Path copied to clipboard");
                     }
                     catch (System.Runtime.InteropServices.ExternalException)
                     {
-                        _statusLabel.Text = "Failed to copy - clipboard may be in use";
+                        UpdateStatus("Failed to copy - clipboard may be in use");
                     }
                 }
             }
@@ -870,19 +1286,139 @@ namespace RegistryExpert
                         writer.WriteLine($"\"{entry.LastModified:yyyy-MM-dd HH:mm:ss}\",\"{path}\"");
                     }
 
-                    _statusLabel.Text = $"Exported {_filteredEntries.Count:N0} entries to {Path.GetFileName(dialog.FileName)}";
-                    _statusLabel.ForeColor = ModernTheme.Success;
+                    UpdateStatus($"Exported {_filteredEntries.Count:N0} entries to {Path.GetFileName(dialog.FileName)}");
+                    _statusForeColor = ModernTheme.Success;
+                    _statusPanel.Invalidate();
                 }
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Export failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    _statusLabel.Text = "Export failed";
-                    _statusLabel.ForeColor = ModernTheme.Error;
+                    UpdateStatus("Export failed");
+                    _statusForeColor = ModernTheme.Error;
+                    _statusPanel.Invalidate();
                 }
             }
         }
 
         private string ConvertRootPath(string path) => _parser.ConvertRootPath(path);
+
+        /// <summary>
+        /// Create a pill-shaped button matching MainForm toolbar style.
+        /// Transparent background with owner-drawn rounded-rect hover/press effects.
+        /// </summary>
+        private Button CreatePillButton(string text, EventHandler onClick)
+        {
+            var btn = new Button
+            {
+                Text = text,
+                AccessibleName = text,
+                AccessibleRole = AccessibleRole.PushButton,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = Color.Transparent,  // Hide framework-drawn text; we draw our own
+                Font = ModernTheme.RegularFont,
+                Size = DpiHelper.ScaleSize(90, 30),
+                Margin = DpiHelper.ScalePadding(2),
+                Cursor = Cursors.Hand
+            };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            btn.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            btn.Click += onClick;
+
+            bool isHovered = false;
+            bool isPressed = false;
+            btn.MouseEnter += (s, e) => { isHovered = true; btn.Invalidate(); };
+            btn.MouseLeave += (s, e) => { isHovered = false; isPressed = false; btn.Invalidate(); };
+            btn.MouseDown += (s, e) => { isPressed = true; btn.Invalidate(); };
+            btn.MouseUp += (s, e) => { isPressed = false; btn.Invalidate(); };
+
+            btn.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Clear background to prevent ghosting when text changes
+                using (var bgBrush = new SolidBrush(btn.Parent?.BackColor ?? ModernTheme.Surface))
+                    g.FillRectangle(bgBrush, btn.ClientRectangle);
+
+                // Draw pill-shaped hover/press background
+                if (isHovered || isPressed)
+                {
+                    var hoverColor = isPressed ? ModernTheme.AccentDark : ModernTheme.SurfaceHover;
+                    using var hoverBrush = new SolidBrush(hoverColor);
+                    var rect = new Rectangle(1, 1, btn.Width - 2, btn.Height - 2);
+                    var radius = DpiHelper.Scale(6);
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                    int d = radius * 2;
+                    path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+                    path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+                    path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+                    path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+                    path.CloseFigure();
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.FillPath(hoverBrush, path);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+                }
+
+                // Draw centered text using btn.Text so it tracks dynamic changes
+                var displayText = btn.Text;
+                using var textBrush = new SolidBrush(isPressed ? Color.White : ModernTheme.TextPrimary);
+                var textSize = g.MeasureString(displayText, ModernTheme.RegularFont);
+                var textX = (btn.Width - textSize.Width) / 2;
+                var textY = (btn.Height - textSize.Height) / 2;
+                g.DrawString(displayText, ModernTheme.RegularFont, textBrush, textX, textY);
+            };
+
+            return btn;
+        }
+
+        /// <summary>
+        /// Create a vertical separator panel for the filter flow, matching MainForm toolbar separators.
+        /// </summary>
+        private Panel CreateFilterSeparator()
+        {
+            var sep = new Panel
+            {
+                Width = DpiHelper.Scale(1),
+                Height = DpiHelper.Scale(16),
+                Margin = DpiHelper.ScalePadding(4, 7, 4, 7),
+                BackColor = ModernTheme.Border
+            };
+            _separators.Add(sep);
+            return sep;
+        }
+
+        /// <summary>
+        /// Owner-draw the status panel text (matches MainForm pattern).
+        /// </summary>
+        private void StatusPanel_Paint(object? sender, PaintEventArgs e)
+        {
+            var padding = _statusPanel.Padding;
+            var textRect = new Rectangle(
+                padding.Left,
+                padding.Top,
+                _statusPanel.ClientSize.Width - padding.Left - padding.Right,
+                _statusPanel.ClientSize.Height - padding.Top - padding.Bottom);
+
+            TextRenderer.DrawText(
+                e.Graphics,
+                _statusText,
+                ModernTheme.RegularFont,
+                textRect,
+                _statusForeColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        }
+
+        /// <summary>
+        /// Update the status bar text and reset foreground color to default.
+        /// </summary>
+        private void UpdateStatus(string text)
+        {
+            _statusText = text;
+            _statusForeColor = ModernTheme.TextSecondary;
+            _statusPanel.Invalidate();
+        }
 
         /// <summary>
         /// Refresh theme colors
@@ -902,6 +1438,7 @@ namespace RegistryExpert
             _timelineGrid.ColumnHeadersDefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
             _timelineGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = ModernTheme.TreeViewBack;
             _timelineGrid.ColumnHeadersDefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+            _timelineGrid.ColumnHeadersDefaultCellStyle.Font = ModernTheme.DataBoldFont;
             _timelineGrid.GridColor = ModernTheme.Border;
 
             // Refresh Load More panel and button
@@ -912,38 +1449,70 @@ namespace RegistryExpert
             _loadMoreButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
 
             // Refresh other controls
-            foreach (Control ctrl in this.Controls)
-            {
-                if (ctrl is Panel panel && ctrl != _loadMorePanel)
-                {
-                    panel.BackColor = ModernTheme.Surface;
-                    foreach (Control child in panel.Controls)
-                    {
-                        if (child is Label label)
-                            label.ForeColor = ModernTheme.TextSecondary;
-                        else if (child is ComboBox combo)
-                        {
-                            combo.BackColor = ModernTheme.Surface;
-                            combo.ForeColor = ModernTheme.TextPrimary;
-                        }
-                    }
-                }
-            }
+            RefreshControlTheme(this);
 
             // Refresh search box
             _searchBox.BackColor = ModernTheme.Surface;
             _searchBox.ForeColor = _searchBox.Text == SearchPlaceholder ? ModernTheme.TextSecondary : ModernTheme.TextPrimary;
 
-            // Refresh secondary buttons (Scan and Export)
-            _refreshButton.ForeColor = ModernTheme.Accent;
-            _refreshButton.FlatAppearance.BorderColor = ModernTheme.Accent;
-            _refreshButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
-            _exportButton.ForeColor = ModernTheme.Accent;
-            _exportButton.FlatAppearance.BorderColor = ModernTheme.Accent;
-            _exportButton.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            // Refresh pill buttons (transparent forecolor hides framework text; we owner-draw)
+            foreach (var btn in new[] { _refreshButton, _exportButton, _collapseButton })
+            {
+                btn.BackColor = Color.Transparent;
+                btn.ForeColor = Color.Transparent;
+                btn.Invalidate();
+            }
 
-            _statusLabel.ForeColor = ModernTheme.TextSecondary;
+            // Refresh separators
+            foreach (var sep in _separators)
+            {
+                sep.BackColor = ModernTheme.Border;
+            }
+
+            // Refresh status bar
+            _statusPanel.BackColor = ModernTheme.Surface;
+            _statusForeColor = ModernTheme.TextSecondary;
+            _statusPanel.Invalidate();
+
             this.Refresh();
+        }
+
+        private static void RefreshControlTheme(Control parent)
+        {
+            foreach (Control ctrl in parent.Controls)
+            {
+                switch (ctrl)
+                {
+                    case DataGridView:
+                        // Handled separately in RefreshTheme
+                        break;
+                    case TextBox:
+                        // Search box handled separately
+                        break;
+                    case Panel panel:
+                        panel.BackColor = ModernTheme.Surface;
+                        RefreshControlTheme(panel);
+                        break;
+                    case Label label:
+                        label.ForeColor = ModernTheme.TextSecondary;
+                        break;
+                    case ComboBox combo:
+                        combo.BackColor = ModernTheme.Surface;
+                        combo.ForeColor = ModernTheme.TextPrimary;
+                        break;
+                    case DateTimePicker picker:
+                        picker.BackColor = ModernTheme.Surface;
+                        picker.ForeColor = ModernTheme.TextPrimary;
+                        break;
+                    case Button:
+                        // Buttons handled separately in RefreshTheme
+                        break;
+                    default:
+                        if (ctrl.HasChildren)
+                            RefreshControlTheme(ctrl);
+                        break;
+                }
+            }
         }
 
         private class TimelineEntry
@@ -951,6 +1520,12 @@ namespace RegistryExpert
             public DateTime LastModified { get; set; }
             public string KeyPath { get; set; } = "";
             public string DisplayPath { get; set; } = "";
+        }
+
+        private class CollapsedGroup
+        {
+            public List<TimelineEntry> Entries { get; } = new();
+            public string RootPath { get; set; } = "";
         }
     }
 }
