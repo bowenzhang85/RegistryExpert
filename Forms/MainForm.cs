@@ -91,6 +91,14 @@ namespace RegistryExpert
         public Panel? ScheduledTasksDetailsHeader { get; set; }
         public Label? ScheduledTasksDetailsLabel { get; set; }
         public DataGridView? ScheduledTasksDetailsGrid { get; set; }
+        // Certificate Stores panel controls
+        public SplitContainer? CertStoresSplit { get; set; }
+        public TreeView? CertStoresTree { get; set; }
+        public Panel? CertStoresTreeHeader { get; set; }
+        public Label? CertStoresTreeLabel { get; set; }
+        public Panel? CertStoresDetailsHeader { get; set; }
+        public Label? CertStoresDetailsLabel { get; set; }
+        public DataGridView? CertStoresDetailsGrid { get; set; }
         // Fonts used in drawing (need explicit disposal)
         public Font? CategoryTextFont { get; set; }
         public ToolTip? CategoryToolTip { get; set; }
@@ -2091,7 +2099,7 @@ namespace RegistryExpert
         private void UpdateDetailsForKey(RegistryKey key)
         {
             var sb = new StringBuilder();
-            sb.AppendLine($"Path: {key.KeyPath}");
+            sb.AppendLine($"Path: {ActiveHive?.Parser.ConvertRootPath(key.KeyPath) ?? key.KeyPath}");
             sb.AppendLine($"Name: {key.KeyName}");
             sb.AppendLine($"Last Modified: {key.LastWriteTime?.ToString("yyyy-MM-dd HH:mm:ss") ?? "Unknown"}");
             sb.AppendLine($"Subkeys: {key.SubKeys?.Count ?? 0}");
@@ -2119,6 +2127,8 @@ namespace RegistryExpert
         private void ShowValueDetails(KeyValue value)
         {
             var sb = new StringBuilder();
+            if (_treeView.SelectedNode?.Tag is RegistryKey parentKey)
+                sb.AppendLine($"Path: {ActiveHive?.Parser.ConvertRootPath(parentKey.KeyPath) ?? parentKey.KeyPath}");
             sb.AppendLine($"Name: {(string.IsNullOrEmpty(value.ValueName) ? "(Default)" : value.ValueName)}");
             sb.AppendLine($"Type: {value.ValueType}");
             sb.AppendLine($"Slack: {value.ValueSlack?.Length ?? 0} bytes");
@@ -4276,6 +4286,92 @@ namespace RegistryExpert
 
             scheduledTasksSplit.Panel2.Controls.Add(scheduledTasksDetailsPanel);
 
+            // ===== Certificate Stores Split Pane =====
+            var certStoresSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterWidth = 3,
+                BackColor = ModernTheme.Border,
+                Panel1MinSize = DpiHelper.Scale(100),
+                Panel2MinSize = DpiHelper.Scale(100),
+                Visible = false
+            };
+            certStoresSplit.Panel1.BackColor = ModernTheme.Background;
+            certStoresSplit.Panel2.BackColor = ModernTheme.Background;
+            themeData.CertStoresSplit = certStoresSplit;
+
+            // Tree panel (left)
+            var certStoresTreePanel = new Panel { Dock = DockStyle.Fill };
+            var certStoresTreeHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 0, 0)
+            };
+            themeData.CertStoresTreeHeader = certStoresTreeHeader;
+            var certStoresTreeLabel = new Label
+            {
+                Text = "Certificate Stores",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            themeData.CertStoresTreeLabel = certStoresTreeLabel;
+            certStoresTreeHeader.Controls.Add(certStoresTreeLabel);
+
+            var certStoresTree = new TreeView
+            {
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.None,
+                BackColor = ModernTheme.TreeViewBack,
+                ForeColor = ModernTheme.TextPrimary,
+                LineColor = ModernTheme.Border,
+                ShowLines = true,
+                ShowPlusMinus = true,
+                ShowRootLines = true,
+                FullRowSelect = true,
+                HideSelection = false,
+                ItemHeight = DpiHelper.Scale(22)
+            };
+            themeData.CertStoresTree = certStoresTree;
+
+            certStoresTreePanel.Controls.Add(certStoresTree);
+            certStoresTreePanel.Controls.Add(certStoresTreeHeader);
+            certStoresSplit.Panel1.Controls.Add(certStoresTreePanel);
+
+            // Details panel (right)
+            var certStoresDetailsPanel = new Panel { Dock = DockStyle.Fill };
+            var certStoresDetailsHeader = new Panel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(32),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 0, 0, 0)
+            };
+            themeData.CertStoresDetailsHeader = certStoresDetailsHeader;
+            var certStoresDetailsLabel = new Label
+            {
+                Text = "Certificate Details",
+                Dock = DockStyle.Fill,
+                ForeColor = ModernTheme.TextSecondary,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            themeData.CertStoresDetailsLabel = certStoresDetailsLabel;
+            certStoresDetailsHeader.Controls.Add(certStoresDetailsLabel);
+
+            var certStoresDetailsGrid = new DataGridView { Dock = DockStyle.Fill };
+            ModernTheme.ApplyTo(certStoresDetailsGrid);
+            themeData.CertStoresDetailsGrid = certStoresDetailsGrid;
+
+            certStoresDetailsPanel.Controls.Add(certStoresDetailsGrid);
+            certStoresDetailsPanel.Controls.Add(certStoresDetailsHeader);
+
+            certStoresSplit.Panel2.Controls.Add(certStoresDetailsPanel);
+
             // ===== Disk/Partition Split Pane =====
             var diskPartitionSplit = new SplitContainer
             {
@@ -5122,6 +5218,7 @@ namespace RegistryExpert
                 deviceManagerSplit.Visible = false;
                 rolesFeaturesSplit.Visible = false;
                 scheduledTasksSplit.Visible = false;
+                certStoresSplit.Visible = false;
                 diskPartitionSplit.Visible = false;
                 physicalDisksSplit.Visible = false;
                 appxFilterPanel.Visible = false;
@@ -5913,6 +6010,7 @@ namespace RegistryExpert
                     foreach (var classItem in section.Items)
                     {
                         // Create class node (parent) - inherits TreeView's larger font
+                        bool isUnknownClass = classItem.Value == "N/A";
                         var classNode = new TreeNode(classItem.Name);
                         var deviceClassData = new DeviceClassItem
                         {
@@ -5979,34 +6077,25 @@ namespace RegistryExpert
                                 {
                                     deviceNode.ForeColor = ModernTheme.TextDisabled;
                                 }
+                                else if (isUnknownClass)
+                                {
+                                    deviceNode.ForeColor = ModernTheme.Error;
+                                }
 
                                 classNode.Nodes.Add(deviceNode);
                             }
                         }
 
                         classNode.Tag = deviceClassData;
+                        if (isUnknownClass)
+                            classNode.ForeColor = ModernTheme.Error;
                         deviceManagerTree.Nodes.Add(classNode);
                     }
 
-                    // Expand all class nodes for visibility
-                    // (Only expand if <= 30 classes to avoid overwhelming UI, otherwise collapse)
-                    if (deviceManagerTree.Nodes.Count <= 30)
-                    {
-                        deviceManagerTree.ExpandAll();
-                    }
-
-                    // Select first device node if available
+                    // Select first class node (collapsed) if available
                     if (deviceManagerTree.Nodes.Count > 0)
                     {
-                        var firstClass = deviceManagerTree.Nodes[0];
-                        if (firstClass.Nodes.Count > 0)
-                        {
-                            deviceManagerTree.SelectedNode = firstClass.Nodes[0];
-                        }
-                        else
-                        {
-                            deviceManagerTree.SelectedNode = firstClass;
-                        }
+                        deviceManagerTree.SelectedNode = deviceManagerTree.Nodes[0];
                         deviceManagerDetailsGrid.ClearSelection();
                     }
 
@@ -6110,6 +6199,64 @@ namespace RegistryExpert
                     {
                         rolesTree.SelectedNode = rolesTree.Nodes[0];
                         rolesDetailsGrid.ClearSelection();
+                    }
+
+                    // Update subcategory button states
+                    foreach (var btn in subCategoryButtons)
+                    {
+                        btn.BackColor = btn.Tag == section ? ModernTheme.Accent : ModernTheme.Surface;
+                        btn.ForeColor = btn.Tag == section ? Color.White : ModernTheme.TextPrimary;
+                    }
+
+                    return;
+                }
+
+                // Special handling for Certificate Stores - use tree + detail view
+                if (section.Title.Contains("Certificate Stores"))
+                {
+                    contentGrid.Visible = false;
+                    certStoresSplit.Visible = true;
+
+                    certStoresTree.Nodes.Clear();
+                    certStoresDetailsGrid.Columns.Clear();
+                    certStoresDetailsGrid.Rows.Clear();
+                    certStoresDetailsLabel.Text = "Certificate Details";
+
+                    if (section.Tag is List<CertificateStoreInfo> storeList)
+                    {
+                        int totalCerts = storeList.Sum(s => s.Certificates.Count);
+                        certStoresTreeLabel.Text = $"Certificate Stores ({storeList.Count} stores, {totalCerts} certificates)";
+
+                        foreach (var store in storeList)
+                        {
+                            var storeNode = new TreeNode($"{store.FriendlyName} ({store.Certificates.Count})")
+                            {
+                                Tag = store
+                            };
+
+                            bool isEmpty = store.Certificates.Count == 0;
+                            if (isEmpty)
+                            {
+                                storeNode.ForeColor = ModernTheme.TextSecondary;
+                            }
+
+                            foreach (var cert in store.Certificates.OrderBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase))
+                            {
+                                var certNode = new TreeNode(cert.DisplayName)
+                                {
+                                    Tag = cert
+                                };
+                                if (cert.ValidTo.HasValue && cert.ValidTo.Value < DateTime.Now)
+                                {
+                                    certNode.ForeColor = ModernTheme.CurrentTheme == ThemeType.Dark ? Color.FromArgb(255, 100, 100) : Color.Red;
+                                }
+                                storeNode.Nodes.Add(certNode);
+                            }
+
+                            certStoresTree.Nodes.Add(storeNode);
+                        }
+
+                        // All stores collapsed by default
                     }
 
                     // Update subcategory button states
@@ -6604,6 +6751,14 @@ namespace RegistryExpert
                     {
                         var rowIdx = contentGrid.Rows.Add(item.Name, item.Value);
                         contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+
+                        if (item.IsWarning)
+                        {
+                            contentGrid.Rows[rowIdx].DefaultCellStyle.ForeColor =
+                                ModernTheme.CurrentTheme == ThemeType.Dark
+                                    ? Color.FromArgb(255, 100, 100)
+                                    : Color.Red;
+                        }
                     }
                 }
                 else
@@ -6615,6 +6770,14 @@ namespace RegistryExpert
                     {
                         var rowIdx = contentGrid.Rows.Add(item.Name);
                         contentGrid.Rows[rowIdx].Tag = item;  // Store item for SelectionChanged
+
+                        if (item.IsWarning)
+                        {
+                            contentGrid.Rows[rowIdx].DefaultCellStyle.ForeColor =
+                                ModernTheme.CurrentTheme == ThemeType.Dark
+                                    ? Color.FromArgb(255, 100, 100)
+                                    : Color.Red;
+                        }
                     }
                 }
 
@@ -7049,6 +7212,107 @@ namespace RegistryExpert
                 }
             };
 
+            // Handle certificate stores tree node selection
+            certStoresTree.AfterSelect += (s, ev) =>
+            {
+                if (ev.Node?.Tag is CertificateInfo cert)
+                {
+                    certStoresDetailsLabel.Text = $"Details - {cert.DisplayName}";
+
+                    certStoresDetailsGrid.Columns.Clear();
+                    certStoresDetailsGrid.Rows.Clear();
+
+                    certStoresDetailsGrid.Columns.Add("property", "Property");
+                    certStoresDetailsGrid.Columns.Add("value", "Value");
+                    certStoresDetailsGrid.Columns["property"]!.FillWeight = 30;
+                    certStoresDetailsGrid.Columns["value"]!.FillWeight = 70;
+
+                    certStoresDetailsGrid.Rows.Add("Subject", cert.Subject);
+                    certStoresDetailsGrid.Rows.Add("Issuer", cert.Issuer);
+                    certStoresDetailsGrid.Rows.Add("Serial Number", cert.SerialNumber);
+                    certStoresDetailsGrid.Rows.Add("Thumbprint (SHA-1)", cert.Thumbprint);
+
+                    if (cert.ValidFrom.HasValue)
+                        certStoresDetailsGrid.Rows.Add("Valid From", cert.ValidFrom.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+                    if (cert.ValidTo.HasValue)
+                        certStoresDetailsGrid.Rows.Add("Valid To", cert.ValidTo.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+
+                    if (!string.IsNullOrEmpty(cert.SignatureAlgorithm))
+                        certStoresDetailsGrid.Rows.Add("Signature Algorithm", cert.SignatureAlgorithm);
+
+                    if (!string.IsNullOrEmpty(cert.FriendlyName))
+                        certStoresDetailsGrid.Rows.Add("Friendly Name", cert.FriendlyName);
+
+                    if (!string.IsNullOrEmpty(cert.KeyProvider))
+                        certStoresDetailsGrid.Rows.Add("Key Provider (CSP)", cert.KeyProvider);
+
+                    if (!string.IsNullOrEmpty(cert.KeyContainer))
+                        certStoresDetailsGrid.Rows.Add("Key Container", cert.KeyContainer);
+
+                    certStoresDetailsGrid.Rows.Add("Registry Path", cert.RegistryPath);
+
+                    // Highlight expired certs
+                    if (cert.ValidTo.HasValue && cert.ValidTo.Value < DateTime.Now)
+                    {
+                        // Find the Valid To row and color it
+                        foreach (DataGridViewRow row in certStoresDetailsGrid.Rows)
+                        {
+                            if (row.Cells[0].Value?.ToString() == "Valid To")
+                            {
+                                row.DefaultCellStyle.ForeColor = ModernTheme.CurrentTheme == ThemeType.Dark ? Color.FromArgb(255, 100, 100) : Color.Red;
+                                break;
+                            }
+                        }
+                    }
+
+                    registryPathLabel.Text = $"Registry Path: {cert.RegistryPath}";
+                    registryValueBox.Text = $"{cert.DisplayName} | {cert.Subject}";
+                }
+                else if (ev.Node?.Tag is CertificateStoreInfo store)
+                {
+                    certStoresDetailsLabel.Text = $"Store - {store.FriendlyName}";
+
+                    certStoresDetailsGrid.Columns.Clear();
+                    certStoresDetailsGrid.Rows.Clear();
+
+                    certStoresDetailsGrid.Columns.Add("property", "Property");
+                    certStoresDetailsGrid.Columns.Add("value", "Value");
+                    certStoresDetailsGrid.Columns["property"]!.FillWeight = 30;
+                    certStoresDetailsGrid.Columns["value"]!.FillWeight = 70;
+
+                    certStoresDetailsGrid.Rows.Add("Store Name", store.FriendlyName);
+                    certStoresDetailsGrid.Rows.Add("Registry Name", store.RegistryName);
+                    certStoresDetailsGrid.Rows.Add("Certificate Count", store.Certificates.Count.ToString());
+                    certStoresDetailsGrid.Rows.Add("Registry Path", store.RegistryPath);
+
+                    registryPathLabel.Text = $"Registry Path: {store.RegistryPath}";
+                    registryValueBox.Text = $"{store.FriendlyName} ({store.RegistryName}) | {store.Certificates.Count} certificates";
+                }
+            };
+
+            // Handle certificate stores details grid selection
+            certStoresDetailsGrid.SelectionChanged += (s, ev) =>
+            {
+                if (certStoresDetailsGrid.SelectedRows.Count > 0)
+                {
+                    var selectedNode = certStoresTree.SelectedNode;
+                    var rowIndex = certStoresDetailsGrid.SelectedRows[0].Index;
+                    var propName = certStoresDetailsGrid.Rows[rowIndex].Cells[0].Value?.ToString() ?? "";
+                    var propValue = certStoresDetailsGrid.Rows[rowIndex].Cells[1].Value?.ToString() ?? "";
+
+                    if (selectedNode?.Tag is CertificateInfo cert)
+                    {
+                        registryPathLabel.Text = $"Registry Path: {cert.RegistryPath}";
+                        registryValueBox.Text = $"{propName} = {propValue}";
+                    }
+                    else if (selectedNode?.Tag is CertificateStoreInfo store)
+                    {
+                        registryPathLabel.Text = $"Registry Path: {store.RegistryPath}";
+                        registryValueBox.Text = $"{propName} = {propValue}";
+                    }
+                }
+            };
+
             // Track current category
             string currentCategory = "";
 
@@ -7355,6 +7619,7 @@ namespace RegistryExpert
             // Add content controls to Panel1 of the split container
             contentDetailSplit.Panel1.Controls.Add(physicalDisksSplit);
             contentDetailSplit.Panel1.Controls.Add(diskPartitionSplit);
+            contentDetailSplit.Panel1.Controls.Add(certStoresSplit);
             contentDetailSplit.Panel1.Controls.Add(scheduledTasksSplit);
             contentDetailSplit.Panel1.Controls.Add(rolesFeaturesSplit);
             contentDetailSplit.Panel1.Controls.Add(deviceManagerSplit);
@@ -7519,7 +7784,7 @@ namespace RegistryExpert
 
                 // Define which subcategories require which hive type (for System category)
                 // Hive Information is available for both
-                var softwareHiveSubcategories = new HashSet<string> { "🪟 Build Information" };
+                var softwareHiveSubcategories = new HashSet<string> { "🪟 Build Information", "\U0001f4dc Certificate Stores" };
                 var systemHiveSubcategories = new HashSet<string> { 
                     "💻 Computer Information", "🔄 CPU Hyper-Threading", 
                     "💥 Crash Dump Configuration", "🕐 System Time Config",
@@ -7813,7 +8078,157 @@ namespace RegistryExpert
                     else
                         unavailableButtons.Add(activationBtn);
 
-                    // Add Roles/Features button (requires SOFTWARE hive from a Windows Server)
+                }
+
+                // Add Certificate Stores button (requires SOFTWARE hive)
+                if (key == "System")
+                {
+                    bool hasCertStores = isSoftwareHive && _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.HasCertificateStores();
+                    var certStoresData = hasCertStores
+                        ? _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.GetCertificateStoresData()
+                        : null;
+                    int certCount = certStoresData?.Sum(s => s.Certificates.Count) ?? 0;
+                    var certSection = hasCertStores
+                        ? new AnalysisSection { Title = "\U0001f4dc Certificate Stores", Tag = certStoresData }
+                        : null;
+
+                    var certBtn = new Button
+                    {
+                        Text = "",
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = hasCertStores ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Size = DpiHelper.ScaleSize(130, 28),
+                        Margin = DpiHelper.ScalePadding(2),
+                        Cursor = hasCertStores ? Cursors.Hand : Cursors.Default,
+                        Tag = certSection,
+                        AccessibleName = "Certificate Stores"
+                    };
+                    certBtn.FlatAppearance.BorderColor = hasCertStores ? ModernTheme.Border : grayedOutColor;
+                    certBtn.FlatAppearance.BorderSize = 1;
+                    certBtn.FlatAppearance.MouseOverBackColor = hasCertStores ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+
+                    var hasCerts = hasCertStores; // Capture for closure
+                    certBtn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = hasCerts ? ModernTheme.TextPrimary : grayedOutColor;
+
+                        var iconFont = _iconFont10;
+                        TextRenderer.DrawText(ev.Graphics, "\uE8D7", iconFont, DpiHelper.ScalePoint(8, 6), textColor);
+
+                        TextRenderer.DrawText(ev.Graphics, "Certificates", ModernTheme.RegularFont, DpiHelper.ScalePoint(28, 5), textColor);
+                    };
+
+                    if (!hasCertStores)
+                    {
+                        subCategoryToolTip.SetToolTip(certBtn, "Requires SOFTWARE hive with certificate stores");
+                    }
+                    else
+                    {
+                        subCategoryToolTip.SetToolTip(certBtn, $"View {certCount} certificates across {certStoresData!.Count} stores");
+                    }
+
+                    certBtn.Click += (sender, args) =>
+                    {
+                        if (!hasCerts)
+                        {
+                            MessageBox.Show(
+                                "This feature requires a SOFTWARE hive with certificate stores.\n\n" +
+                                "Certificate data is stored under:\n" +
+                                @"SOFTWARE\Microsoft\SystemCertificates",
+                                "SOFTWARE Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else if (certBtn.Tag is AnalysisSection cs)
+                        {
+                            displaySection(cs);
+                        }
+                    };
+
+                    subCategoryButtons.Add(certBtn);
+
+                    if (hasCertStores)
+                        availableButtons.Add(certBtn);
+                    else
+                        unavailableButtons.Add(certBtn);
+                }
+
+                // Add Boot Configurations button to System category (requires SYSTEM hive)
+                if (key == "System")
+                {
+                    bool hasBootConfig = isSystemHive && _loadedHives[OfflineRegistryParser.HiveType.SYSTEM].InfoExtractor.HasBootConfigurations();
+
+                    var bootConfigBtn = new Button
+                    {
+                        Text = "",
+                        FlatStyle = FlatStyle.Flat,
+                        BackColor = hasBootConfig ? ModernTheme.Surface : ModernTheme.TreeViewBack,
+                        Font = ModernTheme.RegularFont,
+                        Size = DpiHelper.ScaleSize(155, 28),
+                        Margin = DpiHelper.ScalePadding(2),
+                        Cursor = hasBootConfig ? Cursors.Hand : Cursors.Default,
+                        Tag = hasBootConfig
+                            ? _loadedHives[OfflineRegistryParser.HiveType.SYSTEM].InfoExtractor.GetBootConfigurationAnalysis()
+                            : null,
+                        AccessibleName = "Boot Configurations"
+                    };
+                    bootConfigBtn.FlatAppearance.BorderColor = hasBootConfig ? ModernTheme.Border : grayedOutColor;
+                    bootConfigBtn.FlatAppearance.BorderSize = 1;
+                    bootConfigBtn.FlatAppearance.MouseOverBackColor = hasBootConfig ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+
+                    var hasBootCfg = hasBootConfig; // Capture for closure
+                    bootConfigBtn.Paint += (s, ev) =>
+                    {
+                        ev.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                        var textColor = hasBootCfg ? ModernTheme.TextPrimary : grayedOutColor;
+
+                        // Laptop/device icon from Segoe MDL2 Assets
+                        TextRenderer.DrawText(ev.Graphics, "\uEDA2", _iconFont10, DpiHelper.ScalePoint(8, 6), textColor);
+
+                        // Draw text
+                        TextRenderer.DrawText(ev.Graphics, "Boot Configurations", ModernTheme.RegularFont, DpiHelper.ScalePoint(28, 5), textColor);
+                    };
+
+                    if (!hasBootConfig)
+                    {
+                        subCategoryToolTip.SetToolTip(bootConfigBtn, "This feature requires SYSTEM hive to be loaded");
+                    }
+                    else
+                    {
+                        subCategoryToolTip.SetToolTip(bootConfigBtn, "View boot devices, start options, boot status, and BitLocker configuration");
+                    }
+
+                    bootConfigBtn.Click += (sender, args) =>
+                    {
+                        if (!hasBootCfg)
+                        {
+                            MessageBox.Show(
+                                "This feature requires SYSTEM hive to be loaded.\n\n" +
+                                "Boot configuration data is stored in the SYSTEM hive.\n\n" +
+                                "Common location: C:\\Windows\\System32\\config\\SYSTEM",
+                                "SYSTEM Hive Required",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else if (bootConfigBtn.Tag is AnalysisSection bootSection)
+                        {
+                            displaySection(bootSection);
+                        }
+                    };
+
+                    subCategoryButtons.Add(bootConfigBtn);
+
+                    if (hasBootConfig)
+                        availableButtons.Add(bootConfigBtn);
+                    else
+                        unavailableButtons.Add(bootConfigBtn);
+                }
+
+                // Add Roles/Features button to Software category (requires SOFTWARE hive from a Windows Server)
+                if (key == "Software")
+                {
                     bool hasRolesFeatures = isSoftwareHive && _loadedHives[OfflineRegistryParser.HiveType.SOFTWARE].InfoExtractor.HasServerRolesAndFeatures();
                     var rolesSection = hasRolesFeatures
                         ? new AnalysisSection { Title = "\U0001f527 Roles & Features" }
@@ -8450,6 +8865,46 @@ namespace RegistryExpert
             if (themeData.RolesDetailsGrid != null)
             {
                 ApplyThemeToDataGridView(themeData.RolesDetailsGrid);
+            }
+
+            // Update Certificate Stores panel
+            if (themeData.CertStoresSplit != null)
+            {
+                themeData.CertStoresSplit.BackColor = ModernTheme.Border;
+                themeData.CertStoresSplit.Panel1.BackColor = ModernTheme.Background;
+                themeData.CertStoresSplit.Panel2.BackColor = ModernTheme.Background;
+            }
+            if (themeData.CertStoresTree != null)
+            {
+                themeData.CertStoresTree.BackColor = ModernTheme.TreeViewBack;
+                themeData.CertStoresTree.ForeColor = ModernTheme.TextPrimary;
+                themeData.CertStoresTree.LineColor = ModernTheme.Border;
+                // Update node colors, dimming empty stores
+                foreach (TreeNode node in themeData.CertStoresTree.Nodes)
+                {
+                    if (node.Tag is CertificateStoreInfo store && store.Certificates.Count == 0)
+                        node.ForeColor = ModernTheme.TextSecondary;
+                    else
+                        node.ForeColor = ModernTheme.TextPrimary;
+
+                    foreach (TreeNode child in node.Nodes)
+                    {
+                        if (child.Tag is CertificateInfo cert && cert.ValidTo.HasValue && cert.ValidTo.Value < DateTime.Now)
+                            child.ForeColor = ModernTheme.CurrentTheme == ThemeType.Dark ? Color.FromArgb(255, 100, 100) : Color.Red;
+                        else
+                            child.ForeColor = ModernTheme.TextPrimary;
+                    }
+                }
+                themeData.CertStoresTree.Invalidate();
+            }
+            if (themeData.CertStoresTreeHeader != null) themeData.CertStoresTreeHeader.BackColor = ModernTheme.Surface;
+            if (themeData.CertStoresTreeLabel != null) themeData.CertStoresTreeLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.CertStoresDetailsHeader != null) themeData.CertStoresDetailsHeader.BackColor = ModernTheme.Surface;
+            if (themeData.CertStoresDetailsLabel != null) themeData.CertStoresDetailsLabel.ForeColor = ModernTheme.TextSecondary;
+
+            if (themeData.CertStoresDetailsGrid != null)
+            {
+                ApplyThemeToDataGridView(themeData.CertStoresDetailsGrid);
             }
 
             // Update Scheduled Tasks panel
@@ -9308,6 +9763,7 @@ namespace RegistryExpert
     {
         public string Title { get; set; } = "";
         public List<AnalysisItem> Items { get; set; } = new();
+        public object? Tag { get; set; }
     }
 
     public class AnalysisItem
@@ -9317,6 +9773,7 @@ namespace RegistryExpert
         public string RegistryPath { get; set; } = "";
         public string RegistryValue { get; set; } = "";
         public bool IsSubSection { get; set; } = false;
+        public bool IsWarning { get; set; } = false;
         public List<AnalysisItem>? SubItems { get; set; }
     }
 

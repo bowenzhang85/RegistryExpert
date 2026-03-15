@@ -317,12 +317,13 @@ namespace RegistryExpert
             if (string.IsNullOrEmpty(keyPath)) return keyPath;
             
             var hiveName = _hiveType.ToString();
+            var rootName = _hive?.Root?.KeyName ?? "ROOT";
             
-            if (keyPath.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
+            if (keyPath.StartsWith(rootName + "\\", StringComparison.OrdinalIgnoreCase))
             {
-                return hiveName + keyPath.Substring(4); // "ROOT" is 4 chars
+                return hiveName + keyPath.Substring(rootName.Length);
             }
-            else if (keyPath.Equals("ROOT", StringComparison.OrdinalIgnoreCase))
+            else if (keyPath.Equals(rootName, StringComparison.OrdinalIgnoreCase))
             {
                 return hiveName;
             }

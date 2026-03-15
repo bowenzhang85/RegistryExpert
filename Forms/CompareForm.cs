@@ -18,6 +18,12 @@ namespace RegistryExpert
         private OfflineRegistryParser? _leftParser;
         private OfflineRegistryParser? _rightParser;
         
+        // Normalized root key name used for all path-based lookups.
+        // Different hive files have different root key names (e.g., "ROOT", "CsiTool-CreateHive-{GUID}",
+        // "$$$PROTO.HIV", "CMI-CreateHive{GUID}"). Normalizing to a common name ensures cross-hive
+        // comparison works regardless of the actual root key names.
+        private const string NormalizedRootName = "ROOT";
+        
         // Lookup dictionaries for fast path-based comparison (built sequentially, only read afterward)
         private Dictionary<string, RegistryKey>? _leftKeysByPath = new(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, RegistryKey>? _rightKeysByPath = new(StringComparer.OrdinalIgnoreCase);
@@ -836,6 +842,11 @@ namespace RegistryExpert
             // Values grid
             valuesGrid = CreateValuesGrid(isLeft ? "Left" : "Right");
 
+            if (isLeft)
+                valuesGrid.SelectionChanged += LeftValuesGrid_SelectionChanged;
+            else
+                valuesGrid.SelectionChanged += RightValuesGrid_SelectionChanged;
+
             splitContainer.Panel1.Controls.Add(treeView);
             splitContainer.Panel2.Controls.Add(valuesGrid);
 
@@ -1150,9 +1161,15 @@ namespace RegistryExpert
                 var rightRootKey = rightParser.GetRootKey();
                 
                 if (leftRootKey != null)
-                    leftRootNode = CreateLazyNode(leftRootKey, leftRootKey.KeyName, isLeftTree: true);
+                    leftRootNode = CreateLazyNode(leftRootKey, NormalizedRootName, isLeftTree: true);
                 if (rightRootKey != null)
-                    rightRootNode = CreateLazyNode(rightRootKey, rightRootKey.KeyName, isLeftTree: false);
+                    rightRootNode = CreateLazyNode(rightRootKey, NormalizedRootName, isLeftTree: false);
+
+                // Show actual file names as root node text instead of internal root key names
+                if (leftRootNode != null && leftParser.FilePath != null)
+                    leftRootNode.Text = System.IO.Path.GetFileName(leftParser.FilePath);
+                if (rightRootNode != null && rightParser.FilePath != null)
+                    rightRootNode.Text = System.IO.Path.GetFileName(rightParser.FilePath);
 
                 // Add nodes to tree views on UI thread
                 _leftTreeView.BeginUpdate();
@@ -1290,7 +1307,7 @@ namespace RegistryExpert
         
         private void BuildKeyIndexRecursive(RegistryKey key, string parentPath, Dictionary<string, RegistryKey> result)
         {
-            var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
+            var path = string.IsNullOrEmpty(parentPath) ? NormalizedRootName : $"{parentPath}\\{key.KeyName}";
             result[path] = key;
 
             if (key.SubKeys != null)
@@ -1314,7 +1331,7 @@ namespace RegistryExpert
         {
             token.ThrowIfCancellationRequested();
             
-            var path = string.IsNullOrEmpty(parentPath) ? key.KeyName : $"{parentPath}\\{key.KeyName}";
+            var path = string.IsNullOrEmpty(parentPath) ? NormalizedRootName : $"{parentPath}\\{key.KeyName}";
             
             bool isUnique = !otherIndex.TryGetValue(path, out var otherKey);
             bool hasValueDiff = false;
@@ -1589,6 +1606,47 @@ namespace RegistryExpert
             {
                 _isSyncing = false;
             }
+        }
+
+        private void SyncValuesGridSelection(DataGridView sourceGrid, DataGridView targetGrid)
+        {
+            if (_isSyncing || sourceGrid.SelectedRows.Count == 0) return;
+            if (!sourceGrid.Columns.Contains("Name") || !targetGrid.Columns.Contains("Name")) return;
+
+            _isSyncing = true;
+            try
+            {
+                var selectedName = sourceGrid.SelectedRows[0].Cells["Name"].Value?.ToString();
+                if (string.IsNullOrEmpty(selectedName)) return;
+
+                foreach (DataGridViewRow row in targetGrid.Rows)
+                {
+                    if (string.Equals(row.Cells["Name"].Value?.ToString(), selectedName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetGrid.ClearSelection();
+                        row.Selected = true;
+                        targetGrid.FirstDisplayedScrollingRowIndex = row.Index;
+                        return;
+                    }
+                }
+
+                // No match found — just clear selection on the other side
+                targetGrid.ClearSelection();
+            }
+            finally
+            {
+                _isSyncing = false;
+            }
+        }
+
+        private void LeftValuesGrid_SelectionChanged(object? sender, EventArgs e)
+        {
+            SyncValuesGridSelection(_leftValuesGrid, _rightValuesGrid);
+        }
+
+        private void RightValuesGrid_SelectionChanged(object? sender, EventArgs e)
+        {
+            SyncValuesGridSelection(_rightValuesGrid, _leftValuesGrid);
         }
 
         private void ShowValues(DataGridView grid, RegistryKey key, string path, bool isLeftGrid)

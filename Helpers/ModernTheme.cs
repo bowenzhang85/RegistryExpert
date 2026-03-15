@@ -183,7 +183,7 @@ namespace RegistryExpert
         public static Color DiffRemoved => SystemInformation.HighContrast
             ? SystemColors.GrayText
             : _currentTheme == ThemeType.Dark 
-                ? Color.FromArgb(218, 54, 51)         // Red for removed
+                ? Color.FromArgb(255, 110, 110)       // Light red for removed (readable on dark bg)
                 : Color.FromArgb(207, 34, 46);
         
         public static Color TreeViewBack => SystemInformation.HighContrast

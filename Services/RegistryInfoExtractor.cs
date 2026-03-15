@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using RegistryParser.Abstractions;
 
@@ -396,6 +397,12 @@ namespace RegistryExpert
                 catch { }
             }
 
+            // Add BIOS Mode, BIOS Version/Date, VM Generation, TPM to Computer Information
+            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                computerSection.Items.AddRange(GetBiosAndTpmItems());
+            }
+
             // Always add for UI consistency (will appear greyed out if empty)
             sections.Add(computerSection);
 
@@ -758,10 +765,7 @@ namespace RegistryExpert
                         // Determine if this is an "unknown" device (missing ClassGUID or Driver)
                         bool isUnknown = string.IsNullOrEmpty(classGuid) || string.IsNullOrEmpty(driverValue);
 
-                        // Skip devices that have no display info at all (no FriendlyName and no DeviceDesc)
                         var friendlyName = instance.Values.FirstOrDefault(v => v.ValueName == "FriendlyName")?.ValueData?.ToString();
-                        if (string.IsNullOrEmpty(deviceDesc) && string.IsNullOrEmpty(friendlyName))
-                            continue;
 
                         // Use "__unknown__" as the grouping key for unknown devices
                         var groupKey = isUnknown ? "__unknown__" : classGuid!;
@@ -780,7 +784,29 @@ namespace RegistryExpert
                         }
                         else
                         {
-                            displayName = instance.KeyName;
+                            // Try to find a display name from sibling instances under the same device key
+                            string? siblingName = null;
+                            if (device.SubKeys != null)
+                            {
+                                foreach (var sibling in device.SubKeys)
+                                {
+                                    if (sibling.KeyName == instance.KeyName) continue;
+                                    var sibFriendly = sibling.Values?.FirstOrDefault(v => v.ValueName == "FriendlyName")?.ValueData?.ToString();
+                                    var sibDesc = sibling.Values?.FirstOrDefault(v => v.ValueName == "DeviceDesc")?.ValueData?.ToString();
+                                    var raw = sibFriendly ?? sibDesc;
+                                    if (!string.IsNullOrEmpty(raw))
+                                    {
+                                        var lastSemi = raw.LastIndexOf(';');
+                                        siblingName = lastSemi >= 0 ? raw.Substring(lastSemi + 1) : raw;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (siblingName != null)
+                                displayName = $"{siblingName} (not configured)";
+                            else
+                                displayName = $@"{busType.KeyName}\{device.KeyName}";
                         }
 
                         var registryPath = $@"{_currentControlSet}\Enum\{busType.KeyName}\{device.KeyName}\{instance.KeyName}";
@@ -6853,6 +6879,866 @@ namespace RegistryExpert
         }
 
         /// <summary>
+        /// Checks whether this SYSTEM hive contains boot configuration data.
+        /// </summary>
+        public bool HasBootConfigurations()
+        {
+            if (_parser.CurrentHiveType != OfflineRegistryParser.HiveType.SYSTEM)
+                return false;
+            var controlKey = _parser.GetKey($@"{_currentControlSet}\Control");
+            return controlKey != null;
+        }
+
+        /// <summary>
+        /// Extracts BIOS Mode, BIOS Version/Date, VM Generation, and TPM items
+        /// for the Computer Information section.
+        /// </summary>
+        private List<AnalysisItem> GetBiosAndTpmItems()
+        {
+            var items = new List<AnalysisItem>();
+
+            // ── BIOS Mode & Version ──────────────────────────────────────
+            var isUefi = false;
+            var biosVersion = "";
+            var biosVendor = "";
+            var biosReleaseDate = "";
+            var systemVersion = "";
+            var systemManufacturer = "";
+            var systemProductName = "";
+            var hwConfigPath = "HardwareConfig";
+            var hwConfigKey = _parser.GetKey(hwConfigPath);
+            if (hwConfigKey != null)
+            {
+                var lastConfig = hwConfigKey.Values
+                    .FirstOrDefault(v => v.ValueName == "LastConfig")?.ValueData?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(lastConfig))
+                {
+                    var hwGuidPath = $@"HardwareConfig\{lastConfig}";
+                    var hwGuidKey = _parser.GetKey(hwGuidPath);
+                    if (hwGuidKey != null)
+                    {
+                        biosVersion = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "BIOSVersion")?.ValueData?.ToString() ?? "";
+                        biosVendor = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "BIOSVendor")?.ValueData?.ToString() ?? "";
+                        biosReleaseDate = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "BIOSReleaseDate")?.ValueData?.ToString() ?? "";
+                        systemVersion = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "SystemVersion")?.ValueData?.ToString() ?? "";
+                        systemManufacturer = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "SystemManufacturer")?.ValueData?.ToString() ?? "";
+                        systemProductName = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "SystemProductName")?.ValueData?.ToString() ?? "";
+                        var systemBiosVersion = hwGuidKey.Values
+                            .FirstOrDefault(v => v.ValueName == "SystemBiosVersion")?.ValueData?.ToString() ?? "";
+
+                        isUefi = biosVersion.Contains("UEFI", StringComparison.OrdinalIgnoreCase)
+                              || systemVersion.Contains("UEFI", StringComparison.OrdinalIgnoreCase)
+                              || systemBiosVersion.Contains("UEFI", StringComparison.OrdinalIgnoreCase);
+
+                        hwConfigPath = hwGuidPath;
+                    }
+                }
+            }
+
+            var biosMode = isUefi ? "UEFI" : "Legacy";
+            items.Add(new AnalysisItem
+            {
+                Name = "BIOS Mode",
+                Value = biosMode,
+                RegistryPath = hwConfigPath,
+                RegistryValue = isUefi
+                    ? $"BIOSVersion contains UEFI indicator — {biosVersion}"
+                    : $"No UEFI indicator found in BIOS strings — {(string.IsNullOrEmpty(biosVersion) ? "HardwareConfig not available" : biosVersion)}"
+            });
+
+            var biosParts = new List<string>();
+            if (!string.IsNullOrEmpty(biosVendor)) biosParts.Add(biosVendor);
+            if (!string.IsNullOrEmpty(biosVersion)) biosParts.Add(biosVersion);
+            if (!string.IsNullOrEmpty(biosReleaseDate)) biosParts.Add(biosReleaseDate);
+            if (biosParts.Count > 0)
+            {
+                var biosLine = string.Join(" ", biosParts.Take(2));
+                if (biosParts.Count == 3)
+                    biosLine += $", {biosParts[2]}";
+
+                items.Add(new AnalysisItem
+                {
+                    Name = "BIOS Version/Date",
+                    Value = biosLine,
+                    RegistryPath = hwConfigPath,
+                    RegistryValue = $"BIOSVendor={biosVendor}, BIOSVersion={biosVersion}, BIOSReleaseDate={biosReleaseDate}"
+                });
+            }
+
+            // ── VM Generation (Hyper-V) ──────────────────────────────────
+
+            var isHyperV = systemManufacturer.Contains("Microsoft", StringComparison.OrdinalIgnoreCase)
+                        && systemProductName.Contains("Virtual Machine", StringComparison.OrdinalIgnoreCase);
+
+            if (isHyperV)
+            {
+                var vmGen = isUefi ? "Generation 2" : "Generation 1";
+                var vmGenDetail = isUefi
+                    ? "UEFI firmware — Hyper-V Generation 2 VM"
+                    : "Legacy BIOS firmware — Hyper-V Generation 1 VM";
+                items.Add(new AnalysisItem
+                {
+                    Name = "VM Generation",
+                    Value = vmGen,
+                    RegistryPath = hwConfigPath,
+                    RegistryValue = vmGenDetail
+                });
+            }
+
+            // ── TPM Hardware Detection ───────────────────────────────────
+            var tpmClassGuid = "{d94ee5d8-d189-4994-83d2-f68d7d41b0e6}";
+            var tpmClassPath = $@"{_currentControlSet}\Control\Class\{tpmClassGuid}\0000";
+            var tpmClassKey = _parser.GetKey(tpmClassPath);
+
+            if (tpmClassKey != null)
+            {
+                var infSection = tpmClassKey.Values
+                    .FirstOrDefault(v => v.ValueName == "InfSection")?.ValueData?.ToString() ?? "";
+                var driverDesc = tpmClassKey.Values
+                    .FirstOrDefault(v => v.ValueName == "DriverDesc")?.ValueData?.ToString() ?? "";
+
+                var tpmVersion = infSection.ToUpperInvariant().Contains("TPM2") ? "2.0" : "1.2";
+
+                var dosDeviceName = "";
+                var isVirtual = false;
+                var compatibleIds = "";
+                var enumPath = "";
+
+                string[] tpmAcpiIds = { "MSFT1001", "MSFT0101", "INTC0102", "AMD0040", "BCM0101", "PNP0C31" };
+                foreach (var acpiId in tpmAcpiIds)
+                {
+                    var acpiPath = $@"{_currentControlSet}\Enum\ACPI\{acpiId}";
+                    var acpiKey = _parser.GetKey(acpiPath);
+                    if (acpiKey?.SubKeys?.Count > 0)
+                    {
+                        var instanceKey = acpiKey.SubKeys[0];
+                        enumPath = $@"{acpiPath}\{instanceKey.KeyName}";
+
+                        compatibleIds = instanceKey.Values
+                            .FirstOrDefault(v => v.ValueName == "CompatibleIDs")?.ValueData?.ToString() ?? "";
+                        isVirtual = compatibleIds.ToUpperInvariant().Contains("VTPM");
+
+                        var devParamsPath = $@"{enumPath}\Device Parameters";
+                        var devParamsKey = _parser.GetKey(devParamsPath);
+                        if (devParamsKey != null)
+                        {
+                            dosDeviceName = devParamsKey.Values
+                                .FirstOrDefault(v => v.ValueName == "DosDeviceName")?.ValueData?.ToString() ?? "";
+                        }
+
+                        break;
+                    }
+                }
+
+                var tpmParts = new List<string>();
+                tpmParts.Add($"TPM {tpmVersion}");
+                if (isVirtual) tpmParts[0] += " (Virtual)";
+
+                var friendlyName = !string.IsNullOrEmpty(dosDeviceName) ? dosDeviceName : driverDesc;
+                if (!string.IsNullOrEmpty(friendlyName))
+                    tpmParts.Add(friendlyName);
+
+                var tpmDisplayValue = string.Join(" — ", tpmParts);
+
+                items.Add(new AnalysisItem
+                {
+                    Name = "TPM",
+                    Value = tpmDisplayValue,
+                    RegistryPath = !string.IsNullOrEmpty(enumPath) ? enumPath : tpmClassPath,
+                    RegistryValue = $"InfSection={infSection}, DriverDesc={driverDesc}, CompatibleIDs={compatibleIds}, DosDeviceName={dosDeviceName}"
+                });
+            }
+            else
+            {
+                items.Add(new AnalysisItem
+                {
+                    Name = "TPM",
+                    Value = "Not Detected",
+                    RegistryPath = tpmClassPath,
+                    RegistryValue = "No TPM device class instance found (no hardware TPM installed)"
+                });
+            }
+
+            return items;
+        }
+
+        /// <summary>
+        /// Gets boot configuration analysis from the SYSTEM hive.
+        /// Includes boot devices, start options, boot status, and BitLocker integration.
+        /// BIOS Mode, BIOS Version/Date, VM Generation, and TPM are in Computer Information.
+        /// </summary>
+        public AnalysisSection GetBootConfigurationAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f4bb Boot Configurations" };
+
+            if (_parser.CurrentHiveType != OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM hive to be loaded",
+                    RegistryPath = "",
+                    RegistryValue = "Load SYSTEM hive to view boot configuration"
+                });
+                return section;
+            }
+
+            var controlPath = $@"{_currentControlSet}\Control";
+
+            // ── 1. Boot Device Paths ────────────────────────────────────
+            var systemBootDevice = GetValue(controlPath, "SystemBootDevice");
+            var firmwareBootDevice = GetValue(controlPath, "FirmwareBootDevice");
+
+            // Resolve ARC paths to drive letters (MBR only; GPT falls back to raw paths)
+            var driveLetterMap = ResolveBootDeviceDriveLetters(
+                systemBootDevice ?? "", firmwareBootDevice ?? "");
+
+            if (!string.IsNullOrEmpty(systemBootDevice))
+            {
+                var systemDisplay = driveLetterMap.TryGetValue("SystemBootDevice", out var sysLetter)
+                    ? $"{systemBootDevice} ({sysLetter})"
+                    : systemBootDevice;
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "System Boot Device",
+                    Value = systemDisplay,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"SystemBootDevice = {systemBootDevice}"
+                });
+            }
+
+            if (!string.IsNullOrEmpty(firmwareBootDevice))
+            {
+                var firmwareDisplay = driveLetterMap.TryGetValue("FirmwareBootDevice", out var fwLetter)
+                    ? $"{firmwareBootDevice} ({fwLetter})"
+                    : firmwareBootDevice;
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Firmware Boot Device",
+                    Value = firmwareDisplay,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"FirmwareBootDevice = {firmwareBootDevice}"
+                });
+            }
+
+            // ── 2. System Start Options ──────────────────────────────────
+            var startOptions = GetValue(controlPath, "SystemStartOptions");
+            if (!string.IsNullOrEmpty(startOptions))
+            {
+                var hasWarningOptions = startOptions.Contains("SAFEBOOT", StringComparison.OrdinalIgnoreCase) ||
+                                        startOptions.Contains("DEREPAIR", StringComparison.OrdinalIgnoreCase);
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "System Start Options",
+                    Value = startOptions,
+                    IsWarning = hasWarningOptions,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"SystemStartOptions = {startOptions}"
+                });
+
+                // Parse individual flags into sub-items with descriptions
+                ParseBootStartOptions(section, controlPath, startOptions);
+            }
+
+            // ── 3. Boot Status ───────────────────────────────────────────
+            var lastBootSucceeded = GetValue(controlPath, "LastBootSucceeded");
+            if (!string.IsNullOrEmpty(lastBootSucceeded))
+            {
+                var succeeded = lastBootSucceeded == "1" || lastBootSucceeded.StartsWith("1 ");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Last Boot Succeeded",
+                    Value = succeeded ? "Yes" : "No",
+                    RegistryPath = controlPath,
+                    RegistryValue = $"LastBootSucceeded = {lastBootSucceeded}"
+                });
+            }
+
+            var lastBootShutdown = GetValue(controlPath, "LastBootShutdown");
+            if (!string.IsNullOrEmpty(lastBootShutdown))
+            {
+                var cleanShutdown = lastBootShutdown == "1" || lastBootShutdown.StartsWith("1 ");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Last Boot Shutdown",
+                    Value = cleanShutdown ? "Clean" : $"Abnormal ({lastBootShutdown})",
+                    IsWarning = !cleanShutdown,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"LastBootShutdown = {lastBootShutdown}"
+                });
+            }
+
+            var dirtyShutdownCount = GetValue(controlPath, "DirtyShutdownCount");
+            if (!string.IsNullOrEmpty(dirtyShutdownCount))
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Dirty Shutdown Count",
+                    Value = dirtyShutdownCount,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"DirtyShutdownCount = {dirtyShutdownCount}"
+                });
+            }
+
+            var bootDriverFlags = GetValue(controlPath, "BootDriverFlags");
+            if (!string.IsNullOrEmpty(bootDriverFlags))
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Boot Driver Flags",
+                    Value = bootDriverFlags,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"BootDriverFlags = {bootDriverFlags}"
+                });
+            }
+
+            // ── 4. BitLocker boot integration
+            var fvevolPath = $@"{_currentControlSet}\Services\fvevol";
+            var fvevolKey = _parser.GetKey(fvevolPath);
+            if (fvevolKey != null)
+            {
+                var fveStart = fvevolKey.Values
+                    .FirstOrDefault(v => v.ValueName == "Start")?.ValueData?.ToString() ?? "";
+                var fveStartDesc = fveStart switch
+                {
+                    "0" or "0 (0x0)" => "Boot (0) — loads at boot time",
+                    "1" or "1 (0x1)" => "System (1)",
+                    "3" or "3 (0x3)" => "Manual (3)",
+                    "4" or "4 (0x4)" => "Disabled (4)",
+                    _ => fveStart
+                };
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "BitLocker Volume Driver (fvevol)",
+                    Value = fveStartDesc,
+                    RegistryPath = fvevolPath,
+                    RegistryValue = $"Start = {fveStart}"
+                });
+            }
+
+            var bitlockerPath = $@"{_currentControlSet}\Control\BitLocker";
+            var bitlockerKey = _parser.GetKey(bitlockerPath);
+            if (bitlockerKey != null)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "BitLocker Configuration",
+                    Value = "Present",
+                    RegistryPath = bitlockerPath,
+                    RegistryValue = "BitLocker configuration key exists"
+                });
+            }
+
+            // Fallback if nothing was found
+            if (section.Items.Count == 0)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Status",
+                    Value = "No boot configuration data found in this SYSTEM hive",
+                    RegistryPath = controlPath,
+                    RegistryValue = "Control key may be empty or malformed"
+                });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// Resolves boot device ARC paths to drive letters using MountedDevices cross-reference.
+        /// For MBR disks: identifies the Windows drive letter from DriverDatabase\SystemRoot,
+        /// then searches MountedDevices for other partitions on the same disk.
+        /// For GPT disks: returns empty dictionary (caller should fall back to raw ARC paths).
+        /// Returns: dictionary mapping "SystemBootDevice" and/or "FirmwareBootDevice" to drive letter annotations.
+        /// </summary>
+        private Dictionary<string, string> ResolveBootDeviceDriveLetters(string systemBootDevice, string firmwareBootDevice)
+        {
+            var result = new Dictionary<string, string>();
+
+            // 1. Get the Windows drive letter from DriverDatabase\SystemRoot (e.g., "C:\Windows" → "C:")
+            var systemRoot = GetValue(@"DriverDatabase", "SystemRoot");
+            if (string.IsNullOrEmpty(systemRoot) || systemRoot.Length < 2 || systemRoot[1] != ':')
+                return result;
+
+            var windowsDriveLetter = systemRoot.Substring(0, 2); // e.g., "C:"
+
+            // 2. Look up the Windows drive in MountedDevices to determine disk type
+            var mountedDevicesKey = _parser.GetKey("MountedDevices");
+            if (mountedDevicesKey?.Values == null)
+                return result;
+
+            var windowsValueName = $@"\DosDevices\{windowsDriveLetter}";
+            var windowsEntry = mountedDevicesKey.Values
+                .FirstOrDefault(v => string.Equals(v.ValueName, windowsValueName, StringComparison.OrdinalIgnoreCase));
+
+            byte[]? windowsData = windowsEntry?.ValueDataRaw;
+            if (windowsData == null || windowsData.Length != 12)
+                return result; // Not MBR (GPT or missing) — fall back to raw paths
+
+            // 3. MBR system: extract the boot disk signature from the Windows drive entry
+            uint bootDiskSig = BitConverter.ToUInt32(windowsData, 0);
+
+            // SystemBootDevice partition = the Windows partition
+            if (!string.IsNullOrEmpty(systemBootDevice))
+                result["SystemBootDevice"] = windowsDriveLetter;
+
+            // 4. For FirmwareBootDevice: search for other drive letters on the same disk
+            if (!string.IsNullOrEmpty(firmwareBootDevice) && firmwareBootDevice != systemBootDevice)
+            {
+                string? firmwareLetter = null;
+
+                // Parse partition number from the firmware boot device ARC path
+                var firmwarePartMatch = System.Text.RegularExpressions.Regex.Match(
+                    firmwareBootDevice, @"partition\((\d+)\)");
+                var systemPartMatch = System.Text.RegularExpressions.Regex.Match(
+                    systemBootDevice ?? "", @"partition\((\d+)\)");
+
+                if (firmwarePartMatch.Success && systemPartMatch.Success)
+                {
+                    int firmwarePartNum = int.Parse(firmwarePartMatch.Groups[1].Value);
+                    int systemPartNum = int.Parse(systemPartMatch.Groups[1].Value);
+
+                    if (firmwarePartNum != systemPartNum)
+                    {
+                        // Search all MountedDevices drive letter entries on the same disk
+                        // to find which (if any) maps to the firmware partition
+                        var sameDiskEntries = new List<(long offset, string driveLetter)>();
+
+                        foreach (var val in mountedDevicesKey.Values)
+                        {
+                            if (!val.ValueName.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            byte[]? data = val.ValueDataRaw;
+                            if (data == null || data.Length != 12)
+                                continue;
+
+                            uint sig = BitConverter.ToUInt32(data, 0);
+                            if (sig != bootDiskSig)
+                                continue;
+
+                            long offset = BitConverter.ToInt64(data, 4);
+                            string letter = val.ValueName.Substring(@"\DosDevices\".Length);
+                            sameDiskEntries.Add((offset, letter));
+                        }
+
+                        // Sort by offset to determine partition ordering
+                        sameDiskEntries.Sort((a, b) => a.offset.CompareTo(b.offset));
+
+                        // Assign 1-indexed partition numbers based on sorted offset
+                        // But there may be gaps (partitions without drive letters).
+                        // We know systemPartNum maps to windowsDriveLetter.
+                        // Find where windowsDriveLetter falls in the sorted list.
+                        int windowsIndex = sameDiskEntries.FindIndex(e => e.driveLetter == windowsDriveLetter);
+                        if (windowsIndex >= 0)
+                        {
+                            // The number of hidden partitions before the first lettered partition
+                            // = systemPartNum - (number of lettered partitions up to and including Windows)
+                            int hiddenBefore = systemPartNum - (windowsIndex + 1);
+
+                            // Now check if firmwarePartNum maps to a lettered partition
+                            int firmwareIndex = firmwarePartNum - hiddenBefore - 1; // 0-indexed into sameDiskEntries
+                            if (firmwareIndex >= 0 && firmwareIndex < sameDiskEntries.Count
+                                && firmwareIndex != windowsIndex)
+                            {
+                                firmwareLetter = sameDiskEntries[firmwareIndex].driveLetter;
+                            }
+                        }
+                    }
+                }
+
+                result["FirmwareBootDevice"] = firmwareLetter ?? "no drive letter";
+            }
+            else if (!string.IsNullOrEmpty(firmwareBootDevice))
+            {
+                // Same partition as SystemBootDevice
+                result["FirmwareBootDevice"] = windowsDriveLetter;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Parses individual flags from the SystemStartOptions string and adds them as AnalysisItems.
+        /// </summary>
+        private void ParseBootStartOptions(AnalysisSection section, string controlPath, string startOptions)
+        {
+            var options = startOptions.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+            foreach (var option in options)
+            {
+                string name;
+                string description;
+                bool isWarning = false;
+
+                if (option.StartsWith("NOEXECUTE=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var policy = option.Substring("NOEXECUTE=".Length);
+                    name = "  DEP Policy (NOEXECUTE)";
+                    description = policy.ToUpperInvariant() switch
+                    {
+                        "OPTIN" => "OptIn — DEP for Windows system components only",
+                        "OPTOUT" => "OptOut — DEP for all processes except exclusion list",
+                        "ALWAYSON" => "AlwaysOn — DEP for all processes, no exceptions",
+                        "ALWAYSOFF" => "AlwaysOff — DEP disabled",
+                        _ => policy
+                    };
+                }
+                else if (option.Equals("REDIRECT", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = "  Serial Console Redirect";
+                    description = "Enabled — EMS/serial console redirection active";
+                }
+                else if (option.StartsWith("FVEBOOT=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var offset = option.Substring("FVEBOOT=".Length);
+                    name = "  BitLocker Boot (FVEBOOT)";
+                    description = $"Boot partition offset: {offset}";
+                }
+                else if (option.Equals("NOVGA", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = "  VGA Mode";
+                    description = "Disabled (NOVGA) — no VGA-compatible display driver";
+                }
+                else if (option.StartsWith("SOS", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = "  Verbose Boot";
+                    description = "Enabled (SOS) — driver names displayed during boot";
+                }
+                else if (option.Equals("SAFEBOOT", StringComparison.OrdinalIgnoreCase) ||
+                         option.StartsWith("SAFEBOOT:", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = "  Safe Boot";
+                    description = option.Contains(':')
+                        ? $"Mode: {option.Substring(option.IndexOf(':') + 1)}"
+                        : "Enabled";
+                    isWarning = true;
+                }
+                else if (option.Equals("DEREPAIR", StringComparison.OrdinalIgnoreCase))
+                {
+                    name = "  Disaster Recovery Repair";
+                    description = "Enabled (DEREPAIR) — system booted in repair mode";
+                    isWarning = true;
+                }
+                else
+                {
+                    name = $"  {option}";
+                    description = "(boot option flag)";
+                }
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = name,
+                    Value = description,
+                    IsWarning = isWarning,
+                    RegistryPath = controlPath,
+                    RegistryValue = $"Parsed from SystemStartOptions: {option}"
+                });
+            }
+        }
+
+        #region Certificate Stores
+
+        /// <summary>
+        /// Store name mapping from registry key names to certmgr.msc friendly names.
+        /// </summary>
+        private static readonly Dictionary<string, string> CertStoreNameMap = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["MY"] = "Personal",
+            ["ROOT"] = "Trusted Root Certification Authorities",
+            ["CA"] = "Intermediate Certification Authorities",
+            ["AuthRoot"] = "Third-Party Root Certification Authorities",
+            ["Disallowed"] = "Untrusted Certificates",
+            ["TrustedPublisher"] = "Trusted Publishers",
+            ["TrustedPeople"] = "Trusted People",
+            ["trust"] = "Enterprise Trust",
+            ["Remote Desktop"] = "Remote Desktop",
+            ["SmartCardRoot"] = "Smart Card Trusted Roots",
+            ["AddressBook"] = "Other People",
+            ["REQUEST"] = "Certificate Enrollment Requests",
+            ["ClientAuthIssuers"] = "Client Authentication Issuers",
+            ["TrustedDevices"] = "Trusted Devices"
+        };
+
+        /// <summary>
+        /// Store display order matching certmgr.msc default layout.
+        /// Stores not in this list sort alphabetically after the known ones.
+        /// </summary>
+        private static readonly Dictionary<string, int> CertStoreOrder = new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["MY"] = 0,
+            ["ROOT"] = 1,
+            ["trust"] = 2,
+            ["CA"] = 3,
+            ["TrustedPublisher"] = 4,
+            ["Disallowed"] = 5,
+            ["AuthRoot"] = 6,
+            ["TrustedPeople"] = 7,
+            ["ClientAuthIssuers"] = 8,
+            ["Remote Desktop"] = 10,
+            ["SmartCardRoot"] = 11,
+            ["TrustedDevices"] = 12,
+            ["AddressBook"] = 13,
+            ["REQUEST"] = 14
+        };
+
+        /// <summary>
+        /// Checks whether this SOFTWARE hive contains any certificate stores.
+        /// </summary>
+        public bool HasCertificateStores()
+        {
+            var key = _parser.GetKey(@"Microsoft\SystemCertificates");
+            return key?.SubKeys != null && key.SubKeys.Count > 0;
+        }
+
+        /// <summary>
+        /// Extracts all certificate stores and their certificates from the SOFTWARE hive.
+        /// Returns a list of CertificateStoreInfo, each containing the store name and its certificates.
+        /// </summary>
+        public List<CertificateStoreInfo> GetCertificateStoresData()
+        {
+            var stores = new List<CertificateStoreInfo>();
+            var rootKey = _parser.GetKey(@"Microsoft\SystemCertificates");
+            if (rootKey?.SubKeys == null) return stores;
+
+            foreach (var storeKey in rootKey.SubKeys)
+            {
+                var storeName = storeKey.KeyName;
+                var friendlyName = CertStoreNameMap.TryGetValue(storeName, out var mapped) ? mapped : storeName;
+
+                var storeInfo = new CertificateStoreInfo
+                {
+                    RegistryName = storeName,
+                    FriendlyName = friendlyName,
+                    RegistryPath = $@"Microsoft\SystemCertificates\{storeName}"
+                };
+
+                // Look for Certificates subkey
+                var certsKey = _parser.GetKey($@"Microsoft\SystemCertificates\{storeName}\Certificates");
+                if (certsKey?.SubKeys != null)
+                {
+                    foreach (var certKey in certsKey.SubKeys)
+                    {
+                        var thumbprint = certKey.KeyName;
+                        var certInfo = new CertificateInfo
+                        {
+                            Thumbprint = thumbprint,
+                            RegistryPath = $@"Microsoft\SystemCertificates\{storeName}\Certificates\{thumbprint}"
+                        };
+
+                        // Find the Blob value
+                        if (certKey.Values != null)
+                        {
+                            var blobValue = certKey.Values.FirstOrDefault(v =>
+                                string.Equals(v.ValueName, "Blob", StringComparison.OrdinalIgnoreCase));
+                            if (blobValue != null)
+                            {
+                                try
+                                {
+                                    var blobData = blobValue.ValueDataRaw;
+                                    if (blobData != null && blobData.Length > 0)
+                                    {
+                                        DecodeCertificateBlob(blobData, certInfo);
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    System.Diagnostics.Debug.WriteLine($"Error decoding cert blob for {thumbprint}: {ex.Message}");
+                                }
+                            }
+                        }
+
+                        // Fallback: if subject is still empty, use thumbprint
+                        if (string.IsNullOrEmpty(certInfo.Subject))
+                            certInfo.DisplayName = thumbprint;
+                        else
+                            certInfo.DisplayName = ExtractCN(certInfo.Subject) ?? certInfo.Subject;
+
+                        storeInfo.Certificates.Add(certInfo);
+                    }
+                }
+
+                stores.Add(storeInfo);
+            }
+
+            // Sort: certmgr.msc positional order for known stores, then alphabetical for unknown.
+            // Empty stores sort to the bottom within each group.
+            const int unknownOrder = 1000;
+            stores.Sort((a, b) =>
+            {
+                bool aEmpty = a.Certificates.Count == 0;
+                bool bEmpty = b.Certificates.Count == 0;
+                if (aEmpty != bEmpty) return aEmpty ? 1 : -1;
+
+                int aOrder = CertStoreOrder.TryGetValue(a.RegistryName, out var ao) ? ao : unknownOrder;
+                int bOrder = CertStoreOrder.TryGetValue(b.RegistryName, out var bo) ? bo : unknownOrder;
+                if (aOrder != bOrder) return aOrder.CompareTo(bOrder);
+                // Both unknown (or same position): sort alphabetically by friendly name
+                return string.Compare(a.FriendlyName, b.FriendlyName, StringComparison.OrdinalIgnoreCase);
+            });
+
+            return stores;
+        }
+
+        /// <summary>
+        /// Decodes a certificate blob (sequence of property entries) and populates the CertificateInfo.
+        /// Blob format: repeating { DWORD propId, DWORD reserved(=1), DWORD cbData, BYTE data[cbData] }
+        /// </summary>
+        private static void DecodeCertificateBlob(byte[] blob, CertificateInfo certInfo)
+        {
+            int offset = 0;
+            while (offset + 12 <= blob.Length)
+            {
+                uint propId = BitConverter.ToUInt32(blob, offset);
+                // uint reserved = BitConverter.ToUInt32(blob, offset + 4); // always 1
+                uint cbData = BitConverter.ToUInt32(blob, offset + 8);
+                offset += 12;
+
+                if (cbData > (uint)(blob.Length - offset))
+                    break; // malformed
+
+                var propData = new byte[cbData];
+                Array.Copy(blob, offset, propData, 0, (int)cbData);
+                offset += (int)cbData;
+
+                switch (propId)
+                {
+                    case 0x03: // SHA-1 hash (thumbprint)
+                        if (propData.Length == 20)
+                            certInfo.Sha1Hash = BitConverter.ToString(propData).Replace("-", "");
+                        break;
+
+                    case 0x0B: // Friendly Name (UTF-16LE, null-terminated)
+                        certInfo.FriendlyName = Encoding.Unicode.GetString(propData).TrimEnd('\0');
+                        break;
+
+                    case 0x02: // Key Provider Info (CRYPT_KEY_PROV_INFO serialized)
+                        DecodeKeyProviderInfo(propData, certInfo);
+                        break;
+
+                    case 0x20: // DER-encoded X.509 certificate
+                        DecodeDerCertificate(propData, certInfo);
+                        break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Parses a DER-encoded certificate using X509Certificate2 to extract standard fields.
+        /// </summary>
+        private static void DecodeDerCertificate(byte[] derData, CertificateInfo certInfo)
+        {
+            try
+            {
+                using var cert = new X509Certificate2(derData);
+                certInfo.Subject = cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false);
+                certInfo.Issuer = cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, true);
+                certInfo.SerialNumber = cert.SerialNumber;
+                certInfo.ValidFrom = cert.NotBefore;
+                certInfo.ValidTo = cert.NotAfter;
+                certInfo.SignatureAlgorithm = cert.SignatureAlgorithm.FriendlyName ?? cert.SignatureAlgorithm.Value ?? "";
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error parsing DER certificate: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Decodes the serialized CRYPT_KEY_PROV_INFO structure to extract CSP and key container names.
+        /// Layout: fixed header (0x1C bytes), then container name (UTF-16LE) and provider name (UTF-16LE) inline.
+        /// </summary>
+        private static void DecodeKeyProviderInfo(byte[] data, CertificateInfo certInfo)
+        {
+            try
+            {
+                if (data.Length < 0x1C) return;
+
+                // The serialized structure stores string offsets at the start:
+                // offset 0x00: DWORD containerNameOffset (typically 0x1C)
+                // offset 0x04: DWORD provNameOffset
+                uint containerOffset = BitConverter.ToUInt32(data, 0);
+                uint providerOffset = BitConverter.ToUInt32(data, 4);
+
+                if (containerOffset < data.Length)
+                {
+                    certInfo.KeyContainer = ReadNullTerminatedUnicode(data, (int)containerOffset);
+                }
+
+                if (providerOffset < data.Length)
+                {
+                    certInfo.KeyProvider = ReadNullTerminatedUnicode(data, (int)providerOffset);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error parsing Key Provider Info: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Reads a null-terminated UTF-16LE string starting at the given offset.
+        /// </summary>
+        private static string ReadNullTerminatedUnicode(byte[] data, int offset)
+        {
+            var sb = new StringBuilder();
+            while (offset + 1 < data.Length)
+            {
+                char c = (char)(data[offset] | (data[offset + 1] << 8));
+                if (c == '\0') break;
+                sb.Append(c);
+                offset += 2;
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Extracts the CN (Common Name) from an X.500 distinguished name string.
+        /// Returns null if no CN is found.
+        /// </summary>
+        private static string? ExtractCN(string distinguishedName)
+        {
+            // Try CN= first, then OU=, then O=, then DC= (matches certmgr.msc behavior)
+            string[] prefixes = { "CN=", "OU=", "O=", "DC=" };
+            foreach (var prefix in prefixes)
+            {
+                var value = ExtractDNField(distinguishedName, prefix);
+                if (value != null) return value;
+            }
+            return null;
+        }
+
+        private static string? ExtractDNField(string distinguishedName, string prefix)
+        {
+            int idx = distinguishedName.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0) return null;
+
+            int start = idx + prefix.Length;
+            if (start >= distinguishedName.Length) return null;
+
+            // Handle quoted values
+            if (distinguishedName[start] == '"')
+            {
+                int closeQuote = distinguishedName.IndexOf('"', start + 1);
+                return closeQuote > start ? distinguishedName.Substring(start + 1, closeQuote - start - 1) : null;
+            }
+
+            // Unquoted: read until next comma or end
+            int end = distinguishedName.IndexOf(", ", start, StringComparison.Ordinal);
+            return end < 0 ? distinguishedName.Substring(start) : distinguishedName.Substring(start, end - start);
+        }
+
+        #endregion Certificate Stores
+
+        /// <summary>
         /// Extracts all server roles and features from ServerComponentCache
         /// </summary>
         public List<RoleFeatureItem> GetRolesAndFeaturesData()
@@ -7960,5 +8846,36 @@ namespace RegistryExpert
         public bool IsBoot { get; set; }
         public bool IsSystem { get; set; }
         public bool IsManual { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a certificate store (e.g., Personal, Root, CA).
+    /// </summary>
+    public class CertificateStoreInfo
+    {
+        public string RegistryName { get; set; } = "";
+        public string FriendlyName { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public List<CertificateInfo> Certificates { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Represents a single certificate extracted from a registry certificate store.
+    /// </summary>
+    public class CertificateInfo
+    {
+        public string DisplayName { get; set; } = "";
+        public string Thumbprint { get; set; } = "";
+        public string Sha1Hash { get; set; } = "";
+        public string Subject { get; set; } = "";
+        public string Issuer { get; set; } = "";
+        public string SerialNumber { get; set; } = "";
+        public DateTime? ValidFrom { get; set; }
+        public DateTime? ValidTo { get; set; }
+        public string SignatureAlgorithm { get; set; } = "";
+        public string FriendlyName { get; set; } = "";
+        public string KeyProvider { get; set; } = "";
+        public string KeyContainer { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
     }
 }

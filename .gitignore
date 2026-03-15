@@ -40,3 +40,6 @@ AGENTS.md
 
 # Local dev tools (not for CI/GitHub)
 DevTools/
+
+# Wiki (local-only)
+RegistryExpert-Wiki.md

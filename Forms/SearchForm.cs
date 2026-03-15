@@ -30,6 +30,7 @@ namespace RegistryExpert
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
         private ImageList? _searchIconList;
+        private List<Panel> _separators = new();
         private const int PageSize = 1000;
         private int _displayedMatchCount;
 
@@ -71,11 +72,11 @@ namespace RegistryExpert
             // Update controls that need manual DPI adjustment
             ModernTheme.ApplyTo(_resultsGrid);
 
-            // Rescale button minimum sizes and margins for new DPI
-            _searchButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
-            _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _loadMoreButton.MinimumSize = DpiHelper.ScaleSize(120, 28);
+            // Rescale pill button sizes and margins for new DPI
+            _searchButton.Size = DpiHelper.ScaleSize(90, 30);
+            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 6, 0);
+            _cancelButton.Size = DpiHelper.ScaleSize(90, 30);
+            _loadMoreButton.Size = DpiHelper.ScaleSize(130, 30);
             _loadMorePanel.Height = DpiHelper.Scale(40);
             
             // Rescale SplitContainer min sizes for new DPI
@@ -122,19 +123,16 @@ namespace RegistryExpert
             ModernTheme.ApplyTo(_searchBox);
             _searchBox.KeyDown += async (s, e) => { if (e.KeyCode == Keys.Enter) await SearchAsync(); };
 
-            _searchButton = ModernTheme.CreateSecondaryButton("Search", async (s, e) => await SearchAsync());
-            _searchButton.AutoSize = true;
-            _searchButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _searchButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
+            _searchButton = CreatePillButton("Search", async (s, e) => await SearchAsync());
+            _searchButton.Margin = DpiHelper.ScalePadding(0, 0, 0, 0);
 
-            _cancelButton = ModernTheme.CreateSecondaryButton("Cancel", (s, e) => CancelSearch());
-            _cancelButton.AutoSize = true;
-            _cancelButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _cancelButton.MinimumSize = DpiHelper.ScaleSize(70, 28);
-            _cancelButton.ForeColor = ModernTheme.Error;
-            _cancelButton.FlatAppearance.BorderColor = ModernTheme.Error;
+            _cancelButton = CreatePillButton("Cancel", (s, e) => CancelSearch(), ModernTheme.Error);
+            _cancelButton.Margin = DpiHelper.ScalePadding(0, 0, 0, 0);
             _cancelButton.Visible = false;
+
+            // Vertical separators flanking the search/cancel button (matching TimelineForm toolbar)
+            var sepLeft = CreateFilterSeparator();
+            var sepRight = CreateFilterSeparator();
 
             _matchWholeWordCheckBox = new CheckBox
             {
@@ -146,7 +144,7 @@ namespace RegistryExpert
                 Checked = false
             };
 
-            topPanel.Controls.AddRange(new Control[] { searchLabel, _searchBox, _searchButton, _cancelButton, _matchWholeWordCheckBox });
+            topPanel.Controls.AddRange(new Control[] { searchLabel, _searchBox, sepLeft, _searchButton, _cancelButton, sepRight, _matchWholeWordCheckBox });
 
             // Status bar
             var statusPanel = new Panel
@@ -157,10 +155,8 @@ namespace RegistryExpert
                 Padding = new Padding(12, 0, 12, 0)
             };
 
-            _loadMoreButton = ModernTheme.CreateSecondaryButton("Load next 1000", async (s, e) => await LoadMoreResultsAsync());
-            _loadMoreButton.AutoSize = true;
-            _loadMoreButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            _loadMoreButton.MinimumSize = DpiHelper.ScaleSize(120, 28);
+            _loadMoreButton = CreatePillButton("Load next 1000", async (s, e) => await LoadMoreResultsAsync());
+            _loadMoreButton.Size = DpiHelper.ScaleSize(130, 30);
             _loadMoreButton.Anchor = AnchorStyles.None;
 
             _loadMorePanel = new Panel
@@ -324,13 +320,15 @@ namespace RegistryExpert
             };
 
             // SplitContainer for resizable results/preview layout
+            // NOTE: Panel1MinSize and Panel2MinSize must NOT be set here — the container
+            // is still at its default size (150x100) and the combined min sizes would
+            // exceed that, causing InvalidOperationException. They are deferred to
+            // VisibleChanged below where the container has its final layout dimensions.
             _splitContainer = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = DpiHelper.Scale(100),
-                Panel2MinSize = DpiHelper.Scale(80),
                 SplitterWidth = 3
             };
             _splitContainer.Panel1.BackColor = ModernTheme.Background;
@@ -344,12 +342,18 @@ namespace RegistryExpert
             // Panel2: preview
             _splitContainer.Panel2.Controls.Add(previewPanel);
 
-            // Set initial splitter distance: preview pane gets 25%, results grid gets 75%
+            // Set min sizes and initial splitter distance after the container is properly sized
             _splitContainer.VisibleChanged += (s, e) =>
             {
                 if (_splitContainer.Visible && _splitContainer.Height > 0)
                 {
-                    try { _splitContainer.SplitterDistance = _splitContainer.Height * 3 / 4; } catch { }
+                    try
+                    {
+                        _splitContainer.Panel1MinSize = DpiHelper.Scale(100);
+                        _splitContainer.Panel2MinSize = DpiHelper.Scale(80);
+                        _splitContainer.SplitterDistance = _splitContainer.Height * 3 / 4;
+                    }
+                    catch { }
                 }
             };
 
@@ -815,6 +819,10 @@ namespace RegistryExpert
             _splitContainer.BackColor = ModernTheme.Border;
             _splitContainer.Panel1.BackColor = ModernTheme.Background;
             _splitContainer.Panel2.BackColor = ModernTheme.Background;
+
+            // Refresh separators
+            foreach (var sep in _separators)
+                sep.BackColor = ModernTheme.Border;
             
             // Re-highlight search term in preview if there's content
             if (!string.IsNullOrEmpty(_previewValueBox.Text) && !string.IsNullOrEmpty(_currentSearchTerm))
@@ -867,18 +875,8 @@ namespace RegistryExpert
                 }
                 else if (ctrl is Button button)
                 {
-                    // Preserve cancel button's distinctive error styling
-                    if (button == _cancelButton)
-                    {
-                        button.ForeColor = ModernTheme.Error;
-                        button.FlatAppearance.BorderColor = ModernTheme.Error;
-                    }
-                    else
-                    {
-                        button.BackColor = ModernTheme.Accent;
-                        button.ForeColor = Color.White;
-                        button.FlatAppearance.BorderColor = ModernTheme.Accent;
-                    }
+                    // Pill buttons are owner-drawn; just invalidate to repaint with current theme colors
+                    button.Invalidate();
                 }
                 
                 // Recurse into child controls
@@ -887,6 +885,96 @@ namespace RegistryExpert
                     RefreshControlTheme(ctrl);
                 }
             }
+        }
+
+        /// <summary>
+        /// Create a pill-shaped button matching TimelineForm toolbar style.
+        /// Transparent background with owner-drawn rounded-rect hover/press effects.
+        /// </summary>
+        private Button CreatePillButton(string text, EventHandler onClick, Color? textColor = null)
+        {
+            var btn = new Button
+            {
+                Text = text,
+                AccessibleName = text,
+                AccessibleRole = AccessibleRole.PushButton,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.Transparent,
+                ForeColor = Color.Transparent,  // Hide framework-drawn text; we draw our own
+                Font = ModernTheme.RegularFont,
+                Size = DpiHelper.ScaleSize(90, 30),
+                Margin = DpiHelper.ScalePadding(2),
+                Cursor = Cursors.Hand
+            };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.FlatAppearance.MouseOverBackColor = Color.Transparent;
+            btn.FlatAppearance.MouseDownBackColor = Color.Transparent;
+            btn.Click += onClick;
+
+            bool isHovered = false;
+            bool isPressed = false;
+            btn.MouseEnter += (s, e) => { isHovered = true; btn.Invalidate(); };
+            btn.MouseLeave += (s, e) => { isHovered = false; isPressed = false; btn.Invalidate(); };
+            btn.MouseDown += (s, e) => { isPressed = true; btn.Invalidate(); };
+            btn.MouseUp += (s, e) => { isPressed = false; btn.Invalidate(); };
+
+            var normalColor = textColor;
+
+            btn.Paint += (s, e) =>
+            {
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Clear background to prevent ghosting
+                using (var bgBrush = new SolidBrush(btn.Parent?.BackColor ?? ModernTheme.Surface))
+                    g.FillRectangle(bgBrush, btn.ClientRectangle);
+
+                // Draw pill-shaped hover/press background
+                if (isHovered || isPressed)
+                {
+                    var hoverColor = isPressed ? ModernTheme.AccentDark : ModernTheme.SurfaceHover;
+                    using var hoverBrush = new SolidBrush(hoverColor);
+                    var rect = new Rectangle(1, 1, btn.Width - 2, btn.Height - 2);
+                    var radius = DpiHelper.Scale(6);
+                    using var path = new System.Drawing.Drawing2D.GraphicsPath();
+                    int d = radius * 2;
+                    path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+                    path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+                    path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+                    path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+                    path.CloseFigure();
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                    g.FillPath(hoverBrush, path);
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.Default;
+                }
+
+                // Draw centered text
+                var displayText = btn.Text;
+                var fgColor = isPressed ? Color.White : (normalColor ?? ModernTheme.TextPrimary);
+                using var textBrush = new SolidBrush(fgColor);
+                var textSize = g.MeasureString(displayText, ModernTheme.RegularFont);
+                var textX = (btn.Width - textSize.Width) / 2;
+                var textY = (btn.Height - textSize.Height) / 2;
+                g.DrawString(displayText, ModernTheme.RegularFont, textBrush, textX, textY);
+            };
+
+            return btn;
+        }
+
+        /// <summary>
+        /// Create a vertical separator for the toolbar, matching TimelineForm style.
+        /// </summary>
+        private Panel CreateFilterSeparator()
+        {
+            var sep = new Panel
+            {
+                Width = DpiHelper.Scale(1),
+                Height = DpiHelper.Scale(16),
+                Margin = DpiHelper.ScalePadding(4, 7, 4, 7),
+                BackColor = ModernTheme.Border
+            };
+            _separators.Add(sep);
+            return sep;
         }
 
         protected override void Dispose(bool disposing)
