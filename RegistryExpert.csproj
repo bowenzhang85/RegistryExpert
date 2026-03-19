@@ -87,6 +87,9 @@
     <EmbeddedResource Include="Assets\registry_icon_load-hive.png">
       <LogicalName>RegistryExpert.icons.toolbar_load-hive.png</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Assets\registry_icon_health.png">
+      <LogicalName>RegistryExpert.icons.category_health.png</LogicalName>
+    </EmbeddedResource>
     <EmbeddedResource Include="docs\images\reg_bin.png">
       <LogicalName>RegistryExpert.icons.reg_bin.png</LogicalName>
     </EmbeddedResource>

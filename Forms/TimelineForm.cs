@@ -22,6 +22,7 @@ namespace RegistryExpert
         private ComboBox? _hiveSelector;
         private TextBox _searchBox = null!;
         private System.Windows.Forms.Timer _searchDebounce = null!;
+        private bool _isUpdatingPlaceholder;
         private const string SearchPlaceholder = "Search key path...";
         private DateTimePicker _fromDatePicker = null!;
         private DateTimePicker _toDatePicker = null!;
@@ -242,16 +243,20 @@ namespace RegistryExpert
             {
                 if (_searchBox.Text == SearchPlaceholder)
                 {
+                    _isUpdatingPlaceholder = true;
                     _searchBox.Text = "";
                     _searchBox.ForeColor = ModernTheme.TextPrimary;
+                    _isUpdatingPlaceholder = false;
                 }
             };
             _searchBox.LostFocus += (s, e) =>
             {
                 if (string.IsNullOrWhiteSpace(_searchBox.Text))
                 {
+                    _isUpdatingPlaceholder = true;
                     _searchBox.Text = SearchPlaceholder;
                     _searchBox.ForeColor = ModernTheme.TextSecondary;
+                    _isUpdatingPlaceholder = false;
                 }
             };
 
@@ -264,7 +269,8 @@ namespace RegistryExpert
             };
             _searchBox.TextChanged += (s, e) =>
             {
-                // Don't trigger search on placeholder text
+                // Don't trigger search on placeholder text changes
+                if (_isUpdatingPlaceholder) return;
                 if (_searchBox.Text == SearchPlaceholder) return;
                 _searchDebounce.Stop();
                 _searchDebounce.Start();

@@ -185,6 +185,18 @@ namespace RegistryExpert
             : _currentTheme == ThemeType.Dark 
                 ? Color.FromArgb(255, 110, 110)       // Light red for removed (readable on dark bg)
                 : Color.FromArgb(207, 34, 46);
+
+        // Health analysis text colors (optimized for grid readability)
+        public static Color HealthyText => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(76, 175, 80)         // Material green (readable on dark grid)
+                : Color.FromArgb(46, 125, 50);        // Darker green (readable on light grid)
+        public static Color WarningText => SystemInformation.HighContrast
+            ? SystemColors.WindowText
+            : _currentTheme == ThemeType.Dark
+                ? Color.FromArgb(255, 100, 100)       // Soft red (readable on dark grid)
+                : Color.Red;
         
         public static Color TreeViewBack => SystemInformation.HighContrast
             ? SystemColors.Window

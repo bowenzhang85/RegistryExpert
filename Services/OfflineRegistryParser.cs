@@ -5,6 +5,7 @@ using System.Linq;
 
 using RegistryParser;
 using RegistryParser.Abstractions;
+using RegistryParser.Cells;
 
 namespace RegistryExpert
 {
@@ -21,6 +22,34 @@ namespace RegistryExpert
         public bool IsLoaded => _hive != null;
         public string? FilePath => _filePath;
         public HiveType CurrentHiveType => _hiveType;
+
+        // Health check properties — expose hive internals for integrity validation
+        public bool HasValidSignature => _hive?.HasValidSignature() ?? false;
+        public bool IsChecksumValid => _hive?.Header?.ValidateCheckSum() ?? false;
+        public uint PrimarySequenceNumber => _hive?.Header?.PrimarySequenceNumber ?? 0;
+        public uint SecondarySequenceNumber => _hive?.Header?.SecondarySequenceNumber ?? 0;
+        public int HardParsingErrors => _hive?.HardParsingErrors ?? 0;
+        public int SoftParsingErrors => _hive?.SoftParsingErrors ?? 0;
+        public int HBinRecordCount => _hive?.HBinRecordCount ?? 0;
+        public uint HBinRecordTotalSize => _hive?.HBinRecordTotalSize ?? 0;
+        public long FileLength => _hive?.FileLength ?? 0;
+        public uint HeaderLength => _hive?.Header?.Length ?? 0;
+        public string HeaderFileName => _hive?.Header?.FileName ?? "";
+        public int MajorVersion => _hive?.Header?.MajorVersion ?? 0;
+        public int MinorVersion => _hive?.Header?.MinorVersion ?? 0;
+        public DateTimeOffset? LastWriteTimestamp => _hive?.Header?.LastWriteTimestamp;
+        public uint RootCellOffset => _hive?.Header?.RootCellOffset ?? 0;
+        public int CheckSum => _hive?.Header?.CheckSum ?? 0;
+        public int CalculatedChecksum => _hive?.Header?.CalculatedChecksum ?? 0;
+
+        /// <summary>
+        /// Get security descriptor (SK) cell records remaining after parse.
+        /// SK records survive FlushRecordListsAfterParse and can be used
+        /// to validate the security descriptor doubly-linked list chain.
+        /// </summary>
+        public IEnumerable<SkCellRecord> GetSecurityRecords() =>
+            _hive?.CellRecords?.Values.OfType<SkCellRecord>() ?? Enumerable.Empty<SkCellRecord>();
+
         public enum HiveType
         {
             Unknown,

@@ -84,6 +84,7 @@ namespace RegistryExpert
 
         // Progress overlay
         private Panel _progressOverlay = null!;
+        private Panel _progressCenterPanel = null!;
         private Label _progressLabel = null!;
         private ProgressBar _progressBar = null!;
         private ImageList? _valueImageList; // Track for disposal (value type icons)
@@ -354,11 +355,13 @@ namespace RegistryExpert
             _progressOverlay = new Panel
             {
                 Visible = false,
-                BackColor = Color.FromArgb(200, 30, 30, 30)  // Semi-transparent dark
+                BackColor = ModernTheme.CurrentTheme == ThemeType.Dark
+                    ? Color.FromArgb(200, 30, 30, 30)
+                    : Color.FromArgb(180, 200, 200, 200)
             };
 
             // Center container
-            var centerContainer = new Panel
+            _progressCenterPanel = new Panel
             {
                 Size = DpiHelper.ScaleSize(350, 130),
                 BackColor = ModernTheme.Surface,
@@ -386,17 +389,17 @@ namespace RegistryExpert
                 Dock = DockStyle.Bottom
             };
 
-            centerContainer.Controls.Add(_progressBar);
-            centerContainer.Controls.Add(_progressLabel);
+            _progressCenterPanel.Controls.Add(_progressBar);
+            _progressCenterPanel.Controls.Add(_progressLabel);
 
-            _progressOverlay.Controls.Add(centerContainer);
+            _progressOverlay.Controls.Add(_progressCenterPanel);
 
             // Center the container when overlay resizes
             _progressOverlay.Resize += (s, e) =>
             {
-                centerContainer.Location = new Point(
-                    (_progressOverlay.Width - centerContainer.Width) / 2,
-                    (_progressOverlay.Height - centerContainer.Height) / 2
+                _progressCenterPanel.Location = new Point(
+                    (_progressOverlay.Width - _progressCenterPanel.Width) / 2,
+                    (_progressOverlay.Height - _progressCenterPanel.Height) / 2
                 );
             };
 
@@ -1918,6 +1921,8 @@ namespace RegistryExpert
             // Trees
             _leftTreeView.BackColor = ModernTheme.Background;
             _rightTreeView.BackColor = ModernTheme.Background;
+            UpdateDiffNodeColors(_leftTreeView);
+            UpdateDiffNodeColors(_rightTreeView);
             _leftTreeView.Invalidate();
             _rightTreeView.Invalidate();
 
@@ -1929,7 +1934,10 @@ namespace RegistryExpert
             _diffOnlyCheckbox.ForeColor = ModernTheme.TextPrimary;
 
             // Progress overlay
-            _progressOverlay.BackColor = ModernTheme.Background;
+            _progressOverlay.BackColor = ModernTheme.CurrentTheme == ThemeType.Dark
+                ? Color.FromArgb(200, 30, 30, 30)
+                : Color.FromArgb(180, 200, 200, 200);
+            _progressCenterPanel.BackColor = ModernTheme.Surface;
             _progressLabel.ForeColor = ModernTheme.TextPrimary;
 
             // Status bar
@@ -1945,6 +1953,36 @@ namespace RegistryExpert
             ApplyThemeToGrid(_rightValuesGrid);
 
             this.Invalidate(true);
+        }
+
+        /// <summary>
+        /// Re-applies diff ForeColors to all existing tree nodes after a theme switch.
+        /// Mirrors the color logic in CreateLazyNode (lines 1410-1414).
+        /// </summary>
+        private static void UpdateDiffNodeColors(TreeView tree)
+        {
+            foreach (TreeNode node in tree.Nodes)
+                UpdateDiffNodeColorRecursive(node);
+        }
+
+        private static void UpdateDiffNodeColorRecursive(TreeNode node)
+        {
+            if (node.Tag is NodeTag tag)
+            {
+                if (tag.HasDifference)
+                {
+                    node.ForeColor = tag.IsUniqueToThisHive
+                        ? ModernTheme.DiffAdded
+                        : ModernTheme.DiffRemoved;
+                }
+                else
+                {
+                    node.ForeColor = Color.Empty;
+                }
+            }
+
+            foreach (TreeNode child in node.Nodes)
+                UpdateDiffNodeColorRecursive(child);
         }
 
         private static void ApplyThemeToLandingPanel(Panel landingPanel)

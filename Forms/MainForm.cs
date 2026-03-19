@@ -26,6 +26,7 @@ namespace RegistryExpert
         public Panel? RightPanel { get; set; }
         public Panel? ContentHeader { get; set; }
         public Label? ContentTitle { get; set; }
+        public Label? ContentSubtitle { get; set; }
         public FlowLayoutPanel? SubCategoryPanel { get; set; }
         public DataGridView? ContentGrid { get; set; }
         public Panel? DetailPanel { get; set; }  // Renamed from RegistryInfoPanel
@@ -643,7 +644,7 @@ namespace RegistryExpert
             {
                 if (_treeView.SelectedNode?.Tag is RegistryKey key)
                 {
-                    try { Clipboard.SetText(key.KeyPath); }
+                    try { Clipboard.SetText(ActiveHive?.Parser.ConvertRootPath(key.KeyPath) ?? key.KeyPath); }
                     catch (System.Runtime.InteropServices.ExternalException) { }
                 }
             });
@@ -660,7 +661,8 @@ namespace RegistryExpert
                     CloseHive(hiveType);
                 }
             });
-            treeContextMenu.Items.Add(new ToolStripSeparator());
+            var treeSeparator = new ToolStripSeparator();
+            treeContextMenu.Items.Add(treeSeparator);
             treeContextMenu.Items.Add(closeHiveItem);
 
             treeContextMenu.Opening += (s, ev) =>
@@ -674,8 +676,10 @@ namespace RegistryExpert
                 }
                 // Disable if no valid node selected
                 copyPathItem.Enabled = _treeView.SelectedNode?.Tag is RegistryKey;
-                // Only show Unload Hive on root-level nodes
-                closeHiveItem.Visible = _treeView.SelectedNode?.Parent == null && _treeView.SelectedNode != null;
+                // Only show Unload Hive (and separator) on root-level nodes
+                var isRoot = _treeView.SelectedNode?.Parent == null && _treeView.SelectedNode != null;
+                closeHiveItem.Visible = isRoot;
+                treeSeparator.Visible = isRoot;
             };
             _treeView.NodeMouseClick += (s, ev) =>
             {
@@ -3193,15 +3197,17 @@ namespace RegistryExpert
                 var ht = hive.Parser.CurrentHiveType;
 
                 if (ht == OfflineRegistryParser.HiveType.SYSTEM)
-                    MapHiveToCategories(hive, "System", "Services", "Storage", "Network", "RDP");
+                    MapHiveToCategories(hive, "System", "Services", "Storage", "Network", "RDP", "Health");
                 else if (ht == OfflineRegistryParser.HiveType.SOFTWARE)
-                    MapHiveToCategories(hive, "Profiles", "System", "Software", "Update");
+                    MapHiveToCategories(hive, "Profiles", "System", "Software", "Update", "Health");
                 else if (ht == OfflineRegistryParser.HiveType.COMPONENTS)
-                    MapHiveToCategories(hive, "Update");
+                    MapHiveToCategories(hive, "Update", "Health");
                 else if (ht == OfflineRegistryParser.HiveType.SAM)
-                    MapHiveToCategories(hive, "Profiles");
+                    MapHiveToCategories(hive, "Profiles", "Health");
                 else if (ht == OfflineRegistryParser.HiveType.NTUSER)
-                    MapHiveToCategories(hive, "Profiles", "Software");
+                    MapHiveToCategories(hive, "Profiles", "Software", "Health");
+                else
+                    MapHiveToCategories(hive, "Health");
             }
 
             // Track which hive produced each analysis section (for setting activeExtractor on subcategory click).
@@ -3313,7 +3319,8 @@ namespace RegistryExpert
                 ("Storage", "Storage"),
                 ("Network", "Network"),
                 ("RDP", "RDP"),
-                ("Update", "Update")
+                ("Update", "Update"),
+                ("Health", "Health")
             };
 
             // Load category icon images from embedded resources
@@ -3482,7 +3489,8 @@ namespace RegistryExpert
                 { "RDP", "SYSTEM" },
                 { "Profiles", "SOFTWARE" },
                 { "Software", "SOFTWARE" },
-                { "Update", "SOFTWARE" }
+                { "Update", "SOFTWARE" },
+                { "Health", "Any hive" }
             };
             
             categoryList.MouseMove += (s, ev) =>
@@ -3569,8 +3577,23 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft
             };
+
+            var contentSubtitle = new Label
+            {
+                Text = "",
+                Font = new Font("Segoe UI", 9F),
+                ForeColor = ModernTheme.TextSecondary,
+                Dock = DockStyle.Bottom,
+                Height = DpiHelper.Scale(20),
+                TextAlign = ContentAlignment.TopLeft,
+                Visible = false
+            };
+
+            // Add subtitle first (Dock.Bottom), then title (Dock.Fill) — WinForms dock order
             contentHeader.Controls.Add(contentTitle);
+            contentHeader.Controls.Add(contentSubtitle);
             themeData.ContentTitle = contentTitle;
+            themeData.ContentSubtitle = contentSubtitle;
 
             // Subcategory tabs panel
             var subCategoryPanel = new FlowLayoutPanel
@@ -3951,8 +3974,38 @@ namespace RegistryExpert
                 ShowPlusMinus = true,
                 ShowRootLines = true,
                 ItemHeight = DpiHelper.Scale(24),
+                DrawMode = TreeViewDrawMode.OwnerDrawText,
                 AccessibleName = "Device Manager Tree",
                 AccessibleRole = AccessibleRole.Outline
+            };
+
+            // Custom draw to preserve node ForeColor (e.g. red for Unknown Devices) when selected.
+            // Default TreeView rendering overrides ForeColor with white on selection highlight.
+            deviceManagerTree.DrawNode += (s, e) =>
+            {
+                if (e.Node == null || e.Bounds.IsEmpty) return;
+
+                // Skip nodes whose bounds are outside the visible client area (prevents ghost artifacts on expand/collapse)
+                if (!deviceManagerTree.ClientRectangle.IntersectsWith(e.Bounds)) return;
+
+                var g = e.Graphics;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Background - fill the full row from text bounds onward
+                var fullBounds = new Rectangle(e.Bounds.X, e.Bounds.Y,
+                    deviceManagerTree.ClientSize.Width - e.Bounds.X, e.Bounds.Height);
+                var bgColor = e.Node.IsSelected ? ModernTheme.Selection : ModernTheme.TreeViewBack;
+                using var bgBrush = new SolidBrush(bgColor);
+                g.FillRectangle(bgBrush, fullBounds);
+
+                // Text - preserve the node's ForeColor (warning red) even when selected
+                var hasCustomColor = e.Node.ForeColor != Color.Empty && e.Node.ForeColor != Color.Transparent;
+                var textColor = hasCustomColor ? e.Node.ForeColor : ModernTheme.TextPrimary;
+                using var textBrush = new SolidBrush(textColor);
+
+                var font = e.Node.NodeFont ?? deviceManagerTree.Font;
+                var textY = e.Bounds.Y + (e.Bounds.Height - (int)g.MeasureString(e.Node.Text, font).Height) / 2;
+                g.DrawString(e.Node.Text, font, textBrush, e.Bounds.X, textY);
             };
             themeData.DeviceManagerTree = deviceManagerTree;
 
@@ -7656,6 +7709,19 @@ namespace RegistryExpert
                 contentTitle.Text = selected.text;
                 currentCategory = key;
 
+                // Show subtitle for Health, hide for all other categories
+                if (key == "Health")
+                {
+                    contentSubtitle.Text = "Performs structural integrity checks on loaded registry hive files.";
+                    contentSubtitle.Visible = true;
+                    contentHeader.Height = DpiHelper.Scale(65);
+                }
+                else
+                {
+                    contentSubtitle.Visible = false;
+                    contentHeader.Height = DpiHelper.Scale(50);
+                }
+
                 // Reset registry info panel
                 registryPathLabel.Text = "Registry Path:";
                 registryValueBox.Text = "Select an item to view registry details";
@@ -7681,6 +7747,127 @@ namespace RegistryExpert
 
                     createServiceFilterButtons();
                     displayServicesWithFilter("All");
+                    return;
+                }
+
+                // Special handling for Health — always re-run, display all sections on a single page
+                if (key == "Health")
+                {
+                    currentSection = null;
+                    contentCache.Remove("Health");
+
+                    // Hide all special panels and show content grid
+                    hideAllPanels();
+                    if (componentsOverviewPanel != null) componentsOverviewPanel.Visible = false;
+                    contentGrid.Visible = true;
+                    contentGrid.Columns.Clear();
+                    contentGrid.Rows.Clear();
+
+                    // Clear subcategory buttons
+                    subCategoryPanel.Controls.Clear();
+                    subCategoryButtons.Clear();
+
+                    var healthHives = categoryHiveMap.TryGetValue("Health", out var hh) ? hh : new List<LoadedHive>();
+
+                    // Local helper: populate the grid with health results for a single hive
+                    Action<LoadedHive> displayHealthForHive = (hive) =>
+                    {
+                        contentGrid.Columns.Clear();
+                        contentGrid.Rows.Clear();
+
+                        var sections = hive.InfoExtractor.GetHealthAnalysis();
+
+                        // Set up two-column grid
+                        contentGrid.Columns.Add("name", "Property");
+                        contentGrid.Columns.Add("value", "Value");
+                        contentGrid.Columns["name"].FillWeight = 35;
+                        contentGrid.Columns["value"].FillWeight = 65;
+
+                        // Append all sections with bold header rows
+                        foreach (var section in sections)
+                        {
+                            // Section header row
+                            var headerIdx = contentGrid.Rows.Add(section.Title, "");
+                            contentGrid.Rows[headerIdx].DefaultCellStyle.Font = ModernTheme.BoldFont;
+                            contentGrid.Rows[headerIdx].DefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                            contentGrid.Rows[headerIdx].DefaultCellStyle.BackColor = ModernTheme.Surface;
+                            contentGrid.Rows[headerIdx].DefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+                            contentGrid.Rows[headerIdx].DefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                            contentGrid.Rows[headerIdx].Tag = new AnalysisItem
+                            {
+                                Name = section.Title,
+                                Value = "",
+                                RegistryPath = "__health_section_header__"
+                            };
+
+                            // Item rows
+                            if (section.Items != null)
+                            {
+                                foreach (var item in section.Items)
+                                {
+                                    var rowIdx = contentGrid.Rows.Add(item.Name, item.Value);
+                                    contentGrid.Rows[rowIdx].Tag = item;
+
+                                    if (item.IsWarning)
+                                    {
+                                        contentGrid.Rows[rowIdx].DefaultCellStyle.ForeColor = ModernTheme.WarningText;
+                                    }
+                                    else if (item.Name == "Status" && item.Value?.StartsWith("Healthy") == true)
+                                    {
+                                        contentGrid.Rows[rowIdx].DefaultCellStyle.ForeColor = ModernTheme.HealthyText;
+                                    }
+                                }
+                            }
+                        }
+
+                        contentGrid.ClearSelection();
+                        currentSections = sections;
+                    };
+
+                    // Show hive selector dropdown when multiple hives are loaded
+                    if (healthHives.Count > 1)
+                    {
+                        var selectorLabel = new Label
+                        {
+                            Text = "Select hive:",
+                            Font = new Font("Segoe UI", 9.5F),
+                            ForeColor = ModernTheme.TextSecondary,
+                            AutoSize = true,
+                            Margin = DpiHelper.ScalePadding(5, 14, 5, 0)
+                        };
+
+                        var hiveCombo = new ComboBox
+                        {
+                            DropDownStyle = ComboBoxStyle.DropDownList,
+                            Font = new Font("Segoe UI", 9.5F),
+                            BackColor = ModernTheme.TreeViewBack,
+                            ForeColor = ModernTheme.TextPrimary,
+                            FlatStyle = FlatStyle.Flat,
+                            Width = DpiHelper.Scale(200),
+                            Margin = DpiHelper.ScalePadding(5, 10, 5, 0)
+                        };
+
+                        foreach (var hive in healthHives)
+                            hiveCombo.Items.Add(hive.Parser.CurrentHiveType.ToString());
+
+                        hiveCombo.SelectedIndexChanged += (cs, ce) =>
+                        {
+                            if (hiveCombo.SelectedIndex >= 0 && hiveCombo.SelectedIndex < healthHives.Count)
+                                displayHealthForHive(healthHives[hiveCombo.SelectedIndex]);
+                        };
+
+                        subCategoryPanel.Controls.Add(selectorLabel);
+                        subCategoryPanel.Controls.Add(hiveCombo);
+
+                        // Default to first hive
+                        hiveCombo.SelectedIndex = 0;
+                    }
+                    else if (healthHives.Count == 1)
+                    {
+                        // Single hive — display directly, no dropdown
+                        displayHealthForHive(healthHives[0]);
+                    }
+
                     return;
                 }
 
@@ -8655,12 +8842,49 @@ namespace RegistryExpert
             if (themeData.RightPanel != null) themeData.RightPanel.BackColor = ModernTheme.Background;
             if (themeData.ContentHeader != null) themeData.ContentHeader.BackColor = ModernTheme.Surface;
             if (themeData.ContentTitle != null) themeData.ContentTitle.ForeColor = ModernTheme.TextPrimary;
+            if (themeData.ContentSubtitle != null) themeData.ContentSubtitle.ForeColor = ModernTheme.TextSecondary;
             if (themeData.SubCategoryPanel != null) themeData.SubCategoryPanel.BackColor = ModernTheme.Surface;
 
             // Update content grid
             if (themeData.ContentGrid != null)
             {
                 ApplyThemeToDataGridView(themeData.ContentGrid, ModernTheme.Surface);
+
+                // Refresh per-row style overrides that contain snapshot theme colors.
+                // These are set at render time and become stale when the theme switches.
+                var warningColor = ModernTheme.WarningText;
+
+                foreach (DataGridViewRow row in themeData.ContentGrid.Rows)
+                {
+                    if (row.Tag is AnalysisItem ai)
+                    {
+                        if (ai.RegistryPath == "__health_section_header__" || ai.RegistryPath == "__hive_separator__")
+                        {
+                            // Section header / hive separator rows
+                            row.DefaultCellStyle.Font = ModernTheme.BoldFont;
+                            row.DefaultCellStyle.ForeColor = ModernTheme.TextSecondary;
+                            row.DefaultCellStyle.BackColor = ModernTheme.Surface;
+                            row.DefaultCellStyle.SelectionBackColor = ModernTheme.Surface;
+                            row.DefaultCellStyle.SelectionForeColor = ModernTheme.TextSecondary;
+                        }
+                        else if (ai.IsWarning)
+                        {
+                            row.DefaultCellStyle.ForeColor = warningColor;
+                        }
+                        else if (ai.Name == "Status" && ai.Value?.StartsWith("Healthy") == true)
+                        {
+                            row.DefaultCellStyle.ForeColor = ModernTheme.HealthyText;
+                        }
+                        else
+                        {
+                            // Normal rows — clear per-row override so grid defaults take effect
+                            row.DefaultCellStyle.ForeColor = Color.Empty;
+                            row.DefaultCellStyle.BackColor = Color.Empty;
+                            row.DefaultCellStyle.SelectionForeColor = Color.Empty;
+                            row.DefaultCellStyle.SelectionBackColor = Color.Empty;
+                        }
+                    }
+                }
             }
 
             // Update registry info panel (now using ContentDetailSplit and DetailPanel)
@@ -9394,10 +9618,16 @@ namespace RegistryExpert
             
             versionPanel.Controls.AddRange(new Control[] { currentLabel, latestLabel });
             
-            // "What's New" section header
-            var whatsNewHeader = ModernTheme.CreateSectionHeader("What's New");
-            whatsNewHeader.Location = DpiHelper.ScalePoint(25, 130);
-            whatsNewHeader.Size = DpiHelper.ScaleSize(440, 25);
+            // "New Features" label
+            var whatsNewHeader = new Label
+            {
+                Text = "New Features",
+                Font = ModernTheme.BoldFont,
+                ForeColor = ModernTheme.TextPrimary,
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(25, 130),
+                BackColor = Color.Transparent
+            };
             
             // Release notes RichTextBox (scrollable)
             var notesBox = new RichTextBox
@@ -9424,11 +9654,12 @@ namespace RegistryExpert
             
             var laterButton = ModernTheme.CreateSecondaryButton("Later");
             laterButton.Size = DpiHelper.ScaleSize(110, 35);
+            laterButton.Margin = new Padding(DpiHelper.Scale(10), 0, 0, 0);
             laterButton.Click += (s, ev) => form.Close();
             
             var downloadButton = ModernTheme.CreateButton("Download");
             downloadButton.Size = DpiHelper.ScaleSize(110, 35);
-            downloadButton.Margin = DpiHelper.ScalePadding(0, 0, 10, 0);
+            downloadButton.Margin = new Padding(0);
             downloadButton.Click += (s, ev) =>
             {
                 try

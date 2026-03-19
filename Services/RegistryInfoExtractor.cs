@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using RegistryParser.Abstractions;
+using RegistryParser.Cells;
 
 namespace RegistryExpert
 {
@@ -659,6 +660,178 @@ namespace RegistryExpert
                     });
                 }
             }
+
+            // Virtual Memory / Paging File Configuration (same tab)
+            // Reuse memMgmtPath and memMgmtKey from CPU Hyper-Threading section above
+            
+            // Add separator
+            dumpSection.Items.Add(new AnalysisItem
+            {
+                Name = "─── Virtual Memory Configuration ───",
+                Value = "",
+                RegistryPath = "__hive_separator__",
+                RegistryValue = ""
+            });
+
+            if (memMgmtKey != null)
+            {
+                // PagingFiles (REG_MULTI_SZ) - the configured paging files
+                // Format: "<path> <initial_MB> <max_MB>" per entry; "0 0" = system managed
+                var pagingFilesRaw = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "PagingFiles")?.ValueData?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(pagingFilesRaw))
+                {
+                    // Multi-string entries may be separated by newlines or stored as one string
+                    var entries = pagingFilesRaw.Split(new[] { '\0', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    foreach (var entry in entries)
+                    {
+                        var parts = entry.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length >= 1)
+                        {
+                            var path = parts[0];
+                            var initial = parts.Length >= 2 ? parts[1] : "?";
+                            var max = parts.Length >= 3 ? parts[2] : "?";
+
+                            // Extract drive letter for display; ?:\ is a system default placeholder
+                            var isWildcard = path.Length >= 2 && path[0] == '?' && path[1] == ':';
+                            var driveLetter = path.Length >= 2 && path[1] == ':' ? path[0].ToString().ToUpper() + ":" : path;
+
+                            string displayName;
+                            string sizeDesc;
+
+                            if (isWildcard)
+                            {
+                                // ?:\pagefile.sys is ambiguous - could mean auto-managed or no paging file;
+                                // show the raw value neutrally without interpretation
+                                displayName = "Paging File (Default)";
+                                sizeDesc = $"{path}  [Initial: {initial}, Max: {max}]";
+                            }
+                            else
+                            {
+                                displayName = $"Paging File ({driveLetter})";
+                                if (initial == "0" && max == "0")
+                                    sizeDesc = $"System managed  [{path}]";
+                                else if (int.TryParse(initial, out var initMb) && int.TryParse(max, out var maxMb) && initMb > 0 && maxMb > 0)
+                                    sizeDesc = $"Custom: {initMb} - {maxMb} MB  [{path}]";
+                                else
+                                    sizeDesc = $"Initial={initial}, Max={max}  [{path}]";
+                            }
+
+                            dumpSection.Items.Add(new AnalysisItem
+                            {
+                                Name = displayName,
+                                Value = sizeDesc,
+                                RegistryPath = memMgmtPath,
+                                RegistryValue = $"PagingFiles = {pagingFilesRaw}"
+                            });
+                        }
+                    }
+                }
+                else
+                {
+                    dumpSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Paging Files",
+                        Value = "No paging files configured",
+                        RegistryPath = memMgmtPath,
+                        RegistryValue = "PagingFiles = (empty)"
+                    });
+                }
+
+                // ExistingPageFiles (REG_MULTI_SZ) - page files active at last boot
+                var existingPfRaw = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "ExistingPageFiles")?.ValueData?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(existingPfRaw))
+                {
+                    // Strip \??\ prefix for display
+                    var existingEntries = existingPfRaw.Split(new[] { '\0', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                    var displayPaths = existingEntries.Select(e => e.Trim().Replace(@"\??\", "")).ToList();
+                    dumpSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Active Page Files (at boot)",
+                        Value = string.Join(", ", displayPaths),
+                        RegistryPath = memMgmtPath,
+                        RegistryValue = $"ExistingPageFiles = {existingPfRaw}"
+                    });
+                }
+
+                // ClearPageFileAtShutdown
+                var clearPf = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "ClearPageFileAtShutdown")?.ValueData?.ToString() ?? "";
+                dumpSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Clear Page File at Shutdown",
+                    Value = clearPf == "1" ? "1 - Enabled (secure)" : (clearPf == "0" ? "0 - Disabled" : "Not Configured"),
+                    RegistryPath = memMgmtPath,
+                    RegistryValue = $"ClearPageFileAtShutdown = {clearPf}"
+                });
+
+                // DisablePagingExecutive
+                var disablePaging = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "DisablePagingExecutive")?.ValueData?.ToString() ?? "";
+                dumpSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Disable Paging Executive",
+                    Value = disablePaging == "1" ? "1 - Kernel kept in RAM" : (disablePaging == "0" ? "0 - Kernel can be paged" : "Not Configured"),
+                    RegistryPath = memMgmtPath,
+                    RegistryValue = $"DisablePagingExecutive = {disablePaging}"
+                });
+
+                // PhysicalAddressExtension (PAE)
+                var pae = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "PhysicalAddressExtension")?.ValueData?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(pae))
+                {
+                    dumpSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Physical Address Extension (PAE)",
+                        Value = pae == "1" ? "1 - Enabled" : "0 - Disabled",
+                        RegistryPath = memMgmtPath,
+                        RegistryValue = $"PhysicalAddressExtension = {pae}"
+                    });
+                }
+
+                // LargeSystemCache
+                var largeCache = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "LargeSystemCache")?.ValueData?.ToString() ?? "";
+                dumpSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Large System Cache",
+                    Value = largeCache == "1" ? "1 - Optimize for file sharing" : (largeCache == "0" ? "0 - Optimize for applications" : "Not Configured"),
+                    RegistryPath = memMgmtPath,
+                    RegistryValue = $"LargeSystemCache = {largeCache}"
+                });
+
+                // Pool sizes (non-default values are noteworthy)
+                var nonPagedPoolSize = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "NonPagedPoolSize")?.ValueData?.ToString() ?? "";
+                var pagedPoolSize = memMgmtKey.Values.FirstOrDefault(v => v.ValueName == "PagedPoolSize")?.ValueData?.ToString() ?? "";
+                if (!string.IsNullOrEmpty(nonPagedPoolSize) && nonPagedPoolSize != "0")
+                {
+                    dumpSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Non-Paged Pool Size",
+                        Value = $"{nonPagedPoolSize} bytes (custom)",
+                        RegistryPath = memMgmtPath,
+                        RegistryValue = $"NonPagedPoolSize = {nonPagedPoolSize}"
+                    });
+                }
+                if (!string.IsNullOrEmpty(pagedPoolSize) && pagedPoolSize != "0")
+                {
+                    dumpSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Paged Pool Size",
+                        Value = $"{pagedPoolSize} bytes (custom)",
+                        RegistryPath = memMgmtPath,
+                        RegistryValue = $"PagedPoolSize = {pagedPoolSize}"
+                    });
+                }
+            }
+            else
+            {
+                dumpSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Virtual Memory",
+                    Value = "Memory Management key not found",
+                    RegistryPath = memMgmtPath,
+                    RegistryValue = "(key not found)",
+                    IsWarning = true
+                });
+            }
+
             sections.Add(dumpSection); // Always add for UI consistency
 
             // Guest Agent section - content depends on hive type
@@ -946,8 +1119,8 @@ namespace RegistryExpert
                 classItems.Add((className, classItem));
             }
 
-            // Sort classes alphabetically
-            foreach (var ci in classItems.OrderBy(c => c.ClassName))
+            // Sort classes: Unknown Devices first, then alphabetically
+            foreach (var ci in classItems.OrderBy(c => c.ClassName == "Unknown Devices" ? 0 : 1).ThenBy(c => c.ClassName))
             {
                 section.Items.Add(ci.Item);
             }
@@ -8796,6 +8969,442 @@ namespace RegistryExpert
                 if (sz <= 0) break;
                 pos += sz;
             }
+        }
+
+        #endregion
+
+        #region Health Analysis
+
+        /// <summary>
+        /// Get hive health analysis as structured sections.
+        /// All checks are structurally verifiable — only spec-defined integrity checks are performed.
+        /// </summary>
+        public List<AnalysisSection> GetHealthAnalysis()
+        {
+            var sections = new List<AnalysisSection>();
+            int errorCount = 0;
+            int warningCount = 0;
+
+            // --- Hive Integrity ---
+            var integritySection = new AnalysisSection { Title = "Hive Integrity" };
+
+            // Signature check
+            bool signatureValid = _parser.HasValidSignature;
+            integritySection.Items.Add(new AnalysisItem
+            {
+                Name = "Signature",
+                Value = signatureValid ? "OK (regf)" : "FAILED - Invalid signature",
+                IsWarning = !signatureValid
+            });
+            if (!signatureValid) errorCount++;
+
+            // Header checksum
+            bool checksumValid = _parser.IsChecksumValid;
+            int storedChecksum = _parser.CheckSum;
+            int calculatedChecksum = _parser.CalculatedChecksum;
+            integritySection.Items.Add(new AnalysisItem
+            {
+                Name = "Header Checksum",
+                Value = checksumValid
+                    ? $"OK (0x{storedChecksum:X8})"
+                    : $"FAILED - Stored: 0x{storedChecksum:X8}, Calculated: 0x{calculatedChecksum:X8}",
+                IsWarning = !checksumValid
+            });
+            if (!checksumValid) errorCount++;
+
+            // Sequence numbers
+            uint primarySeq = _parser.PrimarySequenceNumber;
+            uint secondarySeq = _parser.SecondarySequenceNumber;
+            bool seqMatch = primarySeq == secondarySeq;
+            integritySection.Items.Add(new AnalysisItem
+            {
+                Name = "Sequence Numbers",
+                Value = seqMatch
+                    ? $"OK (Primary: {primarySeq}, Secondary: {secondarySeq})"
+                    : $"Mismatch - Primary: {primarySeq}, Secondary: {secondarySeq} (normal for offline hives)",
+                IsWarning = false  // Mismatch is expected for offline hives — transaction logs handle replay on boot
+            });
+
+            // File size vs header hive bins data size
+            long fileLength = _parser.FileLength;
+            uint headerLength = _parser.HeaderLength;
+            long expectedMinSize = headerLength + 4096; // hive bins data + base block
+            bool sizeConsistent = fileLength >= expectedMinSize;
+            if (headerLength > 0)
+            {
+                integritySection.Items.Add(new AnalysisItem
+                {
+                    Name = "File Size Consistency",
+                    Value = sizeConsistent
+                        ? $"OK (File: {fileLength:N0} bytes, Header declares: {headerLength:N0} bytes of hive data)"
+                        : $"WARNING - File ({fileLength:N0} bytes) is smaller than header expects ({expectedMinSize:N0} bytes)",
+                    IsWarning = !sizeConsistent
+                });
+                if (!sizeConsistent) warningCount++;
+            }
+
+            sections.Add(integritySection);
+
+            // --- Header Details ---
+            var headerSection = new AnalysisSection { Title = "Header Details" };
+
+            headerSection.Items.Add(new AnalysisItem
+            {
+                Name = "Version",
+                Value = $"{_parser.MajorVersion}.{_parser.MinorVersion}"
+            });
+
+            var lastWrite = _parser.LastWriteTimestamp;
+            headerSection.Items.Add(new AnalysisItem
+            {
+                Name = "Last Write Timestamp",
+                Value = lastWrite.HasValue ? lastWrite.Value.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss UTC") : "Not available"
+            });
+
+            headerSection.Items.Add(new AnalysisItem
+            {
+                Name = "Hive Bins Data Size",
+                Value = $"{headerLength:N0} bytes"
+            });
+
+            headerSection.Items.Add(new AnalysisItem
+            {
+                Name = "File Size",
+                Value = $"{fileLength:N0} bytes"
+            });
+
+            headerSection.Items.Add(new AnalysisItem
+            {
+                Name = "Root Cell Offset",
+                Value = $"0x{_parser.RootCellOffset:X8}"
+            });
+
+            string headerFileName = _parser.HeaderFileName;
+            if (!string.IsNullOrEmpty(headerFileName))
+            {
+                headerSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Embedded File Name",
+                    Value = headerFileName
+                });
+            }
+
+            sections.Add(headerSection);
+
+            // --- Parsing Results ---
+            var parsingSection = new AnalysisSection { Title = "Parsing Results" };
+
+            int hardErrors = _parser.HardParsingErrors;
+            int softErrors = _parser.SoftParsingErrors;
+
+            parsingSection.Items.Add(new AnalysisItem
+            {
+                Name = "Hard Parsing Errors",
+                Value = hardErrors == 0 ? "0" : $"{hardErrors} (cells that could not be read)",
+                IsWarning = hardErrors > 0
+            });
+            if (hardErrors > 0) warningCount++;
+
+            parsingSection.Items.Add(new AnalysisItem
+            {
+                Name = "Soft Parsing Errors",
+                Value = softErrors == 0 ? "0" : $"{softErrors} (non-critical read issues)",
+                IsWarning = softErrors > 0
+            });
+            if (softErrors > 0) warningCount++;
+
+            parsingSection.Items.Add(new AnalysisItem
+            {
+                Name = "HBin Records",
+                Value = _parser.HBinRecordCount.ToString("N0")
+            });
+
+            parsingSection.Items.Add(new AnalysisItem
+            {
+                Name = "HBin Total Size",
+                Value = $"{_parser.HBinRecordTotalSize:N0} bytes"
+            });
+
+            sections.Add(parsingSection);
+
+            // --- Security Descriptors ---
+            var securitySection = new AnalysisSection { Title = "Security Descriptors" };
+
+            var skResult = ValidateSecurityChain();
+            securitySection.Items.Add(new AnalysisItem
+            {
+                Name = "SK Records Found",
+                Value = skResult.TotalRecords.ToString("N0")
+            });
+
+            securitySection.Items.Add(new AnalysisItem
+            {
+                Name = "Chain Integrity",
+                Value = skResult.IsChainValid
+                    ? "OK (circular doubly-linked list intact)"
+                    : $"FAILED - {skResult.ChainError}",
+                IsWarning = !skResult.IsChainValid
+            });
+            if (!skResult.IsChainValid) errorCount++;
+
+            if (skResult.OrphanedRecords > 0)
+            {
+                securitySection.Items.Add(new AnalysisItem
+                {
+                    Name = "Orphaned SK Records",
+                    Value = $"{skResult.OrphanedRecords} (not in FLink/BLink chain)",
+                    IsWarning = true
+                });
+                warningCount++;
+            }
+
+            sections.Add(securitySection);
+
+            // --- Key Tree Statistics ---
+            var treeSection = new AnalysisSection { Title = "Key Tree Statistics" };
+
+            var treeResult = WalkKeyTree();
+            treeSection.Items.Add(new AnalysisItem
+            {
+                Name = "Total Keys",
+                Value = treeResult.TotalKeys.ToString("N0")
+            });
+
+            treeSection.Items.Add(new AnalysisItem
+            {
+                Name = "Total Values",
+                Value = treeResult.TotalValues.ToString("N0")
+            });
+
+            treeSection.Items.Add(new AnalysisItem
+            {
+                Name = "Maximum Depth",
+                Value = treeResult.MaxDepth.ToString()
+            });
+
+            if (treeResult.InvalidParentPointers > 0)
+            {
+                treeSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Invalid Parent Pointers",
+                    Value = $"{treeResult.InvalidParentPointers} keys have parent pointers that don't match their actual parent",
+                    IsWarning = true
+                });
+                errorCount++;
+            }
+            else
+            {
+                treeSection.Items.Add(new AnalysisItem
+                {
+                    Name = "Parent Pointer Validation",
+                    Value = "OK (all parent pointers consistent)"
+                });
+            }
+
+            sections.Add(treeSection);
+
+            // --- Overall Status (inserted at the top) ---
+            var statusSection = new AnalysisSection { Title = "Overall Status" };
+            string statusValue;
+            bool statusWarning;
+
+            if (errorCount > 0)
+            {
+                statusValue = $"ERRORS DETECTED ({errorCount} error{(errorCount != 1 ? "s" : "")}, {warningCount} warning{(warningCount != 1 ? "s" : "")})";
+                statusWarning = true;
+            }
+            else if (warningCount > 0)
+            {
+                statusValue = $"WARNINGS ({warningCount} warning{(warningCount != 1 ? "s" : "")})";
+                statusWarning = true;
+            }
+            else
+            {
+                statusValue = "Healthy (0 errors, 0 warnings)";
+                statusWarning = false;
+            }
+
+            statusSection.Items.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = statusValue,
+                IsWarning = statusWarning
+            });
+
+            sections.Insert(0, statusSection);
+
+            return sections;
+        }
+
+        /// <summary>
+        /// Validates the security descriptor (SK) doubly-linked list chain.
+        /// SK records form a circular linked list via FLink/BLink.
+        /// </summary>
+        private SecurityChainResult ValidateSecurityChain()
+        {
+            var result = new SecurityChainResult();
+
+            try
+            {
+                var skRecords = _parser.GetSecurityRecords().ToList();
+                result.TotalRecords = skRecords.Count;
+
+                if (skRecords.Count == 0)
+                {
+                    // No SK records is unusual but not necessarily an error for empty hives
+                    result.IsChainValid = true;
+                    return result;
+                }
+
+                // Build a lookup by relative offset for chain traversal
+                var skByOffset = new Dictionary<long, SkCellRecord>();
+                foreach (var sk in skRecords)
+                {
+                    skByOffset[sk.RelativeOffset] = sk;
+                }
+
+                // Start from the first SK record and walk FLink
+                var startSk = skRecords[0];
+                var visited = new HashSet<long>();
+                var current = startSk;
+                bool chainBroken = false;
+
+                while (true)
+                {
+                    if (!visited.Add(current.RelativeOffset))
+                    {
+                        // We've looped back — check if it's to the start (valid circular list)
+                        if (current.RelativeOffset == startSk.RelativeOffset)
+                        {
+                            // Valid circular chain
+                            break;
+                        }
+                        else
+                        {
+                            chainBroken = true;
+                            result.ChainError = $"FLink chain loops to offset 0x{current.RelativeOffset:X} instead of returning to start";
+                            break;
+                        }
+                    }
+
+                    // Follow FLink
+                    uint flink = current.FLink;
+                    if (!skByOffset.TryGetValue(flink, out var next))
+                    {
+                        chainBroken = true;
+                        result.ChainError = $"FLink at offset 0x{current.RelativeOffset:X} points to 0x{flink:X} which is not a valid SK record";
+                        break;
+                    }
+
+                    // Verify BLink consistency: next.BLink should point back to current
+                    if (next.BLink != (uint)current.RelativeOffset)
+                    {
+                        chainBroken = true;
+                        result.ChainError = $"BLink inconsistency: SK at 0x{next.RelativeOffset:X} has BLink 0x{next.BLink:X}, expected 0x{current.RelativeOffset:X}";
+                        break;
+                    }
+
+                    current = next;
+                }
+
+                result.IsChainValid = !chainBroken;
+                result.OrphanedRecords = skRecords.Count - visited.Count;
+            }
+            catch (Exception ex)
+            {
+                result.IsChainValid = false;
+                result.ChainError = $"Validation failed: {ex.Message}";
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Walks the key tree from root, counting keys/values/depth
+        /// and validating parent pointers.
+        /// </summary>
+        private KeyTreeResult WalkKeyTree()
+        {
+            var result = new KeyTreeResult();
+
+            try
+            {
+                var rootKey = _parser.GetRootKey();
+                if (rootKey == null)
+                {
+                    return result;
+                }
+
+                // Iterative walk to avoid stack overflow on deep hives
+                var stack = new Stack<(RegistryKey key, RegistryKey? parent, int depth)>();
+                stack.Push((rootKey, null, 0));
+
+                while (stack.Count > 0)
+                {
+                    var (key, parent, depth) = stack.Pop();
+                    result.TotalKeys++;
+
+                    if (depth > result.MaxDepth)
+                        result.MaxDepth = depth;
+
+                    // Count values
+                    try
+                    {
+                        result.TotalValues += key.Values?.Count ?? 0;
+                    }
+                    catch { /* value list may be corrupt */ }
+
+                    // Validate parent pointer (skip root which has no meaningful parent)
+                    if (parent != null)
+                    {
+                        try
+                        {
+                            uint parentCellIndex = key.NkRecord.ParentCellIndex;
+                            long parentActualOffset = parent.NkRecord.RelativeOffset;
+                            if (parentCellIndex != (uint)parentActualOffset)
+                            {
+                                result.InvalidParentPointers++;
+                            }
+                        }
+                        catch { /* NkRecord access may fail on corrupt keys */ }
+                    }
+
+                    // Push children
+                    try
+                    {
+                        if (key.SubKeys != null)
+                        {
+                            foreach (var child in key.SubKeys)
+                            {
+                                stack.Push((child, key, depth + 1));
+                            }
+                        }
+                    }
+                    catch { /* subkey list may be corrupt */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Health check tree walk error: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        private class SecurityChainResult
+        {
+            public int TotalRecords { get; set; }
+            public bool IsChainValid { get; set; }
+            public string ChainError { get; set; } = "";
+            public int OrphanedRecords { get; set; }
+        }
+
+        private class KeyTreeResult
+        {
+            public int TotalKeys { get; set; }
+            public int TotalValues { get; set; }
+            public int MaxDepth { get; set; }
+            public int InvalidParentPointers { get; set; }
         }
 
         #endregion
