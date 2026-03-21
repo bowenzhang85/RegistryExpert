@@ -334,6 +334,20 @@ namespace RegistryExpert
             {
                 CenterCompareButton();
                 CenterSplitter();
+
+                // Defer inner split distances — containers were at default size during construction
+                try
+                {
+                    if (_leftInnerSplit.Height > 0)
+                        _leftInnerSplit.SplitterDistance = _leftInnerSplit.Height * 2 / 5;
+                }
+                catch (InvalidOperationException) { }
+                try
+                {
+                    if (_rightInnerSplit.Height > 0)
+                        _rightInnerSplit.SplitterDistance = _rightInnerSplit.Height * 2 / 5;
+                }
+                catch (InvalidOperationException) { }
             };
 
             this.Resize += (s, e) =>
@@ -536,7 +550,8 @@ namespace RegistryExpert
         {
             if (_mainSplit.Width > 0)
             {
-                _mainSplit.SplitterDistance = _mainSplit.Width / 2;
+                try { _mainSplit.SplitterDistance = _mainSplit.Width / 2; }
+                catch (InvalidOperationException) { }
             }
         }
 
@@ -808,13 +823,17 @@ namespace RegistryExpert
             };
 
             // Split container for tree and values
+            // NOTE: SplitterDistance must NOT be set here — the container is still at
+            // its default size (150x100) and a value of 400 would throw
+            // InvalidOperationException on certain screen/DPI configurations.
+            // It is deferred to the form.Load handler where the container has its
+            // final layout dimensions.
             var splitContainer = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
                 BackColor = ModernTheme.Border,
-                SplitterWidth = 4,
-                SplitterDistance = 400
+                SplitterWidth = 4
             };
 
             // Tree view

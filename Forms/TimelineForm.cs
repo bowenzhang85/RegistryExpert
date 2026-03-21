@@ -48,12 +48,19 @@ namespace RegistryExpert
         private Panel _loadMorePanel = null!;
         private Button _loadMoreButton = null!;
         
-        // Collapse/Expand state
-        private Button _collapseButton = null!;
-        private bool _isCollapsed;
-        private List<CollapsedGroup> _collapsedGroups = new();
-        private HashSet<int> _expandedGroupIndices = new();
-        private int _currentGroupDisplayCount;
+        // Transaction log analysis state
+        private Button _browseLogsButton = null!;
+        private CheckBox _txLogFilterCheckbox = null!;
+        private List<string> _detectedLogPaths = new();
+        private List<string> _manualLogPaths = new();
+        private List<TransactionLogDiff> _txLogDiffs = new();
+        private CancellationTokenSource? _analyzeLogsCts;
+
+        // Transaction log detail panel
+        private SplitContainer _mainSplitter = null!;
+        private Panel _detailPanel = null!;
+        private DataGridView _detailGrid = null!;
+        private Label _detailHeader = null!;
 
         public TimelineForm(IReadOnlyList<(OfflineRegistryParser Parser, string HiveTypeName)> parsers, MainForm mainForm)
         {
@@ -77,14 +84,16 @@ namespace RegistryExpert
                 _scanCts?.Cancel();
                 _scanCts?.Dispose();
                 _scanCts = null;
+                _analyzeLogsCts?.Cancel();
+                _analyzeLogsCts?.Dispose();
+                _analyzeLogsCts = null;
                 _searchDebounce?.Stop();
                 _searchDebounce?.Dispose();
 
                 // Clear large data collections to release references before GC
                 _allEntries.Clear();
                 _filteredEntries.Clear();
-                _collapsedGroups.Clear();
-                _expandedGroupIndices.Clear();
+                _txLogDiffs.Clear();
                 _timelineGrid.Rows.Clear();
             }
             base.Dispose(disposing);
@@ -106,9 +115,14 @@ namespace RegistryExpert
             _timelineGrid.ColumnHeadersDefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);
 
             // Rescale button sizes for new DPI
-            foreach (var btn in new[] { _refreshButton, _exportButton, _collapseButton })
+            foreach (var btn in new[] { _refreshButton, _exportButton })
             {
                 btn.Size = DpiHelper.ScaleSize(90, 30);
+                btn.Margin = DpiHelper.ScalePadding(2);
+            }
+            foreach (var btn in new[] { _browseLogsButton })
+            {
+                btn.Size = DpiHelper.ScaleSize(110, 30);
                 btn.Margin = DpiHelper.ScalePadding(2);
             }
             
@@ -223,9 +237,6 @@ namespace RegistryExpert
             _refreshButton = CreatePillButton("Scan", RefreshButton_Click);
             _exportButton = CreatePillButton("Export", ExportButton_Click);
             _exportButton.Enabled = false;
-            _collapseButton = CreatePillButton("Collapse View", CollapseButton_Click);
-            _collapseButton.Size = DpiHelper.ScaleSize(110, 30);
-            _collapseButton.Enabled = false;
 
             // Search box with placeholder
             _searchBox = new TextBox
@@ -310,23 +321,11 @@ namespace RegistryExpert
                         // Clear existing data so next scan uses the new parser
                         _allEntries.Clear();
                         _filteredEntries.Clear();
-                        _collapsedGroups.Clear();
-                        _expandedGroupIndices.Clear();
                         _timelineGrid.Rows.Clear();
                         _currentDisplayCount = 0;
 
-                        // Reset collapse state so UI is consistent for the new hive
-                        if (_isCollapsed)
-                        {
-                            _isCollapsed = false;
-                            _collapseButton.Text = "Collapse View";
-                            foreach (DataGridViewColumn col in _timelineGrid.Columns)
-                                col.SortMode = DataGridViewColumnSortMode.Automatic;
-                        }
-
                         UpdateStatus($"Selected {_parsers[_hiveSelector.SelectedIndex].HiveTypeName} hive. Press Scan to load timeline.");
                         _exportButton.Enabled = false;
-                        _collapseButton.Enabled = false;
                     }
                 };
                 filterFlow.Controls.AddRange(new Control[] { hiveSelectorLabel, _hiveSelector });
@@ -336,11 +335,28 @@ namespace RegistryExpert
             _separators.Clear();
             var sep1 = CreateFilterSeparator();
             var sep2 = CreateFilterSeparator();
+
+            // Transaction log toolbar controls
             var sep3 = CreateFilterSeparator();
+
+            _browseLogsButton = CreatePillButton("Browse Logs...", BrowseLogsButton_Click);
+            _browseLogsButton.Size = DpiHelper.ScaleSize(110, 30);
+
+            _txLogFilterCheckbox = new CheckBox
+            {
+                Text = "TxLog only",
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.RegularFont,
+                AutoSize = true,
+                Margin = new Padding(8, 8, 0, 0),
+                Visible = false  // Only shown after analysis
+            };
+            _txLogFilterCheckbox.CheckedChanged += (s, e) => ApplyFilter();
 
             filterFlow.Controls.AddRange(new Control[] {
                 filterLabel, _filterCombo, limitLabel, _limitCombo, keysLabel,
-                sep1, _refreshButton, sep2, _exportButton, sep3, _collapseButton
+                sep1, _refreshButton, sep2, _exportButton,
+                sep3, _browseLogsButton, _txLogFilterCheckbox
             });
 
             // Search row - full-width search box on second row
@@ -453,6 +469,7 @@ namespace RegistryExpert
 
             // Timeline grid
             _timelineGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Timeline Results" };
+            _timelineGrid.MultiSelect = false;
             ModernTheme.ApplyTo(_timelineGrid);
             _timelineGrid.BackgroundColor = ModernTheme.Background;  // Override: use Background instead of Surface
             _timelineGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(8, 4, 8, 4);  // Override default padding
@@ -472,6 +489,20 @@ namespace RegistryExpert
                 HeaderText = "Key Path",
                 FillWeight = 75
             });
+            _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "ChangeType",
+                HeaderText = "Change Type",
+                FillWeight = 15,
+                Visible = false  // Hidden until analysis is run
+            });
+            _timelineGrid.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Details",
+                HeaderText = "Details",
+                FillWeight = 20,
+                Visible = false
+            });
 
             // Enable sorting
             foreach (DataGridViewColumn col in _timelineGrid.Columns)
@@ -480,8 +511,8 @@ namespace RegistryExpert
             }
 
             _timelineGrid.CellDoubleClick += TimelineGrid_CellDoubleClick;
-            _timelineGrid.CellClick += TimelineGrid_CellClick;
             _timelineGrid.KeyDown += TimelineGrid_KeyDown;
+            _timelineGrid.SelectionChanged += TimelineGrid_SelectionChanged;
 
             // Context menu
             var contextMenu = new ContextMenuStrip();
@@ -539,9 +570,62 @@ namespace RegistryExpert
             };
             _loadMorePanel.Controls.Add(_loadMoreButton);
 
+            // Detail panel for transaction log value-level changes
+            _detailPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = ModernTheme.Surface,
+                Visible = true
+            };
+
+            _detailHeader = new Label
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(28),
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = ModernTheme.TextPrimary,
+                BackColor = ModernTheme.Surface,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = DpiHelper.ScalePadding(8, 0, 0, 0),
+                Text = "Transaction Log Details"
+            };
+
+            _detailGrid = new DataGridView { Dock = DockStyle.Fill, AccessibleName = "Transaction Log Value Changes" };
+            _detailGrid.MultiSelect = false;
+            ModernTheme.ApplyTo(_detailGrid);
+            _detailGrid.BackgroundColor = ModernTheme.Background;
+            _detailGrid.DefaultCellStyle.Padding = DpiHelper.ScalePadding(6, 3, 6, 3);
+
+            _detailGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DetailValueName", HeaderText = "Value Name", FillWeight = 20 });
+            _detailGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DetailValueType", HeaderText = "Type", FillWeight = 10 });
+            _detailGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DetailChangeType", HeaderText = "Change", FillWeight = 10 });
+            _detailGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DetailOldData", HeaderText = "Before (Current Hive)", FillWeight = 30 });
+            _detailGrid.Columns.Add(new DataGridViewTextBoxColumn { Name = "DetailNewData", HeaderText = "After (With Logs)", FillWeight = 30 });
+
+            var detailSep = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = ModernTheme.Border };
+
+            _detailPanel.Controls.Add(_detailGrid);
+            _detailPanel.Controls.Add(detailSep);
+            _detailPanel.Controls.Add(_detailHeader);
+
+            // SplitContainer: top = timeline grid + load-more, bottom = detail panel
+            // NOTE: SplitterDistance is NOT set here — when Panel2 is later
+            // uncollapsed, the distance is set proportionally to the actual height.
+            _mainSplitter = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                Panel2Collapsed = true,  // Detail hidden by default
+                SplitterWidth = DpiHelper.Scale(4),
+                BackColor = ModernTheme.Border
+            };
+
+            _mainSplitter.Panel1.Controls.Add(_timelineGrid);
+            _mainSplitter.Panel1.Controls.Add(_loadMorePanel);
+            _mainSplitter.Panel2.Controls.Add(_detailPanel);
+
             // Add controls (order matters for docking)
-            this.Controls.Add(_timelineGrid);
-            this.Controls.Add(_loadMorePanel);
+            this.Controls.Add(_mainSplitter);
             this.Controls.Add(_filterPanel);
             this.Controls.Add(_statusPanel);
 
@@ -586,7 +670,6 @@ namespace RegistryExpert
             _progressBar.Visible = true;
             UpdateStatus("Scanning registry keys...");
             _exportButton.Enabled = false;
-            _collapseButton.Enabled = false;
             _timelineGrid.Rows.Clear();
             _allEntries.Clear();
 
@@ -618,9 +701,43 @@ namespace RegistryExpert
                     UpdateStatus($"Scanned {scannedCount:N0} keys - {_allEntries.Count:N0} have timestamps");
                 }
 
+                // Auto-detect transaction log files
+                _detectedLogPaths = TransactionLogAnalyzer.DetectLogFiles(_parser.FilePath ?? "");
+                var logPaths = _manualLogPaths.Count > 0 ? _manualLogPaths : _detectedLogPaths;
+
+                // Auto-analyze transaction logs if available
+                if (logPaths.Count > 0 && !string.IsNullOrEmpty(_parser.FilePath) && !token.IsCancellationRequested)
+                {
+                    try
+                    {
+                        UpdateStatus("Analyzing transaction logs...");
+                        _txLogDiffs = await TransactionLogAnalyzer.AnalyzeAsync(
+                            _parser.FilePath,
+                            logPaths,
+                            msg => BeginInvoke(() => UpdateStatus(msg)),
+                            token
+                        );
+
+                        MergeTxLogDiffs();
+
+                        // Show the TxLog columns if changes were found
+                        if (_txLogDiffs.Count > 0)
+                        {
+                            _timelineGrid.Columns["ChangeType"]!.Visible = true;
+                            _timelineGrid.Columns["Details"]!.Visible = true;
+                            _txLogFilterCheckbox.Visible = true;
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Transaction log analysis failed: {ex.Message}");
+                        // Continue without transaction log data — normal timeline still displays
+                    }
+                }
+
                 ApplyFilter();
                 _exportButton.Enabled = _filteredEntries.Count > 0;
-                _collapseButton.Enabled = _filteredEntries.Count > 0;
             }
             catch (OperationCanceledException)
             {
@@ -750,17 +867,11 @@ namespace RegistryExpert
             if (!string.IsNullOrEmpty(searchText) && searchText != SearchPlaceholder)
                 filtered = filtered.Where(e => e.DisplayPath.Contains(searchText, StringComparison.OrdinalIgnoreCase));
 
-            _filteredEntries = filtered.ToList();
+            // Apply TxLog-only filter
+            if (_txLogFilterCheckbox != null && _txLogFilterCheckbox.Visible && _txLogFilterCheckbox.Checked)
+                filtered = filtered.Where(e => e.TxLogDiff != null);
 
-            // Rebuild collapsed groups if in collapsed mode
-            if (_isCollapsed)
-            {
-                BuildCollapsedGroups();
-                _expandedGroupIndices.Clear();
-                _currentGroupDisplayCount = _limitCombo.SelectedItem?.ToString() == "All" 
-                    ? _collapsedGroups.Count 
-                    : _pageSize;
-            }
+            _filteredEntries = filtered.ToList();
 
             // Reset pagination - show first page
             _currentDisplayCount = Math.Min(_pageSize, _filteredEntries.Count);
@@ -771,17 +882,10 @@ namespace RegistryExpert
             
             UpdateGridDisplay();
             _exportButton.Enabled = _filteredEntries.Count > 0;
-            _collapseButton.Enabled = _filteredEntries.Count > 0;
         }
 
         private void UpdateGridDisplay()
         {
-            if (_isCollapsed)
-            {
-                UpdateCollapsedGridDisplay();
-                return;
-            }
-
             _timelineGrid.SuspendLayout();
             try
             {
@@ -792,10 +896,15 @@ namespace RegistryExpert
                 {
                     var rowIndex = _timelineGrid.Rows.Add(
                         entry.LastModified,
-                        entry.DisplayPath
+                        entry.DisplayPath,
+                        entry.TxLogDiff != null ? GetStatusText(entry.TxLogDiff.ChangeType) : "",
+                        entry.TxLogDiff?.ChangeSummary ?? ""
                     );
                     // Store the entry reference in the row's Tag for reliable retrieval after sorting
                     _timelineGrid.Rows[rowIndex].Tag = entry;
+
+                    // Highlight rows with transaction log changes
+                    ApplyChangeTypeColor(_timelineGrid.Rows[rowIndex], entry);
                 }
             }
             finally
@@ -820,347 +929,27 @@ namespace RegistryExpert
             UpdateStatusLabel();
         }
 
-        private void CollapseButton_Click(object? sender, EventArgs e)
-        {
-            _isCollapsed = !_isCollapsed;
-            _collapseButton.Text = _isCollapsed ? "Expand View" : "Collapse View";
-            
-            // Disable column sorting in collapsed mode (would break group ordering)
-            foreach (DataGridViewColumn col in _timelineGrid.Columns)
-                col.SortMode = _isCollapsed ? DataGridViewColumnSortMode.NotSortable : DataGridViewColumnSortMode.Automatic;
-            
-            if (_isCollapsed)
-            {
-                BuildCollapsedGroups();
-                _expandedGroupIndices.Clear();
-                _currentGroupDisplayCount = _pageSize;
-            }
-            else
-            {
-                _collapsedGroups.Clear();
-                _expandedGroupIndices.Clear();
-            }
-            
-            UpdateGridDisplay();
-        }
-
-        private void BuildCollapsedGroups()
-        {
-            _collapsedGroups.Clear();
-            
-            if (_filteredEntries.Count == 0) return;
-            
-            // Sort by timestamp (truncated to seconds) descending, then by path to ensure
-            // related entries are adjacent for grouping. Sub-second precision is not displayed
-            // and would cause interleaving of paths that appear to share the same timestamp.
-            _filteredEntries = _filteredEntries
-                .OrderByDescending(e => e.LastModified.Ticks / TimeSpan.TicksPerSecond)
-                .ThenBy(e => e.DisplayPath, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            
-            // Minimum number of path segments required for a common ancestor to be considered "related"
-            // e.g., 3 means SYSTEM\ControlSet001\Control is the minimum grouping depth
-            const int minAncestorSegments = 3;
-            
-            CollapsedGroup? currentGroup = null;
-            bool groupEstablished = false; // True after first merge sets the actual group root
-            
-            foreach (var entry in _filteredEntries)
-            {
-                if (currentGroup == null)
-                {
-                    currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
-                    currentGroup.Entries.Add(entry);
-                    groupEstablished = false;
-                }
-                else
-                {
-                    // Find the common ancestor between this entry and the group's root
-                    var commonAncestor = GetCommonAncestor(entry.DisplayPath, currentGroup.RootPath);
-                    int ancestorSegments = string.IsNullOrEmpty(commonAncestor) ? 0 : commonAncestor.Split('\\').Length;
-                    
-                    if (ancestorSegments < minAncestorSegments)
-                    {
-                        // Not related enough - close current group and start a new one
-                        _collapsedGroups.Add(currentGroup);
-                        currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
-                        currentGroup.Entries.Add(entry);
-                        groupEstablished = false;
-                    }
-                    else if (!groupEstablished)
-                    {
-                        // First merge - establish the group's deepest common root
-                        currentGroup.Entries.Add(entry);
-                        currentGroup.RootPath = commonAncestor;
-                        groupEstablished = true;
-                    }
-                    else
-                    {
-                        // Group established - only merge if ancestor doesn't shrink the root
-                        int currentRootSegments = currentGroup.RootPath.Split('\\').Length;
-                        if (ancestorSegments >= currentRootSegments)
-                        {
-                            currentGroup.Entries.Add(entry);
-                        }
-                        else
-                        {
-                            // Would shrink the root - start new group
-                            _collapsedGroups.Add(currentGroup);
-                            currentGroup = new CollapsedGroup { RootPath = entry.DisplayPath };
-                            currentGroup.Entries.Add(entry);
-                            groupEstablished = false;
-                        }
-                    }
-                }
-            }
-            
-            if (currentGroup != null)
-                _collapsedGroups.Add(currentGroup);
-        }
-
-        private static string GetCommonAncestor(string path1, string path2)
-        {
-            var segments1 = path1.Split('\\');
-            var segments2 = path2.Split('\\');
-            int minLen = Math.Min(segments1.Length, segments2.Length);
-            
-            int commonCount = 0;
-            for (int i = 0; i < minLen; i++)
-            {
-                if (segments1[i].Equals(segments2[i], StringComparison.OrdinalIgnoreCase))
-                    commonCount++;
-                else
-                    break;
-            }
-            
-            if (commonCount == 0) return "";
-            return string.Join("\\", segments1.Take(commonCount));
-        }
-
-        private void UpdateCollapsedGridDisplay()
-        {
-            _timelineGrid.SuspendLayout();
-            try
-            {
-                _timelineGrid.Rows.Clear();
-                
-                int groupsToShow = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
-                
-                for (int i = 0; i < groupsToShow; i++)
-                {
-                    var group = _collapsedGroups[i];
-                    bool isExpanded = _expandedGroupIndices.Contains(i);
-                    
-                    if (group.Entries.Count == 1)
-                    {
-                        // Single entry - show as normal row
-                        var entry = group.Entries[0];
-                        var rowIndex = _timelineGrid.Rows.Add(
-                            entry.LastModified,
-                            entry.DisplayPath
-                        );
-                        _timelineGrid.Rows[rowIndex].Tag = entry;
-                    }
-                    else
-                    {
-                        // Multi-entry group - show collapsed summary or expanded
-                        var minTime = group.Entries.Min(e => e.LastModified);
-                        var maxTime = group.Entries.Max(e => e.LastModified);
-                        
-                        // Format time for display - single timestamp if all entries share the same second
-                        string timeDisplay;
-                        bool sameSecond = minTime.Year == maxTime.Year && minTime.Month == maxTime.Month
-                            && minTime.Day == maxTime.Day && minTime.Hour == maxTime.Hour
-                            && minTime.Minute == maxTime.Minute && minTime.Second == maxTime.Second;
-                        if (sameSecond)
-                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss}";
-                        else if (minTime.Date == maxTime.Date)
-                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss} - {maxTime:HH:mm:ss}";
-                        else
-                            timeDisplay = $"{minTime:yyyy-MM-dd HH:mm:ss} - {maxTime:yyyy-MM-dd HH:mm:ss}";
-                        
-                        string indicator = isExpanded ? "[-]" : "[+]";
-                        string pathDisplay = $"{indicator} {group.RootPath} ({group.Entries.Count} keys)";
-                        
-                        var groupRowIndex = _timelineGrid.Rows.Add(
-                            timeDisplay,
-                            pathDisplay
-                        );
-                        _timelineGrid.Rows[groupRowIndex].Tag = group;
-                        _timelineGrid.Rows[groupRowIndex].DefaultCellStyle.ForeColor = ModernTheme.Accent;
-                        _timelineGrid.Rows[groupRowIndex].DefaultCellStyle.SelectionForeColor = ModernTheme.Accent;
-                        
-                        if (isExpanded)
-                        {
-                            // Show individual entries indented below the group header
-                            foreach (var entry in group.Entries.OrderByDescending(e => e.LastModified))
-                            {
-                                var childRowIndex = _timelineGrid.Rows.Add(
-                                    entry.LastModified,
-                                    $"    {entry.DisplayPath}"
-                                );
-                                _timelineGrid.Rows[childRowIndex].Tag = entry;
-                            }
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                _timelineGrid.ResumeLayout();
-            }
-            
-            // Update Load More button visibility for collapsed mode
-            int remainingGroups = _collapsedGroups.Count - Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
-            if (remainingGroups > 0)
-            {
-                _loadMorePanel.Visible = true;
-                _loadMoreButton.Text = $"Load More ({remainingGroups:N0} groups remaining)";
-            }
-            else
-            {
-                _loadMorePanel.Visible = false;
-            }
-            
-            // Update status
-            int shownGroups = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
-            int totalEntries = _collapsedGroups.Take(shownGroups).Sum(g => g.Entries.Count);
-            int allEntries = _collapsedGroups.Sum(g => g.Entries.Count);
-            int groupCount = _collapsedGroups.Take(shownGroups).Count(g => g.Entries.Count > 1);
-            var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
-            if (shownGroups < _collapsedGroups.Count)
-                UpdateStatus($"Showing {shownGroups:N0} of {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} of {allEntries:N0} keys) ({filterText})");
-            else
-                UpdateStatus($"Collapsed: {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} keys) ({filterText})");
-        }
-
-        private void TimelineGrid_CellClick(object? sender, DataGridViewCellEventArgs e)
-        {
-            if (!_isCollapsed || e.RowIndex < 0) return;
-            
-            var row = _timelineGrid.Rows[e.RowIndex];
-            if (row.Tag is CollapsedGroup group)
-            {
-                int groupIndex = FindGroupIndex(e.RowIndex);
-                if (groupIndex < 0) return;
-                
-                _timelineGrid.SuspendLayout();
-                try
-                {
-                    if (_expandedGroupIndices.Contains(groupIndex))
-                    {
-                        // Collapse: remove child rows below this header
-                        _expandedGroupIndices.Remove(groupIndex);
-                        int childCount = group.Entries.Count;
-                        for (int i = 0; i < childCount; i++)
-                            _timelineGrid.Rows.RemoveAt(e.RowIndex + 1);
-                        
-                        // Update header text to [+]
-                        row.Cells[1].Value = $"[+] {group.RootPath} ({group.Entries.Count} keys)";
-                    }
-                    else
-                    {
-                        // Expand: insert child rows below this header
-                        _expandedGroupIndices.Add(groupIndex);
-                        int insertAt = e.RowIndex + 1;
-                        foreach (var entry in group.Entries.OrderByDescending(en => en.LastModified))
-                        {
-                            var newRow = new DataGridViewRow();
-                            newRow.CreateCells(_timelineGrid, entry.LastModified, $"    {entry.DisplayPath}");
-                            newRow.Tag = entry;
-                            _timelineGrid.Rows.Insert(insertAt, newRow);
-                            insertAt++;
-                        }
-                        
-                        // Update header text to [-]
-                        row.Cells[1].Value = $"[-] {group.RootPath} ({group.Entries.Count} keys)";
-                    }
-                }
-                finally
-                {
-                    _timelineGrid.ResumeLayout();
-                }
-                
-                // Update status to reflect expand/collapse change
-                int shownGroups = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
-                int totalEntries = _collapsedGroups.Take(shownGroups).Sum(g => g.Entries.Count);
-                int allEntries = _collapsedGroups.Sum(g => g.Entries.Count);
-                int groupCount = _collapsedGroups.Take(shownGroups).Count(g => g.Entries.Count > 1);
-                var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
-                if (shownGroups < _collapsedGroups.Count)
-                    UpdateStatus($"Showing {shownGroups:N0} of {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} of {allEntries:N0} keys) ({filterText})");
-                else
-                    UpdateStatus($"Collapsed: {_collapsedGroups.Count:N0} rows ({groupCount:N0} groups from {totalEntries:N0} keys) ({filterText})");
-            }
-        }
-
-        private int FindGroupIndex(int rowIndex)
-        {
-            // Walk through displayed groups to find which group the clicked row belongs to
-            int currentRow = 0;
-            int groupsToShow = Math.Min(_currentGroupDisplayCount, _collapsedGroups.Count);
-            for (int i = 0; i < groupsToShow; i++)
-            {
-                var group = _collapsedGroups[i];
-                if (currentRow == rowIndex)
-                    return i;
-                
-                currentRow++; // The group/entry header row
-                
-                if (group.Entries.Count > 1 && _expandedGroupIndices.Contains(i))
-                    currentRow += group.Entries.Count; // Expanded child rows
-            }
-            return -1;
-        }
-
         private void UpdateStatusLabel()
         {
             var filterText = _filterCombo.SelectedItem?.ToString() ?? "All";
+            var txLogSuffix = _txLogDiffs.Count > 0 ? $" | {_txLogDiffs.Count:N0} transaction log changes" : "";
             
             if (_filteredEntries.Count == 0)
             {
-                UpdateStatus($"No keys found ({filterText})");
+                UpdateStatus($"No keys found ({filterText}){txLogSuffix}");
             }
             else if (_currentDisplayCount >= _filteredEntries.Count)
             {
-                UpdateStatus($"Showing all {_filteredEntries.Count:N0} of {_allEntries.Count:N0} keys ({filterText})");
+                UpdateStatus($"Showing all {_filteredEntries.Count:N0} of {_allEntries.Count:N0} keys ({filterText}){txLogSuffix}");
             }
             else
             {
-                UpdateStatus($"Showing {_currentDisplayCount:N0} of {_filteredEntries.Count:N0} keys ({filterText})");
+                UpdateStatus($"Showing {_currentDisplayCount:N0} of {_filteredEntries.Count:N0} keys ({filterText}){txLogSuffix}");
             }
         }
 
         private void LoadMore_Click(object? sender, EventArgs e)
         {
-            if (_isCollapsed)
-            {
-                // Load more groups in collapsed mode
-                int previousGroupCount = _currentGroupDisplayCount;
-                int remainingGroups = _collapsedGroups.Count - _currentGroupDisplayCount;
-                int groupsToAdd = Math.Min(_pageSize, remainingGroups);
-                _currentGroupDisplayCount += groupsToAdd;
-                
-                // Rebuild the full display (collapsed mode doesn't support incremental append)
-                UpdateCollapsedGridDisplay();
-                
-                // Scroll to show some of the new content
-                if (_timelineGrid.Rows.Count > 0)
-                {
-                    // Find the row index where new groups start
-                    int rowIndex = 0;
-                    for (int i = 0; i < previousGroupCount && i < _collapsedGroups.Count; i++)
-                    {
-                        rowIndex++; // Group header or single-entry row
-                        if (_collapsedGroups[i].Entries.Count > 1 && _expandedGroupIndices.Contains(i))
-                            rowIndex += _collapsedGroups[i].Entries.Count;
-                    }
-                    if (rowIndex < _timelineGrid.Rows.Count)
-                        _timelineGrid.FirstDisplayedScrollingRowIndex = rowIndex;
-                }
-                return;
-            }
-            
             // Add another page of results
             int previousCount = _currentDisplayCount;
             int remaining = _filteredEntries.Count - _currentDisplayCount;
@@ -1173,10 +962,15 @@ namespace RegistryExpert
             {
                 var rowIndex = _timelineGrid.Rows.Add(
                     entry.LastModified,
-                    entry.DisplayPath
+                    entry.DisplayPath,
+                    entry.TxLogDiff != null ? GetStatusText(entry.TxLogDiff.ChangeType) : "",
+                    entry.TxLogDiff?.ChangeSummary ?? ""
                 );
                 // Store the entry reference in the row's Tag for reliable retrieval after sorting
                 _timelineGrid.Rows[rowIndex].Tag = entry;
+
+                // Highlight rows with transaction log changes
+                ApplyChangeTypeColor(_timelineGrid.Rows[rowIndex], entry);
             }
 
             // Update Load More button visibility and text
@@ -1204,9 +998,6 @@ namespace RegistryExpert
         {
             if (e.RowIndex >= 0)
             {
-                var row = _timelineGrid.Rows[e.RowIndex];
-                // In collapsed mode, don't navigate on group header rows (toggle expand instead)
-                if (row.Tag is CollapsedGroup) return;
                 NavigateToSelectedKey();
             }
         }
@@ -1283,13 +1074,25 @@ namespace RegistryExpert
                     using var writer = new StreamWriter(dialog.FileName, false, System.Text.Encoding.UTF8, 65536);
                     
                     // Write header
-                    writer.WriteLine("Last Modified,Key Path");
+                    var hasTxLog = _timelineGrid.Columns["ChangeType"]?.Visible == true;
+                    writer.Write("\"Last Modified\",\"Key Path\"");
+                    if (hasTxLog)
+                        writer.Write(",\"Change Type\",\"Details\"");
+                    writer.WriteLine();
                     
                     // Write data
                     foreach (var entry in _filteredEntries)
                     {
-                        var path = entry.DisplayPath.Replace("\"", "\"\""); // Escape quotes
-                        writer.WriteLine($"\"{entry.LastModified:yyyy-MM-dd HH:mm:ss}\",\"{path}\"");
+                        var path = EscapeCsv(entry.DisplayPath);
+                        writer.Write($"\"{entry.LastModified:yyyy-MM-dd HH:mm:ss}\",\"{path}\"");
+                        if (hasTxLog)
+                        {
+                            var diff = entry.TxLogDiff;
+                            var status = diff != null ? GetStatusText(diff.ChangeType) : "";
+                            var summary = diff?.ChangeSummary ?? "";
+                            writer.Write($",\"{EscapeCsv(status)}\",\"{EscapeCsv(summary)}\"");
+                        }
+                        writer.WriteLine();
                     }
 
                     UpdateStatus($"Exported {_filteredEntries.Count:N0} entries to {Path.GetFileName(dialog.FileName)}");
@@ -1303,6 +1106,224 @@ namespace RegistryExpert
                     _statusForeColor = ModernTheme.Error;
                     _statusPanel.Invalidate();
                 }
+            }
+        }
+
+        private static string GetStatusText(TransactionLogChangeType changeType) => changeType switch
+        {
+            TransactionLogChangeType.KeyAdded => "New",
+            TransactionLogChangeType.KeyDeleted => "Deleted",
+            TransactionLogChangeType.ValuesChanged => "Modified",
+            _ => ""
+        };
+
+        private void ApplyChangeTypeColor(DataGridViewRow row, TimelineEntry entry)
+        {
+            if (entry.TxLogDiff != null)
+            {
+                row.Cells["ChangeType"].Style.ForeColor = entry.TxLogDiff.ChangeType switch
+                {
+                    TransactionLogChangeType.KeyAdded => ModernTheme.DiffAdded,
+                    TransactionLogChangeType.KeyDeleted => ModernTheme.DiffRemoved,
+                    _ => ModernTheme.Warning
+                };
+            }
+        }
+
+        /// <summary>
+        /// Formats a registry value type for display. Named enum values (e.g. "RegSz") pass through;
+        /// raw numeric strings (e.g. "18") are displayed as "Unknown (18)".
+        /// </summary>
+        private static string FormatValueType(string valueType)
+        {
+            if (string.IsNullOrEmpty(valueType)) return "";
+            return int.TryParse(valueType, out _) ? $"Unknown ({valueType})" : valueType;
+        }
+
+        private static string EscapeCsv(string value) => value.Replace("\"", "\"\"");
+
+        private void TimelineGrid_SelectionChanged(object? sender, EventArgs e)
+        {
+            if (_timelineGrid.SelectedRows.Count == 0 || _txLogDiffs.Count == 0)
+            {
+                if (!_mainSplitter.Panel2Collapsed)
+                    _mainSplitter.Panel2Collapsed = true;
+                return;
+            }
+
+            var row = _timelineGrid.SelectedRows[0];
+            if (row.Tag is not TimelineEntry entry || entry.TxLogDiff == null)
+            {
+                if (!_mainSplitter.Panel2Collapsed)
+                    _mainSplitter.Panel2Collapsed = true;
+                return;
+            }
+
+            UpdateDetailPanel(entry.TxLogDiff);
+        }
+
+        private void UpdateDetailPanel(TransactionLogDiff diff)
+        {
+            _detailGrid.Rows.Clear();
+
+            var statusText = GetStatusText(diff.ChangeType);
+            var tsInfo = "";
+            if (diff.OldTimestamp.HasValue && diff.NewTimestamp.HasValue)
+                tsInfo = $"  |  {diff.OldTimestamp:yyyy-MM-dd HH:mm:ss}  -->  {diff.NewTimestamp:yyyy-MM-dd HH:mm:ss}";
+            else if (diff.NewTimestamp.HasValue)
+                tsInfo = $"  |  (new) {diff.NewTimestamp:yyyy-MM-dd HH:mm:ss}";
+
+            _detailHeader.Text = $"Transaction Log Details: {diff.DisplayPath}  [{statusText}]{tsInfo}";
+
+            foreach (var vc in diff.ValueChanges)
+            {
+                var changeText = vc.ChangeType switch
+                {
+                    ValueChangeType.Added => "Added",
+                    ValueChangeType.Removed => "Removed",
+                    ValueChangeType.Modified => "Modified",
+                    _ => ""
+                };
+                var rowIdx = _detailGrid.Rows.Add(
+                    vc.ValueName,
+                    FormatValueType(vc.ValueType),
+                    changeText,
+                    vc.OldData ?? "(not present)",
+                    vc.NewData ?? "(not present)"
+                );
+
+                // Color-code the change type
+                var changeCell = _detailGrid.Rows[rowIdx].Cells["DetailChangeType"];
+                changeCell.Style.ForeColor = vc.ChangeType switch
+                {
+                    ValueChangeType.Added => ModernTheme.DiffAdded,
+                    ValueChangeType.Removed => ModernTheme.DiffRemoved,
+                    ValueChangeType.Modified => ModernTheme.Warning,
+                    _ => ModernTheme.TextPrimary
+                };
+            }
+
+            if (diff.ValueChanges.Count == 0 && diff.OldTimestamp.HasValue && diff.NewTimestamp.HasValue)
+            {
+                // Only timestamp changed - show that
+                _detailGrid.Rows.Add("(key timestamp)", "", "Modified",
+                    diff.OldTimestamp.Value.ToString("yyyy-MM-dd HH:mm:ss"),
+                    diff.NewTimestamp.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            }
+
+            // Show the detail panel
+            if (_mainSplitter.Panel2Collapsed)
+            {
+                _mainSplitter.Panel2Collapsed = false;
+                try { _mainSplitter.SplitterDistance = (int)(_mainSplitter.Height * 0.6); }
+                catch (InvalidOperationException) { }
+            }
+        }
+
+        private void MergeTxLogDiffs()
+        {
+            // Build a lookup from existing entries by key path
+            var entryByPath = new Dictionary<string, TimelineEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in _allEntries)
+            {
+                entryByPath.TryAdd(entry.KeyPath, entry);
+            }
+
+            foreach (var diff in _txLogDiffs)
+            {
+                if (entryByPath.TryGetValue(diff.KeyPath, out var existing))
+                {
+                    // Attach diff to existing entry
+                    existing.TxLogDiff = diff;
+                }
+                else
+                {
+                    // New key from transaction logs - add as a new entry
+                    var newEntry = new TimelineEntry
+                    {
+                        LastModified = diff.NewTimestamp ?? diff.OldTimestamp ?? DateTime.MinValue,
+                        KeyPath = diff.KeyPath,
+                        DisplayPath = ConvertRootPath(diff.KeyPath),
+                        TxLogDiff = diff
+                    };
+                    _allEntries.Add(newEntry);
+                }
+            }
+
+            // Re-sort
+            _allEntries = _allEntries.OrderByDescending(e => e.LastModified)
+                .ThenBy(e => e.DisplayPath, StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private async void BrowseLogsButton_Click(object? sender, EventArgs e)
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Select Transaction Log Files",
+                Filter = "Registry Log Files (*.LOG1;*.LOG2)|*.LOG1;*.LOG2|All Files (*.*)|*.*",
+                Multiselect = true
+            };
+
+            // Start in the hive's directory if available
+            var hivePath = _parser.FilePath;
+            if (!string.IsNullOrEmpty(hivePath))
+                ofd.InitialDirectory = System.IO.Path.GetDirectoryName(hivePath) ?? "";
+
+            if (ofd.ShowDialog(this) != DialogResult.OK) return;
+
+            _manualLogPaths = new List<string>(ofd.FileNames);
+
+            // If no scan has been done yet, just store the paths for the next scan
+            if (_allEntries.Count == 0)
+            {
+                UpdateStatus($"Selected {_manualLogPaths.Count} log file(s). Click 'Scan' to load timeline with log analysis.");
+                return;
+            }
+
+            // Run analysis immediately on the already-scanned data
+            if (string.IsNullOrEmpty(hivePath)) return;
+
+            _analyzeLogsCts?.Cancel();
+            _analyzeLogsCts?.Dispose();
+            _analyzeLogsCts = new CancellationTokenSource();
+            var token = _analyzeLogsCts.Token;
+
+            _progressBar.Visible = true;
+
+            try
+            {
+                _txLogDiffs = await TransactionLogAnalyzer.AnalyzeAsync(
+                    hivePath,
+                    _manualLogPaths,
+                    msg => BeginInvoke(() => UpdateStatus(msg)),
+                    token
+                );
+
+                MergeTxLogDiffs();
+
+                if (_txLogDiffs.Count > 0)
+                {
+                    _timelineGrid.Columns["ChangeType"]!.Visible = true;
+                    _timelineGrid.Columns["Details"]!.Visible = true;
+                    _txLogFilterCheckbox.Visible = true;
+                }
+
+                ApplyFilter();
+                UpdateStatus($"Transaction log analysis complete: {_txLogDiffs.Count:N0} changes found across {_manualLogPaths.Count} log file(s).");
+            }
+            catch (OperationCanceledException)
+            {
+                UpdateStatus("Transaction log analysis cancelled.");
+            }
+            catch (Exception ex)
+            {
+                UpdateStatus($"Transaction log analysis error: {ex.Message}");
+                _statusForeColor = ModernTheme.Error;
+                _statusPanel.Invalidate();
+            }
+            finally
+            {
+                _progressBar.Visible = false;
             }
         }
 
@@ -1462,7 +1483,7 @@ namespace RegistryExpert
             _searchBox.ForeColor = _searchBox.Text == SearchPlaceholder ? ModernTheme.TextSecondary : ModernTheme.TextPrimary;
 
             // Refresh pill buttons (transparent forecolor hides framework text; we owner-draw)
-            foreach (var btn in new[] { _refreshButton, _exportButton, _collapseButton })
+            foreach (var btn in new[] { _refreshButton, _exportButton, _browseLogsButton })
             {
                 btn.BackColor = Color.Transparent;
                 btn.ForeColor = Color.Transparent;
@@ -1473,6 +1494,24 @@ namespace RegistryExpert
             foreach (var sep in _separators)
             {
                 sep.BackColor = ModernTheme.Border;
+            }
+
+            // Refresh transaction log detail panel
+            if (_detailPanel != null)
+            {
+                _detailPanel.BackColor = ModernTheme.Surface;
+                _detailHeader.ForeColor = ModernTheme.TextPrimary;
+                _detailHeader.BackColor = ModernTheme.Surface;
+                ModernTheme.ApplyTo(_detailGrid);
+                _detailGrid.BackgroundColor = ModernTheme.Background;
+            }
+            if (_mainSplitter != null)
+            {
+                _mainSplitter.BackColor = ModernTheme.Border;
+            }
+            if (_txLogFilterCheckbox != null)
+            {
+                _txLogFilterCheckbox.ForeColor = ModernTheme.TextSecondary;
             }
 
             // Refresh status bar
@@ -1526,12 +1565,9 @@ namespace RegistryExpert
             public DateTime LastModified { get; set; }
             public string KeyPath { get; set; } = "";
             public string DisplayPath { get; set; } = "";
+            // Transaction log analysis results (null if no analysis done)
+            public TransactionLogDiff? TxLogDiff { get; set; }
         }
 
-        private class CollapsedGroup
-        {
-            public List<TimelineEntry> Entries { get; } = new();
-            public string RootPath { get; set; } = "";
-        }
     }
 }

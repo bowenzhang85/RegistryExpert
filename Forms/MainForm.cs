@@ -54,6 +54,10 @@ namespace RegistryExpert
         public Label? FirewallRulesLabel { get; set; }
         public DataGridView? FirewallRulesGrid { get; set; }
         public List<Button> FirewallProfileButtons { get; set; } = new();
+        public FlowLayoutPanel? FirewallDirectionButtonsPanel { get; set; }
+        public Label? FirewallDirectionLabel { get; set; }
+        public List<Button> FirewallDirectionButtons { get; set; } = new();
+        public string ActiveFirewallDirection { get; set; } = "Inbound";
         public Action? RefreshFirewallDisplay { get; set; }
         // Device Manager panel controls
         public SplitContainer? DeviceManagerSplit { get; set; }
@@ -373,7 +377,8 @@ namespace RegistryExpert
             // Update main splitter distance proportionally
             if (_mainSplitContainer.Visible && _mainSplitContainer.Width > 0)
             {
-                _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+                try { _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7; }
+                catch (InvalidOperationException) { }
             }
         }
 
@@ -540,8 +545,6 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Vertical,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 50,
-                Panel2MinSize = 50,
                 SplitterWidth = 3,
                 Visible = false
             };
@@ -701,8 +704,6 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 50,
-                Panel2MinSize = 50,
                 SplitterWidth = 3
             };
             _rightSplitContainer.Panel1.BackColor = ModernTheme.Background;
@@ -853,8 +854,23 @@ namespace RegistryExpert
                     oldValueImageList?.Dispose();
                 }
 
-                _mainSplitContainer.SplitterDistance = DpiHelper.Scale(280);
-                _rightSplitContainer.SplitterDistance = Math.Max(DpiHelper.Scale(250), _rightSplitContainer.Height * 2 / 3);
+                // Defer Panel1MinSize/Panel2MinSize here (not in initializer) to avoid
+                // InvalidOperationException when container is still at default size
+                try
+                {
+                    _mainSplitContainer.Panel1MinSize = 50;
+                    _mainSplitContainer.Panel2MinSize = 50;
+                    _mainSplitContainer.SplitterDistance = DpiHelper.Scale(280);
+                }
+                catch (InvalidOperationException) { }
+
+                try
+                {
+                    _rightSplitContainer.Panel1MinSize = 50;
+                    _rightSplitContainer.Panel2MinSize = 50;
+                    _rightSplitContainer.SplitterDistance = Math.Max(DpiHelper.Scale(250), _rightSplitContainer.Height * 2 / 3);
+                }
+                catch (InvalidOperationException) { }
                 try { await CheckForUpdatesOnStartupAsync(); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Startup update check failed: {ex.Message}"); }
             };
@@ -1875,7 +1891,8 @@ namespace RegistryExpert
                 {
                     _dropPanel.Visible = false;
                     _mainSplitContainer.Visible = true;
-                    _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7;
+                    try { _mainSplitContainer.SplitterDistance = _mainSplitContainer.Width * 3 / 7; }
+                    catch (InvalidOperationException) { }
                 }
 
                 UpdateHiveStatusBar();
@@ -2431,7 +2448,7 @@ namespace RegistryExpert
 
             var selectedHive = ActiveHive!;
 
-            var form = new Form
+            var form = new CompositedForm
             {
                 Text = $"Registry Statistics - {selectedHive.Parser.CurrentHiveType}",
                 Size = DpiHelper.ScaleSize(900, 650),
@@ -2440,6 +2457,7 @@ namespace RegistryExpert
                 ShowInTaskbar = true
             };
             ModernTheme.ApplyTo(form);
+            form.Icon = this.Icon;
             _statisticsForm = form; // Track the form;
 
             // Main panel with padding
@@ -2459,9 +2477,17 @@ namespace RegistryExpert
             };
             headerPanel.Paint += (s, ev) =>
             {
+                // Clear entire background first to erase stale right-edge border pixels from previous frame
+                using var bgBrush = new SolidBrush(headerPanel.BackColor);
+                ev.Graphics.FillRectangle(bgBrush, 0, 0, headerPanel.Width, headerPanel.Height);
                 using var pen = new Pen(ModernTheme.Border);
                 ev.Graphics.DrawRectangle(pen, 0, 0, headerPanel.Width - 1, headerPanel.Height - 1);
             };
+
+            // Enable double-buffering on header panel to prevent ghost artifacts during resize
+            typeof(Panel).InvokeMember("DoubleBuffered",
+                System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, headerPanel, new object[] { true });
 
             var stats = selectedHive.Parser.GetStatistics();
 
@@ -2482,6 +2508,11 @@ namespace RegistryExpert
                 using var iconBrush = new SolidBrush(ModernTheme.Accent);
                 ev.Graphics.DrawString("\uE9D9", iconFont, iconBrush, 0, 2);
             };
+
+            // Enable double-buffering on title label to prevent flicker from custom icon painting
+            typeof(Label).InvokeMember("DoubleBuffered",
+                System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, titleLabel, new object[] { true });
 
             // Hive selector (only visible when multiple hives loaded)
             ComboBox? hiveSelector = null;
@@ -2708,6 +2739,14 @@ namespace RegistryExpert
                 DrawMode = TreeViewDrawMode.OwnerDrawText,
                 AccessibleName = $"Registry Key Statistics - {valueLabel}"
             };
+
+            // Force synchronous full repaint on resize to prevent ghost artifacts from custom-drawn bars
+            tree.Resize += (s, e) => tree.Refresh();
+
+            // Enable double buffering to prevent flicker during resize repaints
+            typeof(TreeView).GetProperty("DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)?
+                .SetValue(tree, true);
 
             // Store value info for custom drawing
             var nodeValues = new Dictionary<TreeNode, (long value, long maxVal, Color color)>();
@@ -3039,6 +3078,11 @@ namespace RegistryExpert
                 using var valueBrush = new SolidBrush(ModernTheme.TextPrimary);
                 g.DrawString(value, ModernTheme.BoldFont, valueBrush, textX, DpiHelper.Scale(18));
             };
+
+            // Enable double-buffering to prevent flicker on stat card custom painting
+            typeof(Panel).InvokeMember("DoubleBuffered",
+                System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
+                null, panel, new object[] { true });
             
             return panel;
         }
@@ -3049,6 +3093,23 @@ namespace RegistryExpert
             public int SubKeyCount { get; set; }
             public int ValueCount { get; set; }
             public long TotalSize { get; set; }
+        }
+
+        /// <summary>
+        /// Form subclass that enables WS_EX_COMPOSITED to eliminate resize painting artifacts.
+        /// All child controls are composited into a single offscreen buffer before blitting to screen.
+        /// </summary>
+        private class CompositedForm : Form
+        {
+            protected override CreateParams CreateParams
+            {
+                get
+                {
+                    var cp = base.CreateParams;
+                    cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+                    return cp;
+                }
+            }
         }
 
         /// <summary>
@@ -3248,8 +3309,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 50,
-                Panel2MinSize = 50,
                 AccessibleName = "Analyze Registry",
                 AccessibleRole = AccessibleRole.Pane
             };
@@ -3260,8 +3319,14 @@ namespace RegistryExpert
             // Set splitter distance after form loads
             form.Load += (s, ev) =>
             {
-                if (splitContainer.Width > 300)
-                    splitContainer.SplitterDistance = DpiHelper.Scale(250);
+                try
+                {
+                    splitContainer.Panel1MinSize = 50;
+                    splitContainer.Panel2MinSize = 50;
+                    if (splitContainer.Width > 300)
+                        splitContainer.SplitterDistance = DpiHelper.Scale(250);
+                }
+                catch (InvalidOperationException) { }
             };
 
             // Left panel - Categories
@@ -3642,8 +3707,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             networkSplitContainer.Panel1.BackColor = ModernTheme.Background;
@@ -3811,14 +3874,63 @@ namespace RegistryExpert
             firewallRulesPanel.Controls.Add(firewallRulesGrid);
             firewallRulesPanel.Controls.Add(firewallRulesHeader);
 
+            // Direction buttons panel (Inbound/Outbound) - sits below profile buttons
+            var firewallDirectionButtonsPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                Height = DpiHelper.Scale(38),
+                BackColor = ModernTheme.Surface,
+                Padding = DpiHelper.ScalePadding(10, 5, 10, 5),
+                FlowDirection = FlowDirection.LeftToRight
+            };
+
+            var firewallDirectionLabel = new Label
+            {
+                Text = "Direction:",
+                ForeColor = ModernTheme.TextSecondary,
+                Font = ModernTheme.BoldFont,
+                AutoSize = true,
+                Margin = DpiHelper.ScalePadding(0, 4, 10, 0)
+            };
+            firewallDirectionButtonsPanel.Controls.Add(firewallDirectionLabel);
+
+            var firewallDirectionButtons = new List<Button>();
+
+            foreach (var (dirKey, dirLabel, dirIcon) in new[] { ("Inbound", "Inbound", "⬇"), ("Outbound", "Outbound", "⬆") })
+            {
+                var dirBtn = new Button
+                {
+                    Text = $"{dirIcon} {dirLabel}",
+                    BackColor = dirKey == "Inbound" ? ModernTheme.Accent : ModernTheme.Surface,
+                    ForeColor = dirKey == "Inbound" ? Color.White : ModernTheme.TextPrimary,
+                    FlatStyle = FlatStyle.Flat,
+                    Height = DpiHelper.Scale(26),
+                    AutoSize = true,
+                    MinimumSize = DpiHelper.ScaleSize(100, 26),
+                    Font = ModernTheme.RegularFont,
+                    Cursor = Cursors.Hand,
+                    Margin = DpiHelper.ScalePadding(0, 0, 6, 0),
+                    Tag = dirKey
+                };
+                dirBtn.FlatAppearance.BorderColor = ModernTheme.Border;
+                dirBtn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+
+                firewallDirectionButtons.Add(dirBtn);
+                firewallDirectionButtonsPanel.Controls.Add(dirBtn);
+            }
+
             // Add controls to main firewall panel (order matters: Fill must be added first)
             firewallPanel.Controls.Add(firewallRulesPanel);
+            firewallPanel.Controls.Add(firewallDirectionButtonsPanel);
             firewallPanel.Controls.Add(firewallProfileButtonsPanel);
 
             // Register firewall controls for theme updates
             themeData.FirewallPanel = firewallPanel;
             themeData.FirewallProfileButtonsPanel = firewallProfileButtonsPanel;
             themeData.FirewallProfileLabel = firewallProfileLabel;
+            themeData.FirewallDirectionButtonsPanel = firewallDirectionButtonsPanel;
+            themeData.FirewallDirectionLabel = firewallDirectionLabel;
+            themeData.FirewallDirectionButtons = firewallDirectionButtons;
             themeData.FirewallRulesPanel = firewallRulesPanel;
             themeData.FirewallRulesHeader = firewallRulesHeader;
             themeData.FirewallRulesLabel = firewallRulesLabel;
@@ -3830,23 +3942,23 @@ namespace RegistryExpert
             string currentFirewallProfile = "";
             List<FirewallRuleInfo> currentFirewallRules = new();
 
-            // Function to display firewall rules for a profile
-            Action<string, string> displayFirewallRules = (profileKey, profileDisplayName) =>
+            // Helper to get filtered+sorted rules based on active direction
+            Func<List<FirewallRuleInfo>> getFilteredSortedRules = () =>
             {
-                currentFirewallProfile = profileKey;
-                firewallRulesLabel.Text = $"Firewall Rules - {profileDisplayName}";
-
-                // Get rules for this profile
-                currentFirewallRules = activeExtractor!.GetFirewallRulesForProfile(profileKey);
-
-                // Sort: Active Block rules first, then Active Allow, then Inactive
-                var sortedRules = currentFirewallRules
+                var direction = themeData.ActiveFirewallDirection;
+                return currentFirewallRules
+                    .Where(r => r.Direction.Equals(direction, StringComparison.OrdinalIgnoreCase))
                     .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
                     .ThenByDescending(r => r.IsActive)
                     .ThenBy(r => r.Name)
                     .ToList();
+            };
 
-                // Populate grid
+            // Helper to populate the grid from filtered rules
+            Action populateFirewallGrid = () =>
+            {
+                var filteredRules = getFilteredSortedRules();
+
                 firewallRulesGrid.Columns.Clear();
                 firewallRulesGrid.Rows.Clear();
 
@@ -3868,7 +3980,7 @@ namespace RegistryExpert
                 firewallRulesGrid.Columns["rport"].FillWeight = 10;
                 firewallRulesGrid.Columns["application"].FillWeight = 18;
 
-                foreach (var rule in sortedRules)
+                foreach (var rule in filteredRules)
                 {
                     var statusIcon = rule.IsActive ? "✅" : "⬜";
                     var actionDisplay = rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase) ? "🚫 Block" : "✓ Allow";
@@ -3893,12 +4005,51 @@ namespace RegistryExpert
                     }
                 }
 
-                // Update button states
+                // Update direction button states
+                foreach (var btn in firewallDirectionButtons)
+                {
+                    var btnDir = btn.Tag?.ToString() ?? "";
+                    btn.BackColor = btnDir == themeData.ActiveFirewallDirection ? ModernTheme.Accent : ModernTheme.Surface;
+                    btn.ForeColor = btnDir == themeData.ActiveFirewallDirection ? Color.White : ModernTheme.TextPrimary;
+                }
+
+                // Update header label with direction and count
+                var profileDisplay = currentFirewallProfile;
+                firewallRulesLabel.Text = $"Firewall Rules - {profileDisplay} ({themeData.ActiveFirewallDirection}) — {filteredRules.Count} rules";
+            };
+
+            // Wire up direction button clicks
+            foreach (var dirBtn in firewallDirectionButtons)
+            {
+                var capturedDir = dirBtn.Tag?.ToString() ?? "Inbound";
+                dirBtn.Click += (s, ev) =>
+                {
+                    themeData.ActiveFirewallDirection = capturedDir;
+                    populateFirewallGrid();
+                };
+            }
+
+            // Function to display firewall rules for a profile
+            Action<string, string> displayFirewallRules = (profileKey, profileDisplayName) =>
+            {
+                currentFirewallProfile = profileDisplayName;
+
+                // Reset direction to Inbound when switching profiles
+                themeData.ActiveFirewallDirection = "Inbound";
+
+                // Get rules for this profile
+                currentFirewallRules = activeExtractor!.GetFirewallRulesForProfile(profileKey);
+
+                // Populate grid with filtered rules
+                populateFirewallGrid();
+
+                // Update profile button states
                 foreach (var btn in firewallProfileButtons)
                 {
                     var btnProfile = btn.Tag?.ToString() ?? "";
+                    var btnEnabled = btn.AccessibleDescription == "Enabled";
                     btn.BackColor = btnProfile == profileKey ? ModernTheme.Accent : ModernTheme.Surface;
-                    btn.ForeColor = btnProfile == profileKey ? Color.White : ModernTheme.TextPrimary;
+                    btn.ForeColor = btnEnabled ? ModernTheme.DiffAdded : ModernTheme.DiffRemoved;
                 }
             };
 
@@ -3907,16 +4058,12 @@ namespace RegistryExpert
             {
                 if (!string.IsNullOrEmpty(currentFirewallProfile) && firewallPanel.Visible)
                 {
-                    // Re-apply colors to existing rows
-                    var sortedRules = currentFirewallRules
-                        .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
-                        .ThenByDescending(r => r.IsActive)
-                        .ThenBy(r => r.Name)
-                        .ToList();
+                    // Re-apply colors to existing rows using filtered rules
+                    var filteredRules = getFilteredSortedRules();
 
-                    for (int i = 0; i < firewallRulesGrid.Rows.Count && i < sortedRules.Count; i++)
+                    for (int i = 0; i < firewallRulesGrid.Rows.Count && i < filteredRules.Count; i++)
                     {
-                        var rule = sortedRules[i];
+                        var rule = filteredRules[i];
                         if (rule.IsActive && rule.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
                         {
                             firewallRulesGrid.Rows[i].DefaultCellStyle.BackColor = ModernTheme.BlockRowBackground;
@@ -3943,8 +4090,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             deviceManagerSplit.Panel1.BackColor = ModernTheme.Background;
@@ -4148,8 +4293,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             rolesFeaturesSplit.Panel1.BackColor = ModernTheme.Background;
@@ -4247,8 +4390,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             scheduledTasksSplit.Panel1.BackColor = ModernTheme.Background;
@@ -4346,8 +4487,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = DpiHelper.Scale(100),
-                Panel2MinSize = DpiHelper.Scale(100),
                 Visible = false
             };
             certStoresSplit.Panel1.BackColor = ModernTheme.Background;
@@ -4432,8 +4571,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             diskPartitionSplit.Panel1.BackColor = ModernTheme.Background;
@@ -4553,8 +4690,6 @@ namespace RegistryExpert
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 3,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,
-                Panel2MinSize = 100,
                 Visible = false
             };
             physicalDisksSplit.Panel1.BackColor = ModernTheme.Background;
@@ -6525,16 +6660,17 @@ namespace RegistryExpert
                         {
                             Text = $"{statusIcon} {displayName}: {statusText}",
                             BackColor = ModernTheme.Surface,
-                            ForeColor = ModernTheme.TextPrimary,
+                            ForeColor = isEnabled ? ModernTheme.DiffAdded : ModernTheme.DiffRemoved,
                             FlatStyle = FlatStyle.Flat,
                             Height = DpiHelper.Scale(28),
                             AutoSize = true,
                             MinimumSize = DpiHelper.ScaleSize(140, 28),
-                            Font = ModernTheme.RegularFont,
+                            Font = ModernTheme.BoldFont,
                             Cursor = Cursors.Hand,
                             Margin = DpiHelper.ScalePadding(0, 0, 8, 0),
                             Tag = profileKey,
-                            AccessibleName = $"{displayName}: {statusText}"
+                            AccessibleName = $"{displayName}: {statusText}",
+                            AccessibleDescription = isEnabled ? "Enabled" : "Disabled"
                         };
                         profileBtn.FlatAppearance.BorderColor = ModernTheme.Border;
                         profileBtn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
@@ -6962,8 +7098,6 @@ namespace RegistryExpert
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
                 BackColor = ModernTheme.Border,
-                Panel1MinSize = 100,   // Minimum content area
-                Panel2MinSize = 80,    // Minimum detail pane
                 SplitterWidth = 4,     // Slightly thicker for easier grabbing
                 FixedPanel = FixedPanel.Panel2  // Keep detail panel size fixed when resizing window
             };
@@ -7375,16 +7509,12 @@ namespace RegistryExpert
                 if (firewallRulesGrid.SelectedRows.Count > 0)
                 {
                     var rowIndex = firewallRulesGrid.SelectedRows[0].Index;
-                    // Need to map back to sorted rules
-                    var sortedRules = currentFirewallRules
-                        .OrderByDescending(r => r.IsActive && r.Action.Equals("Block", StringComparison.OrdinalIgnoreCase))
-                        .ThenByDescending(r => r.IsActive)
-                        .ThenBy(r => r.Name)
-                        .ToList();
+                    // Map back to filtered+sorted rules (same filter as grid display)
+                    var filteredRules = getFilteredSortedRules();
 
-                    if (rowIndex >= 0 && rowIndex < sortedRules.Count)
+                    if (rowIndex >= 0 && rowIndex < filteredRules.Count)
                     {
-                        var rule = sortedRules[rowIndex];
+                        var rule = filteredRules[rowIndex];
                         registryPathLabel.Text = $"Registry Path: {rule.RegistryPath}";
                         
                         // Show detailed parsed fields and raw data
@@ -8636,6 +8766,21 @@ namespace RegistryExpert
                 GC.Collect(2, GCCollectionMode.Aggressive, true, true);
                 GC.WaitForPendingFinalizers();
             };
+
+            // Apply Panel*MinSize after form loads (deferring prevents crash when handle is
+            // created before the container is sized to its final dimensions — SplitterDistance
+            // must be between Panel1MinSize and Width - Panel2MinSize, which fails at default 150px width)
+            form.Load += (s, ev) =>
+            {
+                try { networkSplitContainer.Panel1MinSize = 100; networkSplitContainer.Panel2MinSize = 100; } catch { }
+                try { deviceManagerSplit.Panel1MinSize = 100; deviceManagerSplit.Panel2MinSize = 100; } catch { }
+                try { rolesFeaturesSplit.Panel1MinSize = 100; rolesFeaturesSplit.Panel2MinSize = 100; } catch { }
+                try { scheduledTasksSplit.Panel1MinSize = 100; scheduledTasksSplit.Panel2MinSize = 100; } catch { }
+                try { certStoresSplit.Panel1MinSize = DpiHelper.Scale(100); certStoresSplit.Panel2MinSize = DpiHelper.Scale(100); } catch { }
+                try { diskPartitionSplit.Panel1MinSize = 100; diskPartitionSplit.Panel2MinSize = 100; } catch { }
+                try { physicalDisksSplit.Panel1MinSize = 100; physicalDisksSplit.Panel2MinSize = 100; } catch { }
+                try { contentDetailSplit.Panel1MinSize = 100; contentDetailSplit.Panel2MinSize = 80; } catch { }
+            };
             
             // Show form immediately, then load data after it's visible
             form.Show();
@@ -8983,6 +9128,8 @@ namespace RegistryExpert
             if (themeData.FirewallPanel != null) themeData.FirewallPanel.BackColor = ModernTheme.Background;
             if (themeData.FirewallProfileButtonsPanel != null) themeData.FirewallProfileButtonsPanel.BackColor = ModernTheme.Surface;
             if (themeData.FirewallProfileLabel != null) themeData.FirewallProfileLabel.ForeColor = ModernTheme.TextSecondary;
+            if (themeData.FirewallDirectionButtonsPanel != null) themeData.FirewallDirectionButtonsPanel.BackColor = ModernTheme.Surface;
+            if (themeData.FirewallDirectionLabel != null) themeData.FirewallDirectionLabel.ForeColor = ModernTheme.TextSecondary;
             if (themeData.FirewallRulesPanel != null) themeData.FirewallRulesPanel.BackColor = ModernTheme.Background;
             if (themeData.FirewallRulesHeader != null) themeData.FirewallRulesHeader.BackColor = ModernTheme.Surface;
             if (themeData.FirewallRulesLabel != null) themeData.FirewallRulesLabel.ForeColor = ModernTheme.TextSecondary;
@@ -8997,11 +9144,20 @@ namespace RegistryExpert
             foreach (var btn in themeData.FirewallProfileButtons)
             {
                 bool isActive = btn.BackColor == ModernTheme.Accent || btn.ForeColor == Color.White;
-                if (!isActive)
-                {
-                    btn.BackColor = ModernTheme.Surface;
-                    btn.ForeColor = ModernTheme.TextPrimary;
-                }
+                btn.BackColor = isActive ? ModernTheme.Accent : ModernTheme.Surface;
+                var btnEnabled = btn.AccessibleDescription == "Enabled";
+                btn.ForeColor = btnEnabled ? ModernTheme.DiffAdded : ModernTheme.DiffRemoved;
+                btn.FlatAppearance.BorderColor = ModernTheme.Border;
+                btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
+            }
+
+            // Update firewall direction buttons
+            foreach (var btn in themeData.FirewallDirectionButtons)
+            {
+                var btnDir = btn.Tag?.ToString() ?? "";
+                bool isActive = btnDir == themeData.ActiveFirewallDirection;
+                btn.BackColor = isActive ? ModernTheme.Accent : ModernTheme.Surface;
+                btn.ForeColor = isActive ? Color.White : ModernTheme.TextPrimary;
                 btn.FlatAppearance.BorderColor = ModernTheme.Border;
                 btn.FlatAppearance.MouseOverBackColor = ModernTheme.Selection;
             }
@@ -9704,7 +9860,7 @@ namespace RegistryExpert
             using var form = new Form
             {
                 Text = "About Registry Expert",
-                Size = DpiHelper.ScaleSize(480, 450),
+                Size = DpiHelper.ScaleSize(480, 490),
                 StartPosition = FormStartPosition.CenterParent,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
@@ -9725,10 +9881,23 @@ namespace RegistryExpert
                 SizeMode = PictureBoxSizeMode.Zoom
             };
             
-            // Get icon from the form's icon (which is set from registry_fixed.ico)
-            if (this.Icon != null)
+            // Load high-res PNG logo (same as welcome screen); fall back to form icon
+            try
             {
-                iconBox.Image = this.Icon.ToBitmap();
+                var logoPath = Path.Combine(AppContext.BaseDirectory, "registry.png");
+                if (File.Exists(logoPath))
+                {
+                    iconBox.Image = Image.FromFile(logoPath);
+                }
+                else if (this.Icon != null)
+                {
+                    iconBox.Image = this.Icon.ToBitmap();
+                }
+            }
+            catch
+            {
+                if (this.Icon != null)
+                    iconBox.Image = this.Icon.ToBitmap();
             }
             
             var titleLabel = new Label
@@ -9777,23 +9946,13 @@ namespace RegistryExpert
                 AutoSize = true,
                 Location = DpiHelper.ScalePoint(30, 185)
             };
-            
-            // Feedback section
-            var feedbackTitleLabel = new Label
-            {
-                Text = "Feedback",
-                Font = new Font("Segoe UI Semibold", 10F),
-                ForeColor = ModernTheme.TextSecondary,
-                AutoSize = true,
-                Location = DpiHelper.ScalePoint(30, 220)
-            };
-            
+
             var emailLink = new LinkLabel
             {
                 Text = "bowenzhang@microsoft.com",
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Location = DpiHelper.ScalePoint(30, 240),
+                Location = DpiHelper.ScalePoint(30, 205),
                 LinkColor = ModernTheme.Accent,
                 ActiveLinkColor = ModernTheme.AccentDark,
                 VisitedLinkColor = ModernTheme.Accent
@@ -9811,13 +9970,40 @@ namespace RegistryExpert
                 catch { }
             };
             
+            // Feedback section
+            var feedbackTitleLabel = new Label
+            {
+                Text = "Feedback",
+                Font = new Font("Segoe UI Semibold", 10F),
+                ForeColor = ModernTheme.TextSecondary,
+                AutoSize = true,
+                Location = DpiHelper.ScalePoint(30, 240)
+            };
+
+            var feedbackButton = ModernTheme.CreateSecondaryButton("Submit Feedback");
+            feedbackButton.Location = DpiHelper.ScalePoint(30, 262);
+            feedbackButton.Size = DpiHelper.ScaleSize(150, 30);
+            feedbackButton.Font = new Font("Segoe UI", 9F);
+            feedbackButton.Click += (s, ev) =>
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = "https://forms.office.com/r/9JAtABC2Ki",
+                        UseShellExecute = true
+                    });
+                }
+                catch { }
+            };
+            
             // Data Protection Notice link
             var privacyLink = new LinkLabel
             {
                 Text = "Data Protection Notice",
                 Font = ModernTheme.RegularFont,
                 AutoSize = true,
-                Location = DpiHelper.ScalePoint(30, 270),
+                Location = DpiHelper.ScalePoint(30, 305),
                 LinkColor = ModernTheme.Accent,
                 ActiveLinkColor = ModernTheme.AccentDark,
                 VisitedLinkColor = ModernTheme.Accent
@@ -9842,15 +10028,15 @@ namespace RegistryExpert
                 Font = new Font("Segoe UI", 8F),
                 ForeColor = ModernTheme.TextDisabled,
                 AutoSize = true,
-                Location = DpiHelper.ScalePoint(30, 300)
+                Location = DpiHelper.ScalePoint(30, 340)
             };
             
             var closeBtn = ModernTheme.CreateButton("Close", (s, e) => form.Close());
-            closeBtn.Location = DpiHelper.ScalePoint(185, 350);
+            closeBtn.Location = DpiHelper.ScalePoint(185, 385);
             closeBtn.Width = DpiHelper.Scale(100);
             
             panel.Controls.AddRange(new Control[] { iconBox, titleLabel, versionLabel, descLabel, 
-                authorTitleLabel, authorLabel, feedbackTitleLabel, emailLink, privacyLink, hivesLabel, closeBtn });
+                authorTitleLabel, authorLabel, emailLink, feedbackTitleLabel, feedbackButton, privacyLink, hivesLabel, closeBtn });
             form.Controls.Add(panel);
             form.ShowDialog(this);
         }

@@ -80,8 +80,12 @@ namespace RegistryExpert
             _loadMorePanel.Height = DpiHelper.Scale(40);
             
             // Rescale SplitContainer min sizes for new DPI
-            _splitContainer.Panel1MinSize = DpiHelper.Scale(100);
-            _splitContainer.Panel2MinSize = DpiHelper.Scale(80);
+            try
+            {
+                _splitContainer.Panel1MinSize = DpiHelper.Scale(100);
+                _splitContainer.Panel2MinSize = DpiHelper.Scale(80);
+            }
+            catch (InvalidOperationException) { }
         }
 
         private void InitializeComponent()
