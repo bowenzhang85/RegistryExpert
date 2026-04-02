@@ -1,0 +1,751 @@
+<Window x:Class="RegistryExpert.Wpf.Views.CompareWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:RegistryExpert.Wpf.ViewModels"
+        xmlns:helpers="clr-namespace:RegistryExpert.Wpf.Helpers"
+        Title="Compare Registry Hives"
+        Width="1200" Height="750"
+        MinWidth="800" MinHeight="500"
+        WindowStartupLocation="CenterScreen"
+        Style="{DynamicResource ModernWindowStyle}"
+        ShowInTaskbar="True">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <helpers:ValueImageKeyConverter x:Key="ValueImageKeyConverter" />
+
+        <!-- Toggle button for TreeViewItem expand/collapse -->
+        <Style x:Key="CompareExpandCollapseToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" Width="16" Height="16" Padding="4">
+                            <Path x:Name="ExpandPath"
+                                  Data="M 0 0 L 4 4 L 0 8 Z"
+                                  Fill="{DynamicResource TextSecondaryBrush}"
+                                  VerticalAlignment="Center"
+                                  HorizontalAlignment="Center"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <Path.RenderTransform>
+                                    <RotateTransform Angle="0" />
+                                </Path.RenderTransform>
+                            </Path>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ExpandPath" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="90" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ExpandPath" Property="Fill" Value="{DynamicResource TextPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TreeViewItem style for compare trees with IsSelected binding -->
+        <Style x:Key="CompareTreeViewItemStyle" TargetType="TreeViewItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition MinWidth="19" Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition />
+                            </Grid.RowDefinitions>
+
+                            <ToggleButton x:Name="Expander"
+                                          Grid.Column="0"
+                                          Style="{StaticResource CompareExpandCollapseToggleStyle}"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press" />
+
+                            <Border x:Name="Bd"
+                                    Grid.Column="1"
+                                    Background="{TemplateBinding Background}"
+                                    Padding="{TemplateBinding Padding}"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter x:Name="PART_Header"
+                                                  ContentSource="Header"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                            </Border>
+
+                            <ItemsPresenter x:Name="ItemsHost"
+                                            Grid.Row="1"
+                                            Grid.Column="1"
+                                            Visibility="Collapsed" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="HasItems" Value="False">
+                                <Setter TargetName="Expander" Property="Visibility" Value="Hidden" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectionBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Tree node template with diff coloring -->
+        <HierarchicalDataTemplate x:Key="CompareTreeNodeTemplate"
+                                  ItemsSource="{Binding Children}">
+            <StackPanel Orientation="Horizontal">
+                <Image Source="{x:Static helpers:NativeIconHelper.FolderIcon}"
+                       Width="16" Height="16"
+                       RenderOptions.BitmapScalingMode="NearestNeighbor"
+                       VerticalAlignment="Center"
+                       Margin="0,0,6,0" />
+                <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DiffColorKey}" Value="added">
+                                    <Setter Property="Foreground" Value="{DynamicResource DiffAddedBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding DiffColorKey}" Value="removed">
+                                    <Setter Property="Foreground" Value="{DynamicResource DiffRemovedBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </StackPanel>
+        </HierarchicalDataTemplate>
+
+        <!-- DataGrid row style with diff coloring -->
+        <Style x:Key="CompareDataGridRowStyle" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding DiffColorKey}" Value="added">
+                    <Setter Property="Foreground" Value="{DynamicResource DiffAddedBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding DiffColorKey}" Value="removed">
+                    <Setter Property="Foreground" Value="{DynamicResource DiffRemovedBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Shared TextBlock style for diff-colored cell text -->
+        <Style x:Key="DiffTextBlockStyle" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding DiffColorKey}" Value="added">
+                    <Setter Property="Foreground" Value="{DynamicResource DiffAddedBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding DiffColorKey}" Value="removed">
+                    <Setter Property="Foreground" Value="{DynamicResource DiffRemovedBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- LANDING VIEW -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <Grid Visibility="{Binding IsLandingView, Converter={StaticResource BoolToVis}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Left/Right panels -->
+            <Grid Grid.Row="0" Margin="30,20">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- LEFT PANEL -->
+                <Border Grid.Column="0"
+                        Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8"
+                        Padding="24"
+                        Margin="0,0,10,0">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <!-- Step circle -->
+                        <Border Width="44" Height="44" CornerRadius="22"
+                                BorderBrush="{DynamicResource AccentBrush}" BorderThickness="3"
+                                HorizontalAlignment="Center" Margin="0,0,0,16">
+                            <TextBlock Text="1" FontSize="18" FontWeight="Bold"
+                                       Foreground="{DynamicResource AccentBrush}"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+
+                        <TextBlock Text="First Hive" FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,0,0,8" />
+                        <TextBlock Text="Load the first registry hive file"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,0,0,20" />
+
+                        <!-- Load button -->
+                        <Button x:Name="LeftLoadButton"
+                                Content="Load Hive File"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Width="200" Height="40" FontSize="13" FontWeight="SemiBold"
+                                Command="{Binding LoadLeftHiveCommand}"
+                                HorizontalAlignment="Center" />
+
+                        <!-- File name display -->
+                        <TextBlock Text="{Binding LeftFileName}"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Margin="0,16,0,4"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="300">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding LeftFileName}" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <!-- Status text -->
+                        <TextBlock Text="{Binding LeftStatusText}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,4,0,0"
+                                   FontSize="11" />
+
+                        <!-- Loading spinner -->
+                        <Path Width="18" Height="18"
+                              Margin="0,10,0,0"
+                              Data="M 8,2 A 6,6 0 1 1 2,8"
+                              StrokeThickness="2"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Stretch="Uniform"
+                              HorizontalAlignment="Center"
+                              RenderTransformOrigin="0.5,0.5"
+                              Visibility="{Binding LeftIsLoading, Converter={StaticResource BoolToVis}}">
+                            <Path.Stroke>
+                                <SolidColorBrush Color="{DynamicResource {x:Static SystemColors.HighlightColorKey}}" />
+                            </Path.Stroke>
+                            <Path.RenderTransform>
+                                <RotateTransform Angle="0" />
+                            </Path.RenderTransform>
+                            <Path.Style>
+                                <Style TargetType="Path">
+                                    <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding LeftIsLoading}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard x:Name="LeftSpinStoryboard">
+                                                    <Storyboard>
+                                                        <DoubleAnimation
+                                                            Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                            From="0" To="360"
+                                                            Duration="0:0:0.8"
+                                                            RepeatBehavior="Forever" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <StopStoryboard BeginStoryboardName="LeftSpinStoryboard" />
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Path.Style>
+                        </Path>
+                    </StackPanel>
+                </Border>
+
+                <!-- CENTER: Compare button + options -->
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="10,0">
+                    <Button Content="Compare Hives"
+                            Style="{DynamicResource AccentButtonStyle}"
+                            Width="140" Height="44" FontSize="13" FontWeight="Bold"
+                            Command="{Binding CompareCommand}"
+                            Visibility="{Binding CanCompare, Converter={StaticResource BoolToVis}}" />
+
+                    <CheckBox Content="Show differences only"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
+                              IsChecked="{Binding ShowDifferencesOnly}"
+                              Margin="0,12,0,0"
+                              HorizontalAlignment="Center"
+                              Visibility="{Binding CanCompare, Converter={StaticResource BoolToVis}}" />
+                </StackPanel>
+
+                <!-- RIGHT PANEL -->
+                <Border Grid.Column="2"
+                        Background="{DynamicResource SurfaceBrush}"
+                        CornerRadius="8"
+                        Padding="24"
+                        Margin="10,0,0,0">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                        <!-- Step circle -->
+                        <Border Width="44" Height="44" CornerRadius="22"
+                                BorderBrush="{DynamicResource TextSecondaryBrush}" BorderThickness="3"
+                                HorizontalAlignment="Center" Margin="0,0,0,16">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding RightCanLoad}" Value="True">
+                                            <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="2" FontSize="18" FontWeight="Bold"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding RightCanLoad}" Value="True">
+                                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Border>
+
+                        <TextBlock Text="Second Hive" FontSize="16" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,0,0,8" />
+                        <TextBlock Text="Load a second hive of the same type"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,0,0,20" />
+
+                        <!-- Load button -->
+                        <Button x:Name="RightLoadButton"
+                                Content="Load Hive File"
+                                Style="{DynamicResource AccentButtonStyle}"
+                                Width="200" Height="40" FontSize="13" FontWeight="SemiBold"
+                                Command="{Binding LoadRightHiveCommand}"
+                                IsEnabled="{Binding RightCanLoad}"
+                                HorizontalAlignment="Center" />
+
+                        <!-- File name display -->
+                        <TextBlock Text="{Binding RightFileName}"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Margin="0,16,0,4"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="300">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding RightFileName}" Value="">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+
+                        <!-- Status text -->
+                        <TextBlock Text="{Binding RightStatusText}"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" Margin="0,4,0,0"
+                                   FontSize="11" />
+
+                        <!-- Loading spinner -->
+                        <Path Width="18" Height="18"
+                              Margin="0,10,0,0"
+                              Data="M 8,2 A 6,6 0 1 1 2,8"
+                              StrokeThickness="2"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round"
+                              Stretch="Uniform"
+                              HorizontalAlignment="Center"
+                              RenderTransformOrigin="0.5,0.5"
+                              Visibility="{Binding RightIsLoading, Converter={StaticResource BoolToVis}}">
+                            <Path.RenderTransform>
+                                <RotateTransform Angle="0" />
+                            </Path.RenderTransform>
+                            <Path.Style>
+                                <Style TargetType="Path">
+                                    <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding RightIsLoading}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard x:Name="RightSpinStoryboard">
+                                                    <Storyboard>
+                                                        <DoubleAnimation
+                                                            Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                            From="0" To="360"
+                                                            Duration="0:0:0.8"
+                                                            RepeatBehavior="Forever" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <StopStoryboard BeginStoryboardName="RightSpinStoryboard" />
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Path.Style>
+                        </Path>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- COMPARISON VIEW -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <Grid>
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsComparisonView}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="4" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- LEFT PANE -->
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="3*" />
+                    <RowDefinition Height="4" />
+                    <RowDefinition Height="2*" />
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}"
+                        Padding="8,6" BorderThickness="0,0,0,1"
+                        BorderBrush="{DynamicResource BorderBrush}">
+                    <DockPanel>
+                        <Button DockPanel.Dock="Left"
+                                Content="Back"
+                                Command="{Binding BackToLandingCommand}"
+                                Padding="8,4" Margin="0,0,8,0"
+                                Foreground="{DynamicResource TextSecondaryBrush}"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                Cursor="Hand" />
+
+                        <!-- Help icon with color legend popup -->
+                        <Button x:Name="HelpButton" DockPanel.Dock="Right"
+                                Background="Transparent" BorderThickness="0"
+                                Cursor="Hand" Padding="4,2" Margin="4,0,0,0"
+                                ToolTip="Color legend"
+                                Click="HelpButton_Click">
+                            <Grid Width="18" Height="18">
+                                <Ellipse Stroke="{DynamicResource TextSecondaryBrush}" StrokeThickness="1.2" Fill="Transparent" />
+                                <TextBlock Text="?" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Margin="0,-1,0,0" />
+                            </Grid>
+                        </Button>
+                        <Popup x:Name="HelpPopup" PlacementTarget="{Binding ElementName=HelpButton}"
+                               Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                            <Border Background="{DynamicResource SurfaceBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="6"
+                                    Padding="14,10" Margin="4">
+                                <Border.Effect>
+                                    <DropShadowEffect BlurRadius="8" ShadowDepth="2" Opacity="0.3" />
+                                </Border.Effect>
+                                <StackPanel>
+                                    <TextBlock Text="Color Legend" FontWeight="SemiBold" FontSize="13"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               Margin="0,0,0,8" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                        <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2"
+                                                   Fill="{DynamicResource DiffAddedBrush}" Margin="0,0,8,0" />
+                                        <TextBlock Text="Unique to this hive (not in the other)"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                        <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2"
+                                                   Fill="{DynamicResource DiffRemovedBrush}" Margin="0,0,8,0" />
+                                        <TextBlock Text="Value differs between hives"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Rectangle Width="12" Height="12" RadiusX="2" RadiusY="2"
+                                                   Fill="{DynamicResource TextPrimaryBrush}" Margin="0,0,8,0" />
+                                        <TextBlock Text="Identical in both hives"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </Popup>
+
+                        <TextBlock Text="{Binding LeftFileName}"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   FontWeight="SemiBold" FontSize="13"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                </Border>
+
+                <!-- Path -->
+                <Border Grid.Row="1" Background="{DynamicResource BackgroundBrush}"
+                        Padding="8,4" BorderThickness="0,0,0,1"
+                        BorderBrush="{DynamicResource BorderBrush}">
+                    <TextBlock Text="{Binding LeftPathText}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11" TextTrimming="CharacterEllipsis" />
+                </Border>
+
+                <!-- Tree -->
+                <TreeView x:Name="LeftTree" Grid.Row="2"
+                          ItemsSource="{Binding LeftTreeRoots}"
+                          ItemContainerStyle="{StaticResource CompareTreeViewItemStyle}"
+                          ItemTemplate="{StaticResource CompareTreeNodeTemplate}"
+                          Background="{DynamicResource BackgroundBrush}"
+                          BorderThickness="0"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          SelectedItemChanged="LeftTree_SelectedItemChanged"
+                          AutomationProperties.Name="Left hive tree" />
+
+                <!-- Horizontal splitter -->
+                <GridSplitter Grid.Row="3" Height="4"
+                              HorizontalAlignment="Stretch"
+                              Background="{DynamicResource BorderBrush}" />
+
+                <!-- Values grid -->
+                <DataGrid x:Name="LeftValuesGrid" Grid.Row="4"
+                          ItemsSource="{Binding LeftValues}"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          HeadersVisibility="Column"
+                          GridLinesVisibility="None"
+                          Background="{DynamicResource BackgroundBrush}"
+                          BorderThickness="0"
+                          RowStyle="{StaticResource CompareDataGridRowStyle}"
+                          SelectionChanged="LeftValuesGrid_SelectionChanged"
+                          AutomationProperties.Name="Left hive values">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Name" Width="150" SortMemberPath="Name">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="4,2">
+                                        <Image Source="{Binding ImageKey, Converter={StaticResource ValueImageKeyConverter}}"
+                                               Width="16" Height="16"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                                                   Style="{StaticResource DiffTextBlockStyle}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Type" Width="100" SortMemberPath="Type">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Type}" Margin="4,0" VerticalAlignment="Center"
+                                               Style="{StaticResource DiffTextBlockStyle}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Value" Width="*" SortMemberPath="Data">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Data}" Margin="4,0" VerticalAlignment="Center"
+                                               Style="{StaticResource DiffTextBlockStyle}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+
+            <!-- Vertical splitter -->
+            <GridSplitter Grid.Column="1" Width="4"
+                          HorizontalAlignment="Stretch"
+                          Background="{DynamicResource BorderBrush}" />
+
+            <!-- RIGHT PANE -->
+            <Grid Grid.Column="2">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="3*" />
+                    <RowDefinition Height="4" />
+                    <RowDefinition Height="2*" />
+                </Grid.RowDefinitions>
+
+                <!-- Header -->
+                <Border Grid.Row="0" Background="{DynamicResource SurfaceBrush}"
+                        Padding="8,6" BorderThickness="0,0,0,1"
+                        BorderBrush="{DynamicResource BorderBrush}">
+                    <DockPanel>
+                        <TextBlock Text="{Binding RightFileName}"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   FontWeight="SemiBold" FontSize="13"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                </Border>
+
+                <!-- Path -->
+                <Border Grid.Row="1" Background="{DynamicResource BackgroundBrush}"
+                        Padding="8,4" BorderThickness="0,0,0,1"
+                        BorderBrush="{DynamicResource BorderBrush}">
+                    <TextBlock Text="{Binding RightPathText}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11" TextTrimming="CharacterEllipsis" />
+                </Border>
+
+                <!-- Tree -->
+                <TreeView x:Name="RightTree" Grid.Row="2"
+                          ItemsSource="{Binding RightTreeRoots}"
+                          ItemContainerStyle="{StaticResource CompareTreeViewItemStyle}"
+                          ItemTemplate="{StaticResource CompareTreeNodeTemplate}"
+                          Background="{DynamicResource BackgroundBrush}"
+                          BorderThickness="0"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          SelectedItemChanged="RightTree_SelectedItemChanged"
+                          AutomationProperties.Name="Right hive tree" />
+
+                <!-- Horizontal splitter -->
+                <GridSplitter Grid.Row="3" Height="4"
+                              HorizontalAlignment="Stretch"
+                              Background="{DynamicResource BorderBrush}" />
+
+                <!-- Values grid -->
+                <DataGrid x:Name="RightValuesGrid" Grid.Row="4"
+                          ItemsSource="{Binding RightValues}"
+                          AutoGenerateColumns="False"
+                          IsReadOnly="True"
+                          SelectionMode="Single"
+                          SelectionUnit="FullRow"
+                          HeadersVisibility="Column"
+                          GridLinesVisibility="None"
+                          Background="{DynamicResource BackgroundBrush}"
+                          BorderThickness="0"
+                          RowStyle="{StaticResource CompareDataGridRowStyle}"
+                          SelectionChanged="RightValuesGrid_SelectionChanged"
+                          AutomationProperties.Name="Right hive values">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Name" Width="150" SortMemberPath="Name">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="4,2">
+                                        <Image Source="{Binding ImageKey, Converter={StaticResource ValueImageKeyConverter}}"
+                                               Width="16" Height="16"
+                                               RenderOptions.BitmapScalingMode="HighQuality"
+                                               Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"
+                                                   Style="{StaticResource DiffTextBlockStyle}" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Type" Width="100" SortMemberPath="Type">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Type}" Margin="4,0" VerticalAlignment="Center"
+                                               Style="{StaticResource DiffTextBlockStyle}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="Value" Width="*" SortMemberPath="Data">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Data}" Margin="4,0" VerticalAlignment="Center"
+                                               Style="{StaticResource DiffTextBlockStyle}" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Grid>
+        </Grid>
+
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <!-- PROGRESS OVERLAY (during comparison) -->
+        <!-- ═══════════════════════════════════════════════════════════ -->
+        <Grid Visibility="{Binding IsComparing, Converter={StaticResource BoolToVis}}"
+              Background="{DynamicResource OverlayBackgroundBrush}">
+            <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8"
+                    Padding="30,20" HorizontalAlignment="Center" VerticalAlignment="Center"
+                    MinWidth="300">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding CompareProgressText}" FontSize="14"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               HorizontalAlignment="Center" Margin="0,0,0,16" />
+
+                    <!-- Spinning arc -->
+                    <Path Width="28" Height="28"
+                          Data="M 12,3 A 9,9 0 1 1 3,12"
+                          StrokeThickness="2.5"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          Stretch="Uniform"
+                          HorizontalAlignment="Center"
+                          RenderTransformOrigin="0.5,0.5">
+                        <Path.Stroke>
+                            <SolidColorBrush Color="{Binding Source={StaticResource AccentBrush}, Path=Color, FallbackValue=#0078D4}" />
+                        </Path.Stroke>
+                        <Path.RenderTransform>
+                            <RotateTransform Angle="0" />
+                        </Path.RenderTransform>
+                        <Path.Style>
+                            <Style TargetType="Path">
+                                <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsComparing}" Value="True">
+                                        <DataTrigger.EnterActions>
+                                            <BeginStoryboard x:Name="CompareSpinStoryboard">
+                                                <Storyboard>
+                                                    <DoubleAnimation
+                                                        Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                        From="0" To="360"
+                                                        Duration="0:0:0.8"
+                                                        RepeatBehavior="Forever" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.EnterActions>
+                                        <DataTrigger.ExitActions>
+                                            <StopStoryboard BeginStoryboardName="CompareSpinStoryboard" />
+                                        </DataTrigger.ExitActions>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Path.Style>
+                    </Path>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

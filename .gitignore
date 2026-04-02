@@ -3,6 +3,7 @@ bin/
 obj/
 out/
 publish/
+publish-wpf/
 
 # User-specific files
 *.user

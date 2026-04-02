@@ -13,10 +13,10 @@ steps:
     packageType: 'sdk'
     version: '8.0.x'
 
-- script: dotnet restore
+- script: dotnet restore RegistryExpert.Wpf/RegistryExpert.Wpf.csproj
   displayName: 'Restore dependencies'
 
-- script: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $(Build.ArtifactStagingDirectory)
+- script: dotnet publish RegistryExpert.Wpf/RegistryExpert.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $(Build.ArtifactStagingDirectory)
   displayName: 'Build and Publish'
 
 - task: PublishBuildArtifacts@1

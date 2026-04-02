@@ -6,6 +6,8 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
+using RegistryExpert.Core;
 using RegistryExpert.Wpf.Helpers;
 using RegistryExpert.Wpf.ViewModels;
 
@@ -30,23 +32,43 @@ namespace RegistryExpert.Wpf.Views
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
+
+            // Restore saved theme
+            var settings = ViewModel.Settings;
+            if (settings.Theme == "Light")
+                ThemeManager.SetTheme(ThemeManager.Theme.Light);
+
             ThemeManager.ApplyWindowChrome(this);
             ThemeManager.ThemeChanged += OnThemeChanged;
+
             ViewModel.RequestOpenSearch += OnRequestOpenSearch;
             ViewModel.RequestOpenAnalyze += OnRequestOpenAnalyze;
             ViewModel.RequestOpenStatistics += OnRequestOpenStatistics;
             ViewModel.RequestOpenCompare += OnRequestOpenCompare;
             ViewModel.RequestOpenTimeline += OnRequestOpenTimeline;
+            ViewModel.RequestOpenAbout += OnRequestOpenAbout;
+            ViewModel.RequestShowUpdateResult += OnRequestShowUpdateResult;
+            ViewModel.RequestScrollToNode += OnRequestScrollToNode;
+
+            // Auto-check for updates on startup
+            _ = CheckForUpdatesOnStartupAsync();
         }
 
         private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
+            // Save settings
+            var settings = ViewModel.Settings;
+            settings.Save();
+
             ThemeManager.ThemeChanged -= OnThemeChanged;
             ViewModel.RequestOpenSearch -= OnRequestOpenSearch;
             ViewModel.RequestOpenAnalyze -= OnRequestOpenAnalyze;
             ViewModel.RequestOpenStatistics -= OnRequestOpenStatistics;
             ViewModel.RequestOpenCompare -= OnRequestOpenCompare;
             ViewModel.RequestOpenTimeline -= OnRequestOpenTimeline;
+            ViewModel.RequestOpenAbout -= OnRequestOpenAbout;
+            ViewModel.RequestShowUpdateResult -= OnRequestShowUpdateResult;
+            ViewModel.RequestScrollToNode -= OnRequestScrollToNode;
         }
 
         private void OnThemeChanged(object? sender, EventArgs e)
@@ -66,9 +88,63 @@ namespace RegistryExpert.Wpf.Views
             }
 
             _searchWindow = new SearchWindow(ViewModel);
-            _searchWindow.Owner = this;
             _searchWindow.Closed += (s, e) => _searchWindow = null;
             _searchWindow.Show();
+        }
+
+        // ── Scroll-to-node (search navigation) ───────────────────────────
+
+        private void OnRequestScrollToNode(RegistryKeyNode node, string? valueName)
+        {
+            // Build the ancestor chain from root to target node
+            var chain = new System.Collections.Generic.List<RegistryKeyNode>();
+            var current = node;
+            while (current != null)
+            {
+                chain.Add(current);
+                current = current.Parent;
+            }
+            chain.Reverse(); // root -> ... -> target
+
+            // Defer until layout is complete, then force-realize each container along the path
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+            {
+                ItemsControl container = RegistryTree;
+
+                foreach (var pathNode in chain)
+                {
+                    // Force the virtualizing panel to realize this item's container
+                    int index = container.Items.IndexOf(pathNode);
+                    if (index >= 0)
+                    {
+                        var panel = FindVisualChild<VirtualizingStackPanel>(container);
+                        panel?.BringIndexIntoViewPublic(index);
+                    }
+
+                    // Now get the realized TreeViewItem
+                    if (container.ItemContainerGenerator.ContainerFromItem(pathNode) is not TreeViewItem tvi)
+                        break;
+
+                    tvi.IsExpanded = true;
+                    tvi.UpdateLayout(); // force child containers to be generated
+
+                    if (pathNode == node)
+                    {
+                        // Final node — select, scroll into view, and focus
+                        tvi.IsSelected = true;
+                        tvi.BringIntoView();
+                        tvi.Focus();
+                    }
+
+                    container = tvi;
+                }
+
+                // Scroll the ValuesGrid to the selected value
+                if (valueName != null && ViewModel.SelectedValue != null)
+                {
+                    ValuesGrid.ScrollIntoView(ViewModel.SelectedValue);
+                }
+            });
         }
 
         // ── Analyze window ────────────────────────────────────────────────
@@ -186,6 +262,179 @@ namespace RegistryExpert.Wpf.Views
                     System.Windows.MessageBoxButton.OK,
                     System.Windows.MessageBoxImage.Error);
                 _timelineWindow = null;
+            }
+        }
+
+        // ── About window ─────────────────────────────────────────────────
+
+        private void OnRequestOpenAbout()
+        {
+            var aboutWindow = new AboutWindow();
+            aboutWindow.Owner = this;
+            aboutWindow.ShowDialog();
+        }
+
+        // ── Update check ──────────────────────────────────────────────────
+
+        private void OnRequestShowUpdateResult(UpdateInfo? info, bool isManualCheck)
+        {
+            if (info == null)
+            {
+                if (isManualCheck)
+                    MessageBox.Show("Unable to check for updates. Please check your internet connection.",
+                        "Update Check Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            if (!info.UpdateAvailable)
+            {
+                if (isManualCheck)
+                    MessageBox.Show($"You're up to date!\n\nRegistry Expert {info.CurrentVersion} is the latest version.",
+                        "No Updates Available", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            ShowUpdateAvailableDialog(info);
+        }
+
+        private void ShowUpdateAvailableDialog(UpdateInfo info)
+        {
+            var dialog = new Window
+            {
+                Title = "Update Available",
+                Width = 500,
+                Height = 450,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ShowInTaskbar = false,
+                Style = (Style)FindResource("ModernWindowStyle")
+            };
+
+            var mainPanel = new StackPanel { Margin = new Thickness(24) };
+
+            // Title
+            mainPanel.Children.Add(new TextBlock
+            {
+                Text = "A new version is available!",
+                FontFamily = new FontFamily("Segoe UI"),
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 14,
+                Foreground = (Brush)FindResource("AccentBrush"),
+                Margin = new Thickness(0, 0, 0, 16)
+            });
+
+            // Version panel
+            var versionBorder = new Border
+            {
+                Background = (Brush)FindResource("SurfaceBrush"),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(16, 12, 16, 12),
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+            var versionPanel = new StackPanel();
+            versionPanel.Children.Add(new TextBlock
+            {
+                Text = $"Current version: {info.CurrentVersion}",
+                Foreground = (Brush)FindResource("TextSecondaryBrush"),
+                FontSize = 13,
+                Margin = new Thickness(0, 0, 0, 4)
+            });
+            versionPanel.Children.Add(new TextBlock
+            {
+                Text = $"Latest version: {info.LatestVersion}",
+                Foreground = (Brush)FindResource("TextPrimaryBrush"),
+                FontWeight = FontWeights.Bold,
+                FontSize = 13
+            });
+            versionBorder.Child = versionPanel;
+            mainPanel.Children.Add(versionBorder);
+
+            // Release notes header
+            mainPanel.Children.Add(new TextBlock
+            {
+                Text = "New Features",
+                FontWeight = FontWeights.Bold,
+                Foreground = (Brush)FindResource("TextPrimaryBrush"),
+                FontSize = 13,
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+
+            // Release notes
+            var notesBox = new TextBox
+            {
+                Text = info.ReleaseNotes,
+                IsReadOnly = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Background = (Brush)FindResource("SurfaceBrush"),
+                Foreground = (Brush)FindResource("TextPrimaryBrush"),
+                CaretBrush = (Brush)FindResource("TextPrimaryBrush"),
+                BorderThickness = new Thickness(1),
+                BorderBrush = (Brush)FindResource("BorderBrush"),
+                Padding = new Thickness(12, 8, 12, 8),
+                FontSize = 12,
+                Height = 140
+            };
+            mainPanel.Children.Add(notesBox);
+
+            // Button panel
+            var buttonPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 16, 0, 0)
+            };
+
+            var downloadBtn = new Button
+            {
+                Content = "Download",
+                Style = (Style)FindResource("AccentButtonStyle"),
+                Width = 100,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            downloadBtn.Click += (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(info.ReleaseUrl) && info.ReleaseUrl.StartsWith("https://github.com/"))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = info.ReleaseUrl,
+                        UseShellExecute = true
+                    });
+                }
+                dialog.Close();
+            };
+            buttonPanel.Children.Add(downloadBtn);
+
+            var laterBtn = new Button
+            {
+                Content = "Later",
+                Style = (Style)FindResource("SecondaryButtonStyle"),
+                Width = 100
+            };
+            laterBtn.Click += (s, e) => dialog.Close();
+            buttonPanel.Children.Add(laterBtn);
+
+            mainPanel.Children.Add(buttonPanel);
+
+            dialog.Content = mainPanel;
+            dialog.Loaded += (s, e) => ThemeManager.ApplyWindowChrome(dialog);
+            dialog.ShowDialog();
+        }
+
+        private async Task CheckForUpdatesOnStartupAsync()
+        {
+            try
+            {
+                await Task.Delay(2000);
+                var info = await UpdateChecker.CheckForUpdatesAsync();
+                if (info?.UpdateAvailable == true)
+                    ShowUpdateAvailableDialog(info);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Startup update check failed: {ex.Message}");
             }
         }
 

@@ -14,7 +14,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 echo [1/2] Restoring packages...
-dotnet restore RegistryExpert.csproj
+dotnet restore RegistryExpert.Wpf\RegistryExpert.Wpf.csproj
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Package restore failed
     pause
@@ -23,7 +23,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo [2/2] Building single-file executable...
-dotnet publish RegistryExpert.csproj -c Release -r win-x64 -o .\publish
+dotnet publish RegistryExpert.Wpf\RegistryExpert.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\publish-wpf
 if %ERRORLEVEL% neq 0 (
     echo ERROR: Build failed
     pause
@@ -36,7 +36,7 @@ echo    Build Complete!
 echo ========================================
 echo.
 echo The executable is located at:
-echo   .\publish\RegistryExpert.exe
+echo   .\publish-wpf\RegistryExpert.exe
 echo.
 echo This is a single portable .exe file.
 echo.

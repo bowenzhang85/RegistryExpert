@@ -88,9 +88,9 @@
                 <MenuItem Header="_Compare" InputGestureText="Ctrl+M" Command="{Binding OpenCompareCommand}" />
             </MenuItem>
             <MenuItem Header="_Help">
-                <MenuItem Header="Check for _Updates" IsEnabled="False" />
+                <MenuItem Header="Check for _Updates" Command="{Binding CheckForUpdatesCommand}" />
                 <Separator />
-                <MenuItem Header="_About" IsEnabled="False" />
+                <MenuItem Header="_About" Command="{Binding AboutCommand}" />
             </MenuItem>
         </Menu>
 

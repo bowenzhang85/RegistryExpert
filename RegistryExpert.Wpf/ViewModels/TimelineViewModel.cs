@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -358,7 +359,7 @@ namespace RegistryExpert.Wpf.ViewModels
             _analyzeLogsCts?.Cancel();
             _analyzeLogsCts?.Dispose();
             _analyzeLogsCts = new CancellationTokenSource();
-            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, _analyzeLogsCts.Token);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(token, _analyzeLogsCts.Token);
 
             try
             {
@@ -636,38 +637,45 @@ namespace RegistryExpert.Wpf.ViewModels
 
         private async void OnBrowseLogs()
         {
-            var dlg = new Microsoft.Win32.OpenFileDialog
-            {
-                Title = "Select Transaction Log Files",
-                Filter = "Registry Log Files (*.LOG1;*.LOG2)|*.LOG1;*.LOG2|All Files (*.*)|*.*",
-                Multiselect = true
-            };
-
-            var hivePath = _activeHive.Parser.FilePath;
-            if (!string.IsNullOrEmpty(hivePath))
-                dlg.InitialDirectory = System.IO.Path.GetDirectoryName(hivePath) ?? "";
-
-            if (dlg.ShowDialog() != true) return;
-
-            _manualLogPaths = new List<string>(dlg.FileNames);
-
-            if (_allEntries.Count == 0)
-            {
-                StatusText = $"Selected {_manualLogPaths.Count} log file(s). Click 'Scan' to load timeline with log analysis.";
-                return;
-            }
-
-            if (string.IsNullOrEmpty(hivePath)) return;
-
-            ShowProgress = true;
             try
             {
-                await AnalyzeTransactionLogsAsync(hivePath, _manualLogPaths, CancellationToken.None);
-                ApplyFilter();
+                var dlg = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "Select Transaction Log Files",
+                    Filter = "Registry Log Files (*.LOG1;*.LOG2)|*.LOG1;*.LOG2|All Files (*.*)|*.*",
+                    Multiselect = true
+                };
+
+                var hivePath = _activeHive.Parser.FilePath;
+                if (!string.IsNullOrEmpty(hivePath))
+                    dlg.InitialDirectory = System.IO.Path.GetDirectoryName(hivePath) ?? "";
+
+                if (dlg.ShowDialog() != true) return;
+
+                _manualLogPaths = new List<string>(dlg.FileNames);
+
+                if (_allEntries.Count == 0)
+                {
+                    StatusText = $"Selected {_manualLogPaths.Count} log file(s). Click 'Scan' to load timeline with log analysis.";
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(hivePath)) return;
+
+                ShowProgress = true;
+                try
+                {
+                    await AnalyzeTransactionLogsAsync(hivePath, _manualLogPaths, CancellationToken.None);
+                    ApplyFilter();
+                }
+                finally
+                {
+                    ShowProgress = false;
+                }
             }
-            finally
+            catch (Exception ex)
             {
-                ShowProgress = false;
+                Debug.WriteLine($"OnBrowseLogs error: {ex.Message}");
             }
         }
 

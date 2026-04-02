@@ -1,0 +1,513 @@
+<Window x:Class="RegistryExpert.Wpf.Views.StatisticsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:RegistryExpert.Wpf.ViewModels"
+        xmlns:helpers="clr-namespace:RegistryExpert.Wpf.Helpers"
+        Title="{Binding WindowTitle}"
+        Width="900" Height="650"
+        MinWidth="700" MinHeight="500"
+        WindowStartupLocation="CenterScreen"
+        Style="{DynamicResource ModernWindowStyle}"
+        ShowInTaskbar="True">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <helpers:DoubleToGridLengthConverter x:Key="DoubleToGridLength" />
+
+        <!-- Stat card accent line brush lookup by key -->
+        <Style x:Key="StatCardBorder" TargetType="Border">
+            <Setter Property="Margin" Value="0,0,12,0" />
+            <Setter Property="Width" Value="170" />
+            <Setter Property="Height" Value="50" />
+        </Style>
+
+        <!-- Toggle button for TreeViewItem expand/collapse -->
+        <Style x:Key="ExpandCollapseToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" Width="16" Height="16" Padding="4">
+                            <Path x:Name="ExpandPath"
+                                  Data="M 0 0 L 4 4 L 0 8 Z"
+                                  Fill="{DynamicResource TextSecondaryBrush}"
+                                  VerticalAlignment="Center"
+                                  HorizontalAlignment="Center"
+                                  RenderTransformOrigin="0.5,0.5">
+                                <Path.RenderTransform>
+                                    <RotateTransform Angle="0" />
+                                </Path.RenderTransform>
+                            </Path>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="ExpandPath" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="90" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ExpandPath" Property="Fill" Value="{DynamicResource TextPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- TreeViewItem style with full-width stretching content.
+             Default Aero2 template uses Width="Auto" for the header column,
+             so HorizontalContentAlignment="Stretch" has no effect.
+             This template changes it to Width="*" so bar charts fill available space. -->
+        <Style x:Key="StretchTreeViewItemStyle" TargetType="TreeViewItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="2,0" />
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TreeViewItem">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition MinWidth="19" Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition />
+                            </Grid.RowDefinitions>
+
+                            <!-- Expand/collapse toggle -->
+                            <ToggleButton x:Name="Expander"
+                                          Grid.Column="0"
+                                          Style="{StaticResource ExpandCollapseToggleStyle}"
+                                          IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press" />
+
+                            <!-- Header content — now in a * column so it stretches -->
+                            <Border x:Name="Bd"
+                                    Grid.Column="1"
+                                    Background="{TemplateBinding Background}"
+                                    Padding="{TemplateBinding Padding}"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter x:Name="PART_Header"
+                                                  ContentSource="Header"
+                                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                            </Border>
+
+                            <!-- Child items (indented by starting at column 1) -->
+                            <ItemsPresenter x:Name="ItemsHost"
+                                            Grid.Row="1"
+                                            Grid.Column="1"
+                                            Visibility="Collapsed" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="HasItems" Value="False">
+                                <Setter TargetName="Expander" Property="Visibility" Value="Hidden" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectionBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="ItemsControl.AlternationIndex" Value="1">
+                    <Setter Property="Background" Value="{DynamicResource SurfaceLightBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Bar chart TreeView item template -->
+        <HierarchicalDataTemplate x:Key="KeyStatNodeTemplate"
+                                  DataType="{x:Type vm:StatisticsViewModel+KeyStatNode}"
+                                  ItemsSource="{Binding Children}">
+            <Grid Height="20" Margin="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="{Binding NameColumnWidth, Converter={StaticResource DoubleToGridLength}}" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="100" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Key name + loading spinner -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding DisplayName}"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               FontSize="12">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="ToolTip" Value="{Binding FullPath}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsMoreNode}" Value="True">
+                                        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                        <Setter Property="FontWeight" Value="SemiBold" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsValueNode}" Value="True">
+                                        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                        <Setter Property="FontStyle" Value="Italic" />
+                                        <Setter Property="ToolTip" Value="{Binding ValueTypeName}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- Small spinning arc (visible only while loading children) -->
+                    <Path Width="12" Height="12"
+                          Margin="6,0,0,0"
+                          Data="M 5,1 A 4,4 0 1 1 1,5"
+                          StrokeThickness="1.5"
+                          StrokeStartLineCap="Round"
+                          StrokeEndLineCap="Round"
+                          Stretch="Uniform"
+                          RenderTransformOrigin="0.5,0.5">
+                        <Path.RenderTransform>
+                            <RotateTransform Angle="0" />
+                        </Path.RenderTransform>
+                        <Path.Style>
+                            <Style TargetType="Path">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Setter Property="Stroke" Value="{DynamicResource AccentBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsLoading}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <DataTrigger.EnterActions>
+                                            <BeginStoryboard x:Name="SpinStoryboard">
+                                                <Storyboard>
+                                                    <DoubleAnimation
+                                                        Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
+                                                        From="0" To="360"
+                                                        Duration="0:0:0.8"
+                                                        RepeatBehavior="Forever" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.EnterActions>
+                                        <DataTrigger.ExitActions>
+                                            <StopStoryboard BeginStoryboardName="SpinStoryboard" />
+                                        </DataTrigger.ExitActions>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Path.Style>
+                    </Path>
+                </StackPanel>
+
+                <!-- Bar chart rectangle -->
+                <Rectangle Grid.Column="1"
+                            Width="{Binding BarWidth}"
+                           Height="12"
+                           HorizontalAlignment="Left"
+                           VerticalAlignment="Center"
+                           RadiusX="2" RadiusY="2"
+                           Margin="8,0,0,0">
+                    <Rectangle.Style>
+                        <Style TargetType="Rectangle">
+                            <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding BarBrushKey}" Value="SuccessBrush">
+                                    <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding BarBrushKey}" Value="WarningBrush">
+                                    <Setter Property="Fill" Value="{DynamicResource WarningBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding BarBrushKey}" Value="InfoBrush">
+                                    <Setter Property="Fill" Value="{DynamicResource InfoBrush}" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding BarWidth}" Value="0">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Rectangle.Style>
+                </Rectangle>
+
+                <!-- Formatted value -->
+                <TextBlock Grid.Column="2"
+                           Text="{Binding FormattedValue}"
+                           VerticalAlignment="Center"
+                           HorizontalAlignment="Right"
+                           Margin="0,0,12,0"
+                           Foreground="{DynamicResource TextSecondaryBrush}"
+                           FontSize="12"
+                           FontFamily="Consolas" />
+            </Grid>
+        </HierarchicalDataTemplate>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />  <!-- Header -->
+            <RowDefinition Height="*" />     <!-- Tab content -->
+        </Grid.RowDefinitions>
+
+        <!-- ═══ Header Panel ═══ -->
+        <Border Grid.Row="0"
+                Background="{DynamicResource SurfaceBrush}"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="16,12">
+            <StackPanel>
+                <!-- Title row with optional hive selector -->
+                <DockPanel>
+                    <TextBlock Text="Registry Statistics"
+                               DockPanel.Dock="Left"
+                               FontSize="18" FontWeight="Bold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               VerticalAlignment="Center" />
+
+                    <!-- Hive selector -->
+                    <StackPanel Orientation="Horizontal"
+                                DockPanel.Dock="Left"
+                                Margin="20,0,0,0"
+                                Visibility="{Binding ShowHiveSelector, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Hive:"
+                                   VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   Margin="0,0,8,0" />
+                        <ComboBox ItemsSource="{Binding HiveNames}"
+                                  SelectedItem="{Binding SelectedHiveName}"
+                                  Width="160"
+                                  VerticalAlignment="Center" />
+                    </StackPanel>
+
+                    <!-- Spacer -->
+                    <TextBlock />
+                </DockPanel>
+
+                <!-- Stat cards row -->
+                <ItemsControl ItemsSource="{Binding StatCards}" Margin="0,12,0,0">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:StatisticsViewModel+StatCardItem}">
+                            <Border Margin="0,0,12,0" Width="170" Height="50"
+                                    Background="Transparent">
+                                <Grid>
+                                    <!-- Accent line -->
+                                    <Rectangle Width="3" HorizontalAlignment="Left"
+                                               VerticalAlignment="Stretch">
+                                        <Rectangle.Style>
+                                            <Style TargetType="Rectangle">
+                                                <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding BrushKey}" Value="SuccessBrush">
+                                                        <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding BrushKey}" Value="WarningBrush">
+                                                        <Setter Property="Fill" Value="{DynamicResource WarningBrush}" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding BrushKey}" Value="InfoBrush">
+                                                        <Setter Property="Fill" Value="{DynamicResource InfoBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Rectangle.Style>
+                                    </Rectangle>
+
+                                    <!-- Label + Value -->
+                                    <StackPanel Margin="12,4,0,4" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Label}"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                                        <TextBlock Text="{Binding Value}"
+                                                   FontSize="15" FontWeight="Bold"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ Tab Control ═══ -->
+        <TabControl Grid.Row="1"
+                    SelectedIndex="{Binding SelectedTabIndex}"
+                    Background="{DynamicResource BackgroundBrush}"
+                    BorderThickness="0"
+                    Padding="8">
+
+            <!-- Key Counts Tab -->
+            <TabItem Header="Key Counts (Bloat Detection)">
+                <Grid>
+                    <!-- TreeView with bar charts -->
+                    <TreeView x:Name="KeyCountTree"
+                              ItemsSource="{Binding KeyCountNodes}"
+                              ItemTemplate="{StaticResource KeyStatNodeTemplate}"
+                              ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"
+                              Background="{DynamicResource BackgroundBrush}"
+                              BorderThickness="0"
+                              AlternationCount="2"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    </TreeView>
+
+                    <!-- Empty state -->
+                    <TextBlock Text="No data to display"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               Foreground="{DynamicResource TextSecondaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsAnalyzing}" Value="False" />
+                                            <Condition Binding="{Binding KeyCountNodes.Count}" Value="0" />
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- Loading overlay (must be after TreeView to render on top) -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsAnalyzing, Converter={StaticResource BoolToVis}}">
+                        <ProgressBar IsIndeterminate="True"
+                                     Width="200" Height="4"
+                                     Margin="0,0,0,12"
+                                     Foreground="{DynamicResource AccentBrush}"
+                                     Background="{DynamicResource SurfaceLightBrush}"
+                                     BorderThickness="0" />
+                        <TextBlock Text="Analyzing registry structure..."
+                                   HorizontalAlignment="Center"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- Data Sizes Tab -->
+            <TabItem Header="Data Sizes">
+                <Grid>
+                    <!-- TreeView with bar charts -->
+                    <TreeView x:Name="DataSizeTree"
+                              ItemsSource="{Binding DataSizeNodes}"
+                              ItemTemplate="{StaticResource KeyStatNodeTemplate}"
+                              ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"
+                              Background="{DynamicResource BackgroundBrush}"
+                              BorderThickness="0"
+                              AlternationCount="2"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    </TreeView>
+
+                    <!-- Empty state -->
+                    <TextBlock Text="No data to display"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               Foreground="{DynamicResource TextSecondaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsAnalyzing}" Value="False" />
+                                            <Condition Binding="{Binding DataSizeNodes.Count}" Value="0" />
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- Loading overlay (must be after TreeView to render on top) -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsAnalyzing, Converter={StaticResource BoolToVis}}">
+                        <ProgressBar IsIndeterminate="True"
+                                     Width="200" Height="4"
+                                     Margin="0,0,0,12"
+                                     Foreground="{DynamicResource AccentBrush}"
+                                     Background="{DynamicResource SurfaceLightBrush}"
+                                     BorderThickness="0" />
+                        <TextBlock Text="Analyzing registry structure..."
+                                   HorizontalAlignment="Center"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- Value Counts Tab -->
+            <TabItem Header="Value Counts">
+                <Grid>
+                    <!-- TreeView with bar charts -->
+                    <TreeView x:Name="ValueCountTree"
+                              ItemsSource="{Binding ValueCountNodes}"
+                              ItemTemplate="{StaticResource KeyStatNodeTemplate}"
+                              ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"
+                              Background="{DynamicResource BackgroundBrush}"
+                              BorderThickness="0"
+                              AlternationCount="2"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    </TreeView>
+
+                    <!-- Empty state -->
+                    <TextBlock Text="No data to display"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontSize="14"
+                               Foreground="{DynamicResource TextSecondaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsAnalyzing}" Value="False" />
+                                            <Condition Binding="{Binding ValueCountNodes.Count}" Value="0" />
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <!-- Loading overlay (must be after TreeView to render on top) -->
+                    <StackPanel HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding IsAnalyzing, Converter={StaticResource BoolToVis}}">
+                        <ProgressBar IsIndeterminate="True"
+                                     Width="200" Height="4"
+                                     Margin="0,0,0,12"
+                                     Foreground="{DynamicResource AccentBrush}"
+                                     Background="{DynamicResource SurfaceLightBrush}"
+                                     BorderThickness="0" />
+                        <TextBlock Text="Analyzing registry structure..."
+                                   HorizontalAlignment="Center"
+                                   FontSize="14"
+                                   Foreground="{DynamicResource TextSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

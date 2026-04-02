@@ -26,7 +26,7 @@ jobs:
     
     - name: Build and Publish
       run: |
-        dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./publish
+        dotnet publish RegistryExpert.Wpf/RegistryExpert.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./publish
     
     - name: Create Release
       uses: softprops/action-gh-release@v1

@@ -30,6 +30,7 @@ namespace RegistryExpert.Wpf.ViewModels
 
         private readonly Dictionary<HiveType, LoadedHiveInfo> _loadedHives = new();
         private CancellationTokenSource? _loadCts;
+        private readonly AppSettings _settings;
 
         // ── Properties ──────────────────────────────────────────────────────
 
@@ -138,6 +139,8 @@ namespace RegistryExpert.Wpf.ViewModels
             }
         }
 
+        public AppSettings Settings => _settings;
+
         // ── Commands ────────────────────────────────────────────────────────
 
         public AsyncRelayCommand OpenHiveCommand { get; }
@@ -155,6 +158,8 @@ namespace RegistryExpert.Wpf.ViewModels
         public RelayCommand OpenStatisticsCommand { get; }
         public RelayCommand OpenCompareCommand { get; }
         public RelayCommand OpenTimelineCommand { get; }
+        public RelayCommand AboutCommand { get; }
+        public AsyncRelayCommand CheckForUpdatesCommand { get; }
 
         // ── Events ──────────────────────────────────────────────────────────
 
@@ -173,10 +178,21 @@ namespace RegistryExpert.Wpf.ViewModels
         /// <summary>Raised when the View should open the Timeline window.</summary>
         public event Action? RequestOpenTimeline;
 
+        /// <summary>Raised when the View should open the About dialog.</summary>
+        public event Action? RequestOpenAbout;
+
+        /// <summary>Raised when the View should show the update check result.</summary>
+        public event Action<UpdateInfo?, bool>? RequestShowUpdateResult;
+
+        /// <summary>Raised when the View should scroll a navigated node (and optional value) into view.</summary>
+        public event Action<RegistryKeyNode, string?>? RequestScrollToNode;
+
         // ── Constructor ─────────────────────────────────────────────────────
 
         public MainViewModel()
         {
+            _settings = AppSettings.Load();
+
             OpenHiveCommand = new AsyncRelayCommand(OnOpenHive);
             CloseHiveCommand = new RelayCommand(p => OnCloseHive(p));
             ExportKeyCommand = new RelayCommand(OnExportKey, CanExportKey);
@@ -192,6 +208,8 @@ namespace RegistryExpert.Wpf.ViewModels
             OpenStatisticsCommand = new RelayCommand(() => RequestOpenStatistics?.Invoke(), () => HasLoadedHives);
             OpenCompareCommand = new RelayCommand(() => RequestOpenCompare?.Invoke(), () => HasLoadedHives);
             OpenTimelineCommand = new RelayCommand(() => RequestOpenTimeline?.Invoke(), () => HasLoadedHives);
+            AboutCommand = new RelayCommand(() => RequestOpenAbout?.Invoke());
+            CheckForUpdatesCommand = new AsyncRelayCommand(OnCheckForUpdates);
         }
 
         // ── Command handlers ────────────────────────────────────────────────
@@ -316,6 +334,28 @@ namespace RegistryExpert.Wpf.ViewModels
                 ? ThemeManager.Theme.Dark
                 : ThemeManager.Theme.Light;
             ThemeManager.SetTheme(theme);
+
+            // Persist theme choice
+            _settings.Theme = parameter?.ToString() ?? "Dark";
+            _settings.Save();
+        }
+
+        private async Task OnCheckForUpdates(object? _)
+        {
+            StatusText = "Checking for updates...";
+            try
+            {
+                var info = await UpdateChecker.CheckForUpdatesAsync();
+                RequestShowUpdateResult?.Invoke(info, true);
+            }
+            catch
+            {
+                RequestShowUpdateResult?.Invoke(null, true);
+            }
+            finally
+            {
+                StatusText = "Ready";
+            }
         }
 
         // ── Core methods ────────────────────────────────────────────────────
@@ -731,6 +771,7 @@ namespace RegistryExpert.Wpf.ViewModels
             for (int i = 1; i < parts.Length; i++)
             {
                 current.EnsureChildrenLoaded();
+                current.IsExpanded = true;
 
                 RegistryKeyNode? match = null;
                 foreach (var child in current.Children)
@@ -765,6 +806,9 @@ namespace RegistryExpert.Wpf.ViewModels
                         }
                     }
                 }
+
+                // Ask the View to scroll the tree node and value into view
+                RequestScrollToNode?.Invoke(current, valueName);
             }
         }
 
@@ -814,7 +858,7 @@ namespace RegistryExpert.Wpf.ViewModels
             ["SYSTEM"] = new()
             {
                 ("Class: Adapter", @"SYSTEM\ControlSet001\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"),
-                ("Class: Disk", @"SYSTEM\ControlSet001\Control\Class\{4d36e967-e325-11ce-bfc1-08002be10318}"),
+                ("Disk Filters", @"SYSTEM\ControlSet001\Control\Class\{4d36e967-e325-11ce-bfc1-08002be10318}"),
                 ("Crash Control", @"SYSTEM\ControlSet001\Control\CrashControl"),
                 ("Firewall", @"SYSTEM\ControlSet001\Services\SharedAccess\Parameters\FirewallPolicy"),
                 ("Guest Agent", @"SYSTEM\ControlSet001\Services\WindowsAzureGuestAgent"),

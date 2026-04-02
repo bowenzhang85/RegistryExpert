@@ -39,10 +39,9 @@
                         <TextBlock Text="Hive:"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <ComboBox Style="{DynamicResource ModernComboBoxStyle}"
-                                  ItemsSource="{Binding HiveNames}"
+                        <ComboBox ItemsSource="{Binding HiveNames}"
                                   SelectedIndex="{Binding SelectedHiveIndex}"
-                                  Width="120" />
+                                  Width="140" />
                     </StackPanel>
 
                     <!-- Time filter -->
@@ -50,10 +49,9 @@
                         <TextBlock Text="Time:"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <ComboBox Style="{DynamicResource ModernComboBoxStyle}"
-                                  ItemsSource="{Binding TimeFilterOptions}"
+                        <ComboBox ItemsSource="{Binding TimeFilterOptions}"
                                   SelectedIndex="{Binding SelectedTimeFilterIndex}"
-                                  Width="140" />
+                                  Width="160" />
                     </StackPanel>
 
                     <!-- Limit -->
@@ -61,31 +59,30 @@
                         <TextBlock Text="Show:"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
-                        <ComboBox Style="{DynamicResource ModernComboBoxStyle}"
-                                  ItemsSource="{Binding LimitOptions}"
+                        <ComboBox ItemsSource="{Binding LimitOptions}"
                                   SelectedIndex="{Binding SelectedLimitIndex}"
-                                  Width="80" />
+                                  Width="90" />
                     </StackPanel>
 
                     <!-- Scan button -->
                     <Button Content="{Binding ScanButtonText}"
                             Style="{DynamicResource AccentButtonStyle}"
                             Command="{Binding ScanCommand}"
-                            Width="80" Height="28"
+                            MinWidth="80" Padding="16,6"
                             Margin="0,0,8,4" />
 
                     <!-- Export button -->
                     <Button Content="Export"
                             Style="{DynamicResource AccentButtonStyle}"
                             Command="{Binding ExportCommand}"
-                            Width="70" Height="28"
+                            MinWidth="70" Padding="16,6"
                             Margin="0,0,8,4" />
 
                     <!-- Browse Logs button -->
                     <Button Content="Browse Logs..."
                             Style="{DynamicResource AccentButtonStyle}"
                             Command="{Binding BrowseLogsCommand}"
-                            Width="100" Height="28"
+                            MinWidth="115" Padding="16,6"
                             Margin="0,0,8,4" />
 
                     <!-- TxLog filter checkbox -->

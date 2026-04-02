@@ -1,0 +1,16 @@
+<Application x:Class="RegistryExpert.Wpf.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="Views/MainWindow.xaml"
+             ShutdownMode="OnMainWindowClose">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Theme (index 0, swapped at runtime by ThemeManager) -->
+                <ResourceDictionary Source="Themes/DarkTheme.xaml" />
+                <!-- Shared styles (uses DynamicResource to pick up theme colors) -->
+                <ResourceDictionary Source="Themes/SharedStyles.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

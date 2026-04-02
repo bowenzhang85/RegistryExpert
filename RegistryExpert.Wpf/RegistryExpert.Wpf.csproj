@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>RegistryExpert.Wpf</RootNamespace>
+    <AssemblyName>RegistryExpert</AssemblyName>
+    <Version>2.0.0</Version>
+    <Company>RegistryExpert</Company>
+    <Product>Registry Expert - Offline Registry Viewer</Product>
+    <Description>A lightweight tool for viewing and analyzing offline Windows registry hive files</Description>
+    <ApplicationIcon>..\Assets\registry_fixed.ico</ApplicationIcon>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RegistryExpert.Core\RegistryExpert.Core.csproj" />
+  </ItemGroup>
+
+  <!-- Asset images as WPF Resources -->
+  <ItemGroup>
+    <Resource Include="..\Assets\registry.png" Link="Assets\registry.png" />
+    <Resource Include="..\Assets\registry_fixed.ico" Link="Assets\registry_fixed.ico" />
+    <Resource Include="..\Assets\registry_icon_system.png" Link="Assets\registry_icon_system.png" />
+    <Resource Include="..\Assets\registry_icon_profiles.png" Link="Assets\registry_icon_profiles.png" />
+    <Resource Include="..\Assets\registry_icon_services.png" Link="Assets\registry_icon_services.png" />
+    <Resource Include="..\Assets\registry_icon_software.png" Link="Assets\registry_icon_software.png" />
+    <Resource Include="..\Assets\registry_icon_storage.png" Link="Assets\registry_icon_storage.png" />
+    <Resource Include="..\Assets\registry_icon_network.png" Link="Assets\registry_icon_network.png" />
+    <Resource Include="..\Assets\registry_icon_rdp.png" Link="Assets\registry_icon_rdp.png" />
+    <Resource Include="..\Assets\registry_icon_update.png" Link="Assets\registry_icon_update.png" />
+    <Resource Include="..\Assets\registry_icon_open.png" Link="Assets\registry_icon_open.png" />
+    <Resource Include="..\Assets\registry_icon_search.png" Link="Assets\registry_icon_search.png" />
+    <Resource Include="..\Assets\registry_icon_analyze.png" Link="Assets\registry_icon_analyze.png" />
+    <Resource Include="..\Assets\registry_icon_statistics.png" Link="Assets\registry_icon_statistics.png" />
+    <Resource Include="..\Assets\registry_icon_compare.png" Link="Assets\registry_icon_compare.png" />
+    <Resource Include="..\Assets\registry_icon_timeline.png" Link="Assets\registry_icon_timeline.png" />
+    <Resource Include="..\Assets\registry_icon_load-hive.png" Link="Assets\registry_icon_load-hive.png" />
+    <Resource Include="..\Assets\registry_icon_health.png" Link="Assets\registry_icon_health.png" />
+    <Resource Include="..\docs\images\reg_bin.png" Link="Assets\reg_bin.png" />
+    <Resource Include="..\docs\images\reg_num.png" Link="Assets\reg_num.png" />
+    <Resource Include="..\docs\images\reg_str.png" Link="Assets\reg_str.png" />
+  </ItemGroup>
+
+</Project>
