@@ -209,7 +209,7 @@ namespace RegistryExpert.Wpf.ViewModels
                 AvailableHives.Add(new AvailableHiveItem
                 {
                     FilePath = hive.FilePath,
-                    DisplayName = $"{hive.HiveType}  ({System.IO.Path.GetFileName(hive.FilePath)})"
+                    DisplayName = $"{hive.Parser.FriendlyName}  ({Path.GetFileName(hive.FilePath)})"
                 });
             }
             OnPropertyChanged(nameof(HasAvailableHives));
@@ -257,7 +257,7 @@ namespace RegistryExpert.Wpf.ViewModels
             var dialog = new Microsoft.Win32.OpenFileDialog
             {
                 Title = isLeft ? "Open First Registry Hive" : "Open Second Registry Hive",
-                Filter = "All Files|*.*|Registry Hives|NTUSER.DAT;SAM;SECURITY;SOFTWARE;SYSTEM;USRCLASS.DAT;DEFAULT;Amcache.hve;BCD",
+                Filter = "All Files|*.*|Registry Hives|*.hiv;NTUSER.DAT;SAM;SECURITY;SOFTWARE;SYSTEM;USRCLASS.DAT;DEFAULT;Amcache.hve;BCD",
                 FilterIndex = 1
             };
 
@@ -314,13 +314,13 @@ namespace RegistryExpert.Wpf.ViewModels
                     _leftParser?.Dispose();
                     _leftParser = parser;
                     _leftFilePath = filePath;
-                    LeftFileName = $"{parser.CurrentHiveType}: {System.IO.Path.GetFileName(filePath)}";
+                    LeftFileName = $"{parser.FriendlyName}: {System.IO.Path.GetFileName(filePath)}";
                     LeftStatusText = "Loaded successfully";
                     LeftIsLoaded = true;
 
                     // Update right status hint
                     if (!RightIsLoaded)
-                        RightStatusText = $"Select a {parser.CurrentHiveType} hive to compare";
+                        RightStatusText = $"Select a {parser.FriendlyName} hive to compare";
                 }
                 else
                 {
@@ -340,7 +340,7 @@ namespace RegistryExpert.Wpf.ViewModels
                     _rightParser?.Dispose();
                     _rightParser = parser;
                     _rightFilePath = filePath;
-                    RightFileName = $"{parser.CurrentHiveType}: {System.IO.Path.GetFileName(filePath)}";
+                    RightFileName = $"{parser.FriendlyName}: {System.IO.Path.GetFileName(filePath)}";
                     RightStatusText = "Loaded successfully";
                     RightIsLoaded = true;
                 }

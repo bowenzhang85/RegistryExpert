@@ -97,5 +97,10 @@ namespace RegistryExpert.Wpf.Views
                 vm.SelectedRolesFeatureNode = node;
             }
         }
+
+        private void GpInfoButton_Click(object sender, RoutedEventArgs e)
+        {
+            GpInfoPopup.IsOpen = !GpInfoPopup.IsOpen;
+        }
     }
 }

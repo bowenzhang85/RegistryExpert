@@ -267,6 +267,27 @@
                         </CheckBox>
                     </DockPanel>
                 </Border>
+
+                <!-- Info banner (e.g., "Load a SYSTEM hive to detect additional security products") -->
+                <Border Background="{DynamicResource SurfaceBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="0,0,0,1"
+                        Padding="12,5">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="Visibility" Value="Visible" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding InfoBannerText}" Value="">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
+                    <TextBlock Text="{Binding InfoBannerText}"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11.5"
+                               FontStyle="Italic" />
+                </Border>
             </StackPanel>
 
             <!-- ═══ Content Area (overlapping panels, visibility-toggled) ═══ -->
@@ -1585,6 +1606,260 @@
                         </DataGrid>
                     </DockPanel>
                 </Grid>
+
+                <!-- ═══ Group Policy View (GPResult-style scrollable document) ═══ -->
+                <DockPanel Visibility="{Binding CurrentMode, Converter={StaticResource ModeToVis}, ConverterParameter=GroupPolicy}">
+                    <!-- Top header bar with search -->
+                    <Border DockPanel.Dock="Top"
+                            Background="{DynamicResource SurfaceBrush}"
+                            Padding="8,4"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="0,0,0,1">
+                        <DockPanel LastChildFill="True">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                        VerticalAlignment="Center" Margin="12,0,0,0">
+                                <!-- Info icon with scope popup -->
+                                <Button x:Name="GpInfoButton" 
+                                        Background="Transparent" BorderThickness="0"
+                                        Cursor="Hand" Padding="4,2" Margin="0,0,8,0"
+                                        ToolTip="Policy scope info"
+                                        Click="GpInfoButton_Click">
+                                    <Grid Width="18" Height="18">
+                                        <Ellipse Stroke="{DynamicResource TextSecondaryBrush}" StrokeThickness="1.2" Fill="Transparent" />
+                                        <TextBlock Text="i" FontSize="11" FontStyle="Italic" FontWeight="SemiBold"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   Margin="0,-1,0,0" />
+                                    </Grid>
+                                </Button>
+                                <Popup x:Name="GpInfoPopup" PlacementTarget="{Binding ElementName=GpInfoButton}"
+                                       Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                                    <Border Background="{DynamicResource SurfaceBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1" CornerRadius="6"
+                                            Padding="14,10" Margin="4">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="8" ShadowDepth="2" Opacity="0.3" />
+                                        </Border.Effect>
+                                        <StackPanel>
+                                            <TextBlock Text="Policy Scope" FontWeight="SemiBold" FontSize="13"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       Margin="0,0,0,8" />
+                                            <TextBlock Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12"
+                                                       Margin="0,0,0,6">
+                                                Shows registry-based policies only:
+                                            </TextBlock>
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  Administrative Templates" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  Security Options (with registry paths)" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,8" Text="&#x2022;  Extra Registry Settings" />
+                                            <TextBlock Foreground="{DynamicResource TextPrimaryBrush}" FontSize="12"
+                                                       Margin="0,0,0,6">
+                                                Does not include:
+                                            </TextBlock>
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  Password / Account Lockout policies" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  Audit Configuration" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  User Rights Assignment" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,2" Text="&#x2022;  Scripts (Startup / Shutdown)" />
+                                            <TextBlock Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"
+                                                       Margin="12,0,0,0" Text="&#x2022;  User-scoped (HKCU) policies" />
+                                        </StackPanel>
+                                    </Border>
+                                </Popup>
+
+                                <TextBlock Text="Search:" VerticalAlignment="Center"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="11" Margin="0,0,6,0" />
+                                <TextBox Text="{Binding GpSearchText, UpdateSourceTrigger=PropertyChanged, Delay=300}"
+                                         Width="200" Padding="6,3"
+                                         VerticalAlignment="Center"
+                                         FontSize="12"
+                                         Foreground="{DynamicResource TextPrimaryBrush}"
+                                         Background="{DynamicResource BackgroundBrush}"
+                                         BorderBrush="{DynamicResource BorderBrush}" />
+                            </StackPanel>
+                            <TextBlock Text="{Binding GroupPolicyHeader}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Scrollable document of section headers + policy rows -->
+                    <ListBox ItemsSource="{Binding GroupPolicyDocRows}"
+                             SelectedItem="{Binding SelectedGroupPolicyRow}"
+                             Background="{DynamicResource BackgroundBrush}"
+                             BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.Resources>
+                            <!-- Section header template -->
+                            <DataTemplate x:Key="SectionHeaderTemplate">
+                                <Border Background="{DynamicResource SurfaceLightBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
+                                        BorderThickness="0,0,0,1"
+                                        Padding="0" Margin="0,8,0,0">
+                                    <DockPanel>
+                                        <!-- Accent left-edge bar -->
+                                        <Border DockPanel.Dock="Left"
+                                                Width="4"
+                                                Background="{DynamicResource AccentBrush}" />
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Margin="8,6"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   FontSize="11">
+                                            <TextBlock.Text>
+                                                <MultiBinding StringFormat="({0})">
+                                                    <Binding Path="SettingCount" />
+                                                </MultiBinding>
+                                            </TextBlock.Text>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding CategoryPath}"
+                                                   FontWeight="SemiBold"
+                                                   FontSize="12"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   Margin="8,6"
+                                                   TextTrimming="CharacterEllipsis" />
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+
+                            <!-- Policy row template -->
+                            <DataTemplate x:Key="PolicyRowTemplate">
+                                <Grid Margin="12,0,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding PolicyName}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="8,3">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                        <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding SettingValue}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="8,3">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                        <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </DataTemplate>
+
+                            <!-- List child row template (indented under enabledList parent) -->
+                            <DataTemplate x:Key="ListChildRowTemplate">
+                                <Grid Margin="36,0,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding PolicyName}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="8,3">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                        <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding SettingValue}"
+                                               TextTrimming="CharacterEllipsis"
+                                               Margin="8,3">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                                                        <Setter Property="Foreground" Value="{DynamicResource AccentForegroundBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.Resources>
+
+                        <ListBox.ItemTemplateSelector>
+                            <helpers:GpDocumentTemplateSelector
+                                SectionHeaderTemplate="{StaticResource SectionHeaderTemplate}"
+                                PolicyRowTemplate="{StaticResource PolicyRowTemplate}"
+                                ListChildRowTemplate="{StaticResource ListChildRowTemplate}" />
+                        </ListBox.ItemTemplateSelector>
+
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Margin" Value="0" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Bd"
+                                                    Background="Transparent"
+                                                    Padding="{TemplateBinding Padding}">
+                                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background"
+                                                            Value="{DynamicResource SelectionActiveBrush}" />
+                                                </Trigger>
+                                                <MultiTrigger>
+                                                    <MultiTrigger.Conditions>
+                                                        <Condition Property="IsMouseOver" Value="True" />
+                                                        <Condition Property="IsSelected" Value="False" />
+                                                    </MultiTrigger.Conditions>
+                                                    <Setter TargetName="Bd" Property="Background"
+                                                            Value="{DynamicResource SurfaceHoverBrush}" />
+                                                </MultiTrigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                                <!-- Make section header rows non-selectable -->
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsSectionHeader}" Value="True">
+                                        <Setter Property="IsHitTestVisible" Value="True" />
+                                        <Setter Property="Focusable" Value="False" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </DockPanel>
 
             </Grid>
 

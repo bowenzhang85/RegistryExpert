@@ -184,14 +184,14 @@ namespace RegistryExpert.Wpf.ViewModels
             {
                 ShowHiveSelector = true;
                 foreach (var hive in loadedHives)
-                    HiveNames.Add(hive.HiveType.ToString());
+                    HiveNames.Add(hive.Parser.FriendlyName);
             }
 
             // Use the first hive as default
             if (loadedHives.Count > 0)
             {
                 _activeParser = loadedHives[0].Parser;
-                _selectedHiveName = loadedHives[0].HiveType.ToString();
+                _selectedHiveName = loadedHives[0].Parser.FriendlyName;
                 WindowTitle = $"Registry Statistics - {_selectedHiveName}";
                 LoadStatsForParser(_activeParser);
             }
@@ -201,14 +201,22 @@ namespace RegistryExpert.Wpf.ViewModels
 
         private void OnHiveChanged(string hiveName)
         {
-            if (!Enum.TryParse<HiveType>(hiveName, out var ht))
-                return;
+            // Find hive by index in HiveNames to handle duplicates / Unknown types
+            var idx = -1;
+            for (int i = 0; i < HiveNames.Count; i++)
+            {
+                if (HiveNames[i] == hiveName)
+                {
+                    idx = i;
+                    break;
+                }
+            }
 
-            var hive = _loadedHives.FirstOrDefault(h => h.HiveType == ht);
-            if (hive == null) return;
+            if (idx < 0 || idx >= _loadedHives.Count) return;
 
+            var hive = _loadedHives[idx];
             _activeParser = hive.Parser;
-            WindowTitle = $"Registry Statistics - {ht}";
+            WindowTitle = $"Registry Statistics - {hiveName}";
             LoadStatsForParser(_activeParser);
         }
 

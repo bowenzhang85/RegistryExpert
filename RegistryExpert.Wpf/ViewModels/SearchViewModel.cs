@@ -284,7 +284,7 @@ namespace RegistryExpert.Wpf.ViewModels
                         Data = "",
                         FullValue = $"Key: {displayPath}",
                         ImageKey = "folder",
-                        HiveTypeName = parser.CurrentHiveType.ToString()
+                        HiveTypeName = parser.FriendlyName
                     };
                 }
                 else
@@ -306,7 +306,7 @@ namespace RegistryExpert.Wpf.ViewModels
                         Data = truncatedData,
                         FullValue = $"Name: {displayName}\nType: {valueType}\nData: {rawData}",
                         ImageKey = RegistryValueItem.GetImageKey(valueType),
-                        HiveTypeName = parser.CurrentHiveType.ToString()
+                        HiveTypeName = parser.FriendlyName
                     };
                 }
 

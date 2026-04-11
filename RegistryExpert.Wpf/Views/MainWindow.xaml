@@ -32,6 +32,7 @@
 
     <Window.InputBindings>
         <KeyBinding Key="O" Modifiers="Ctrl" Command="{Binding OpenHiveCommand}" />
+        <KeyBinding Key="O" Modifiers="Ctrl+Shift" Command="{Binding OpenFolderCommand}" />
         <KeyBinding Key="E" Modifiers="Ctrl" Command="{Binding ExportKeyCommand}" />
         <KeyBinding Key="F" Modifiers="Ctrl" Command="{Binding OpenSearchCommand}" />
         <KeyBinding Key="F5" Command="{Binding OpenAnalyzeCommand}" />
@@ -56,6 +57,8 @@
             <MenuItem Header="_File">
                 <MenuItem Header="_Open Hive..." InputGestureText="Ctrl+O"
                           Command="{Binding OpenHiveCommand}" />
+                <MenuItem Header="Open _Folder..." InputGestureText="Ctrl+Shift+O"
+                          Command="{Binding OpenFolderCommand}" />
                 <MenuItem x:Name="UnloadHiveMenu" Header="_Unload Hive"
                           SubmenuOpened="UnloadHiveMenu_SubmenuOpened">
                     <MenuItem Header="(no hives loaded)" IsEnabled="False" />
@@ -218,6 +221,22 @@
                                 HorizontalAlignment="Center">
                             <TextBlock Text="Open Hive Files" />
                         </Button>
+                        <Button Style="{DynamicResource WelcomeButtonStyle}"
+                                Command="{Binding OpenFolderCommand}"
+                                HorizontalAlignment="Center"
+                                Margin="0,12,0,0">
+                            <TextBlock Text="Open Folder" />
+                        </Button>
+                        <TextBlock Text="Auto-detects registry hives in InspectIaaSDisk and TSS log bundles"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   FontSize="11"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,8,0,0" />
+                        <TextBlock Text="Also scans any folder recursively for hive files"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   FontSize="11"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,2,0,0" />
                         <TextBlock Text="Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, and more"
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    FontSize="11"

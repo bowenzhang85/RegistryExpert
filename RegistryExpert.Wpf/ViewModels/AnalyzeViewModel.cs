@@ -21,7 +21,8 @@ namespace RegistryExpert.Wpf.ViewModels
         PhysicalDisks,
         Health,
         CbsPackages,
-        ComponentsOverview
+        ComponentsOverview,
+        GroupPolicy
     }
 
     public class AnalyzeViewModel : ViewModelBase
@@ -71,6 +72,7 @@ namespace RegistryExpert.Wpf.ViewModels
             public bool IsWarning { get; init; }
             public bool IsHealthy { get; init; }
             public AnalysisItem? SourceItem { get; init; }
+            public object? Tag { get; init; }
         }
 
         public class FirewallProfileItem : ViewModelBase
@@ -136,6 +138,21 @@ namespace RegistryExpert.Wpf.ViewModels
             }
         }
 
+        /// <summary>
+        /// A row in the GPResult-style scrollable document.
+        /// Can be a section header bar or a policy setting row.
+        /// </summary>
+        public class GpDocumentRow
+        {
+            public bool IsSectionHeader { get; init; }
+            public bool IsListChild { get; init; }             // Indented child of enabledList policy
+            public string CategoryPath { get; init; } = "";    // Full ADMX path for headers, e.g. "Network/BITS"
+            public int SettingCount { get; init; }              // Number of settings in this section (headers only)
+            public string PolicyName { get; init; } = "";       // ADMX display name or raw value name (rows only)
+            public string SettingValue { get; init; } = "";     // Friendly value / Enabled / Disabled (rows only)
+            public GroupPolicyItem? PolicyItem { get; init; }   // Full data for detail pane (rows only)
+        }
+
         // ── Backing fields ──────────────────────────────────────────────────
 
         private CategoryItem? _selectedCategory;
@@ -145,6 +162,7 @@ namespace RegistryExpert.Wpf.ViewModels
         private string _detailValueText = "";
         private bool _showSubcategories;
         private bool _showSubTabs;
+        private string _infoBannerText = "";
         private AnalyzeGridRow? _selectedGridRow;
         private string _gridColumn1Header = "Property";
         private string _gridColumn2Header = "Value";
@@ -234,6 +252,12 @@ namespace RegistryExpert.Wpf.ViewModels
         {
             get => _showSubTabs;
             set => SetProperty(ref _showSubTabs, value);
+        }
+
+        public string InfoBannerText
+        {
+            get => _infoBannerText;
+            set => SetProperty(ref _infoBannerText, value);
         }
 
         // ── Default grid properties ─────────────────────────────────────────
@@ -596,6 +620,41 @@ namespace RegistryExpert.Wpf.ViewModels
             set => SetProperty(ref _certStoreDetailHeader, value);
         }
 
+        // ── Group Policy properties ────────────────────────────────────────
+
+        public ObservableCollection<GpDocumentRow> GroupPolicyDocRows { get; } = new();
+
+        private List<GpDocumentRow> _allGpDocRows = new();
+
+        private GpDocumentRow? _selectedGroupPolicyRow;
+        public GpDocumentRow? SelectedGroupPolicyRow
+        {
+            get => _selectedGroupPolicyRow;
+            set
+            {
+                if (SetProperty(ref _selectedGroupPolicyRow, value))
+                    OnGroupPolicyRowSelected();
+            }
+        }
+
+        private string _groupPolicyHeader = "Group Policy";
+        public string GroupPolicyHeader
+        {
+            get => _groupPolicyHeader;
+            set => SetProperty(ref _groupPolicyHeader, value);
+        }
+
+        private string _gpSearchText = "";
+        public string GpSearchText
+        {
+            get => _gpSearchText;
+            set
+            {
+                if (SetProperty(ref _gpSearchText, value))
+                    FilterGpDocRows();
+            }
+        }
+
         // ── Roles & Features properties ────────────────────────────────────
 
         public ObservableCollection<DeviceTreeNode> RolesFeatureNodes { get; } = new();
@@ -754,7 +813,7 @@ namespace RegistryExpert.Wpf.ViewModels
                 var ht = hive.HiveType;
 
                 if (ht == HiveType.SYSTEM)
-                    MapHive(hive, "System", "Services", "Storage", "Network", "RDP", "Health");
+                    MapHive(hive, "System", "Services", "Storage", "Network", "RDP", "Health", "Software");
                 else if (ht == HiveType.SOFTWARE)
                     MapHive(hive, "Profiles", "System", "Software", "Update", "Health");
                 else if (ht == HiveType.COMPONENTS)
@@ -824,6 +883,13 @@ namespace RegistryExpert.Wpf.ViewModels
             // Hide CBS search when switching away from CBS Packages
             ShowCbsSearch = false;
 
+            // Clear info banner from previous subcategory
+            InfoBannerText = "";
+
+            // Clear sub-tabs from previous category (e.g. Health)
+            SubTabs.Clear();
+            ShowSubTabs = false;
+
             // Set active parser/extractor to the first hive for this category
             if (_categoryHiveMap.TryGetValue(key, out var hives) && hives.Count > 0)
             {
@@ -885,6 +951,14 @@ namespace RegistryExpert.Wpf.ViewModels
             {
                 first.SelectCommand.Execute(null);
             }
+            else
+            {
+                // No enabled subcategories — clear stale content from previous category
+                ContentHeader = cat.Name;
+                DefaultGridRows.Clear();
+                CurrentMode = ContentMode.DefaultGrid;
+                InfoBannerText = "";
+            }
         }
 
         private void LoadCategoryData(string key)
@@ -929,6 +1003,20 @@ namespace RegistryExpert.Wpf.ViewModels
                             }
                         }
                         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Certificate stores error: {ex.Message}"); }
+
+                        try
+                        {
+                            if (ext.HasGroupPolicies())
+                            {
+                                var gpData = ext.GetGroupPolicyData();
+                                hiveSections.Add(new AnalysisSection
+                                {
+                                    Title = "\U0001f4dc Group Policy",
+                                    Tag = gpData
+                                });
+                            }
+                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Group policy analysis error: {ex.Message}"); }
                     }
 
                     if (hive.HiveType == HiveType.SYSTEM)
@@ -969,6 +1057,72 @@ namespace RegistryExpert.Wpf.ViewModels
                 }
             }
 
+            // Cross-source dedup for Security Software:
+            // Priority: WSC > Installed Software > ELAM
+            // WSC has richest data (ON/OFF state, definitions), Installed Software has version,
+            // ELAM has start type. Remove lower-priority duplicates.
+            var secSoftSection = allSections.FirstOrDefault(s => s.Title.Contains("Security Software"));
+            if (secSoftSection != null)
+            {
+                bool systemHiveLoaded = hives.Any(h => h.HiveType == HiveType.SYSTEM);
+
+                if (secSoftSection.Items.Count > 1)
+                {
+                    // Categorize items by source
+                    var wscItems = secSoftSection.Items
+                        .Where(i => i.SubItems != null && i.SubItems.Count > 0
+                                  && i.SubItems[0].Value != "Security Service"
+                                  && i.SubItems[0].Value != "Installed Software")
+                        .ToList();
+                    var elamItems = secSoftSection.Items
+                        .Where(i => i.SubItems != null && i.SubItems.Count > 0
+                                  && i.SubItems[0].Value == "Security Service")
+                        .ToList();
+                    var installedItems = secSoftSection.Items
+                        .Where(i => i.SubItems != null && i.SubItems.Count > 0
+                                  && i.SubItems[0].Value == "Installed Software")
+                        .ToList();
+
+                    static string First2Words(string name) =>
+                        string.Join(' ', name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2));
+
+                    static bool NamesMatch(string a, string b) =>
+                        a.Contains(b, StringComparison.OrdinalIgnoreCase) ||
+                        b.Contains(a, StringComparison.OrdinalIgnoreCase) ||
+                        First2Words(a).Equals(First2Words(b), StringComparison.OrdinalIgnoreCase);
+
+                    // Remove ELAM entries that match WSC or Installed Software
+                    var higherPriority = wscItems.Concat(installedItems).ToList();
+                    if (higherPriority.Count > 0 && elamItems.Count > 0)
+                    {
+                        var elamToRemove = elamItems
+                            .Where(elam => higherPriority.Any(hp => NamesMatch(hp.Name, elam.Name)))
+                            .ToList();
+                        foreach (var item in elamToRemove)
+                            secSoftSection.Items.Remove(item);
+                    }
+
+                    // Remove Installed Software entries that match WSC
+                    if (wscItems.Count > 0 && installedItems.Count > 0)
+                    {
+                        var instToRemove = installedItems
+                            .Where(inst => wscItems.Any(wsc => NamesMatch(wsc.Name, inst.Name)))
+                            .ToList();
+                        foreach (var item in instToRemove)
+                            secSoftSection.Items.Remove(item);
+                    }
+                }
+
+                // Remove ELAM hint when SYSTEM hive is loaded (regardless of ELAM count)
+                if (systemHiveLoaded)
+                {
+                    secSoftSection.Items.RemoveAll(i =>
+                        i.SubItems == null && i.Name == "Info"
+                        && i.Value != null
+                        && i.Value.Contains("ELAM", StringComparison.OrdinalIgnoreCase));
+                }
+            }
+
             _contentCache[key] = allSections;
         }
 
@@ -985,14 +1139,14 @@ namespace RegistryExpert.Wpf.ViewModels
             var isSamHive = _loadedHives.Any(h => h.HiveType == HiveType.SAM);
 
             // Subcategory availability sets for System category
-            var softwareSubcats = new HashSet<string> { "🪟 Build Information", "\U0001f4dc Certificate Stores" };
+            var softwareSubcats = new HashSet<string> { "🪟 Build Information", "\U0001f4dc Certificate Stores", "\U0001f4dc Group Policy" };
             var systemSubcats = new HashSet<string>
             {
                 "💻 Computer Information", "🔄 CPU Hyper-Threading",
                 "💥 Crash Dump Configuration", "🕐 System Time Config",
                 "\U0001f5a5\ufe0f Device Manager"
             };
-            var bothSubcats = new HashSet<string> { "📁 Hive Information", "☁️ Guest Agent" };
+            var bothSubcats = new HashSet<string> { "📁 Hive Information" };
 
             var available = new List<SubcategoryItem>();
             var unavailable = new List<SubcategoryItem>();
@@ -1044,7 +1198,7 @@ namespace RegistryExpert.Wpf.ViewModels
                 // Missing SOFTWARE subcategories when only SYSTEM is loaded
                 if (!isSoftwareHive)
                 {
-                    var missingSoftware = new[] { "🪟 Build Information", "🔑 Windows Activation", "\U0001f4dc Certificate Stores" };
+                    var missingSoftware = new[] { "🪟 Build Information", "🔑 Windows Activation", "\U0001f4dc Certificate Stores", "\U0001f4dc Group Policy" };
                     foreach (var title in missingSoftware)
                     {
                         if (existingTitles.Contains(title)) continue;
@@ -1217,6 +1371,30 @@ namespace RegistryExpert.Wpf.ViewModels
                             SelectCommand = new RelayCommand(() => { })
                         });
                     }
+
+                    // Security Software: only unavailable if NEITHER SOFTWARE nor SYSTEM is loaded
+                    if (!isSystemHive && !existingTitles.Contains("🛡️ Security Software"))
+                    {
+                        unavailable.Add(new SubcategoryItem
+                        {
+                            Title = "🛡️ Security Software",
+                            IsEnabled = false,
+                            Tooltip = "Requires SOFTWARE or SYSTEM hive to be loaded",
+                            SelectCommand = new RelayCommand(() => { })
+                        });
+                    }
+
+                    // Guest Agent: only unavailable if NEITHER SOFTWARE nor SYSTEM is loaded
+                    if (!isSystemHive && !existingTitles.Contains("☁️ Guest Agent"))
+                    {
+                        unavailable.Add(new SubcategoryItem
+                        {
+                            Title = "☁️ Guest Agent",
+                            IsEnabled = false,
+                            Tooltip = "Requires SOFTWARE or SYSTEM hive to be loaded",
+                            SelectCommand = new RelayCommand(() => { })
+                        });
+                    }
                 }
 
                 if (!isNtuserHive)
@@ -1301,9 +1479,19 @@ namespace RegistryExpert.Wpf.ViewModels
                 return true;
             }
 
-            // Software: all subcategories require SOFTWARE
+            // Software: most subcategories require SOFTWARE, but Security Software
+            // and Guest Agent are available with either SOFTWARE or SYSTEM hive
             if (categoryKey == "Software")
             {
+                if (title.Contains("Security Software") || title.Contains("Guest Agent"))
+                {
+                    if (!isSoftwareHive && !isSystemHive)
+                    {
+                        reqHive = "SOFTWARE or SYSTEM";
+                        return false;
+                    }
+                    return true;
+                }
                 if (!isSoftwareHive)
                 {
                     reqHive = "SOFTWARE";
@@ -1399,6 +1587,11 @@ namespace RegistryExpert.Wpf.ViewModels
                 DisplayCertificateStores(section);
                 return;
             }
+            if (title.Contains("Group Policy"))
+            {
+                DisplayGroupPolicy(section);
+                return;
+            }
             if (title.Contains("Roles") && title.Contains("Features"))
             {
                 DisplayRolesFeatures();
@@ -1450,6 +1643,7 @@ namespace RegistryExpert.Wpf.ViewModels
         {
             CurrentMode = ContentMode.DefaultGrid;
             DefaultGridRows.Clear();
+            InfoBannerText = "";
 
             // Reset column proportions to default (callers can override after)
             GridColumn1Star = 2;
@@ -1488,6 +1682,19 @@ namespace RegistryExpert.Wpf.ViewModels
                     GridColumn3Star = 2;
                     GridColumn4Star = 1;
                 }
+                else if (section.Title.Contains("Security Software"))
+                {
+                    GridColumn1Header = "Name";
+                    GridColumn2Header = "Type";
+                    GridColumn3Header = "Status";
+                    GridColumn4Header = "Definition";
+                    GridColumn5Header = "Executable";
+                    GridColumnCount = 5;
+                    GridColumn1Star = 2.5;
+                    GridColumn2Star = 1;
+                    GridColumn3Star = 2;
+                    GridColumn4Star = 2;
+                }
                 else
                 {
                     if (maxSubs >= 2)
@@ -1507,12 +1714,21 @@ namespace RegistryExpert.Wpf.ViewModels
 
                 foreach (var item in section.Items)
                 {
+                    // Extract info hints into the banner instead of a grid row
+                    if (item.SubItems == null && item.Name == "Info"
+                        && !string.IsNullOrEmpty(item.Value))
+                    {
+                        InfoBannerText = item.Value;
+                        continue;
+                    }
+
                     var row = new AnalyzeGridRow
                     {
                         Column1 = item.Name,
                         Column2 = item.SubItems?.ElementAtOrDefault(0)?.Value ?? item.Value,
                         Column3 = item.SubItems?.ElementAtOrDefault(1)?.Value ?? "",
                         Column4 = item.SubItems?.ElementAtOrDefault(2)?.Value ?? "",
+                        Column5 = item.SubItems?.ElementAtOrDefault(3)?.Value ?? "",
                         IsSubSection = item.IsSubSection,
                         IsWarning = item.IsWarning,
                         SourceItem = item
@@ -1529,6 +1745,14 @@ namespace RegistryExpert.Wpf.ViewModels
 
                 foreach (var item in section.Items)
                 {
+                    // Extract info hints into the banner instead of a grid row
+                    if (item.SubItems == null && item.Name == "Info"
+                        && !string.IsNullOrEmpty(item.Value))
+                    {
+                        InfoBannerText = item.Value;
+                        continue;
+                    }
+
                     DefaultGridRows.Add(new AnalyzeGridRow
                     {
                         Column1 = item.Name,
@@ -1744,7 +1968,7 @@ namespace RegistryExpert.Wpf.ViewModels
                 Subcategories.Clear();
                 foreach (var hive in hives)
                 {
-                    var label = $"{hive.HiveType} ({System.IO.Path.GetFileName(hive.FilePath)})";
+                    var label = $"{hive.Parser.FriendlyName} ({System.IO.Path.GetFileName(hive.FilePath)})";
                     var hiveRef = hive; // capture for closure
                     Subcategories.Add(new SubcategoryItem
                     {
@@ -2486,6 +2710,265 @@ namespace RegistryExpert.Wpf.ViewModels
             var row = SelectedCertificateDetail;
             if (row == null) return;
             DetailValueText = $"{row.Column1}: {row.Column2}";
+        }
+
+        // ── Group Policy scrollable document ────────────────────────────────
+
+        private void DisplayGroupPolicy(AnalysisSection section)
+        {
+            CurrentMode = ContentMode.GroupPolicy;
+
+            _allGpDocRows.Clear();
+            GroupPolicyDocRows.Clear();
+            GpSearchText = "";
+
+            if (section.Tag is List<GroupPolicyCategory> categoryList)
+            {
+                int totalSettings = CountPolicySettings(categoryList);
+                GroupPolicyHeader = $"Policies > Administrative Templates ({totalSettings} settings)";
+
+                // Flatten the category tree into the cache
+                FlattenGpCategories(categoryList, _allGpDocRows);
+
+                // Copy to the bound collection
+                foreach (var row in _allGpDocRows)
+                    GroupPolicyDocRows.Add(row);
+            }
+
+            DetailValueText = "";
+            DetailRegistryPath = "";
+        }
+
+        /// <summary>
+        /// Recursively flattens the GroupPolicyCategory tree into a list of document rows.
+        /// Each leaf category (one with Items) becomes a section header + policy rows.
+        /// </summary>
+        private void FlattenGpCategories(List<GroupPolicyCategory> categories,
+            List<GpDocumentRow> rows, string parentPath = "")
+        {
+            foreach (var cat in categories.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                string fullPath = string.IsNullOrEmpty(parentPath)
+                    ? cat.Name
+                    : $"{parentPath}/{cat.Name}";
+
+                if (cat.Items.Count > 0)
+                {
+                    // Leaf category with items — emit section header + policy rows
+                    rows.Add(new GpDocumentRow
+                    {
+                        IsSectionHeader = true,
+                        CategoryPath = fullPath,
+                        SettingCount = cat.Items.Count
+                    });
+
+                    foreach (var item in cat.Items)
+                    {
+                        string displayName;
+                        if (string.IsNullOrEmpty(item.AdmxCategoryPath))
+                        {
+                            // Extra Registry Settings — show full path like GPResult:
+                            // Software\Policies\Microsoft\...\ValueName
+                            displayName = $@"Software\{item.RegistryPath}\{item.Name}";
+                        }
+                        else if (item.IsListChild)
+                        {
+                            // enabledList child — show the value name (e.g., ".bak", "%windir%\spool")
+                            displayName = item.Name;
+                        }
+                        else
+                        {
+                            displayName = !string.IsNullOrEmpty(item.FriendlyName)
+                                ? item.FriendlyName
+                                : item.Name;
+                        }
+
+                        string displayValue = !string.IsNullOrEmpty(item.FriendlyValue)
+                            ? item.FriendlyValue
+                            : item.Value;
+
+                        rows.Add(new GpDocumentRow
+                        {
+                            IsSectionHeader = false,
+                            IsListChild = item.IsListChild,
+                            PolicyName = displayName,
+                            SettingValue = displayValue,
+                            PolicyItem = item
+                        });
+                    }
+                }
+
+                // Recurse into subcategories
+                if (cat.SubCategories.Count > 0)
+                    FlattenGpCategories(cat.SubCategories, rows, fullPath);
+            }
+        }
+
+        /// <summary>
+        /// Filters the GP document rows based on the search text.
+        /// Section headers are included only if at least one of their policy rows matches.
+        /// </summary>
+        private void FilterGpDocRows()
+        {
+            GroupPolicyDocRows.Clear();
+            var search = _gpSearchText.Trim();
+
+            if (string.IsNullOrEmpty(search))
+            {
+                // No filter — show everything
+                foreach (var row in _allGpDocRows)
+                    GroupPolicyDocRows.Add(row);
+
+                // Restore original header
+                int total = _allGpDocRows.Count(r => !r.IsSectionHeader);
+                GroupPolicyHeader = $"Policies > Administrative Templates ({total} settings)";
+                return;
+            }
+
+            // Walk the flat list: for each section header, collect its policy rows,
+            // check if any match, and if so include the header + matching rows.
+            GpDocumentRow? currentHeader = null;
+            var pendingRows = new List<GpDocumentRow>();
+            int matchCount = 0;
+
+            foreach (var row in _allGpDocRows)
+            {
+                if (row.IsSectionHeader)
+                {
+                    // Flush previous section if it had matches
+                    if (currentHeader != null && pendingRows.Count > 0)
+                    {
+                        GroupPolicyDocRows.Add(new GpDocumentRow
+                        {
+                            IsSectionHeader = true,
+                            CategoryPath = currentHeader.CategoryPath,
+                            SettingCount = pendingRows.Count
+                        });
+                        foreach (var r in pendingRows)
+                            GroupPolicyDocRows.Add(r);
+                    }
+
+                    currentHeader = row;
+                    pendingRows.Clear();
+                }
+                else
+                {
+                    // Check if this policy row matches the search
+                    if (MatchesGpSearch(row, search))
+                    {
+                        pendingRows.Add(row);
+                        matchCount++;
+                    }
+                }
+            }
+
+            // Flush last section
+            if (currentHeader != null && pendingRows.Count > 0)
+            {
+                GroupPolicyDocRows.Add(new GpDocumentRow
+                {
+                    IsSectionHeader = true,
+                    CategoryPath = currentHeader.CategoryPath,
+                    SettingCount = pendingRows.Count
+                });
+                foreach (var r in pendingRows)
+                    GroupPolicyDocRows.Add(r);
+            }
+
+            GroupPolicyHeader = $"Policies > Administrative Templates ({matchCount} of {_allGpDocRows.Count(r => !r.IsSectionHeader)} settings)";
+        }
+
+        private static bool MatchesGpSearch(GpDocumentRow row, string search)
+        {
+            if (row.PolicyName.Contains(search, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (row.SettingValue.Contains(search, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var item = row.PolicyItem;
+            if (item == null) return false;
+
+            if (item.RegistryPath.Contains(search, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (item.RegistryValueName.Contains(search, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (!string.IsNullOrEmpty(item.Description) &&
+                item.Description.Contains(search, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        private static int CountPolicySettings(List<GroupPolicyCategory> categories)
+        {
+            int count = 0;
+            foreach (var cat in categories)
+            {
+                count += cat.Items.Count;
+                count += cat.SubCategories.Sum(sc => CountPolicySettingsRecursive(sc));
+            }
+            return count;
+        }
+
+        private static int CountPolicySettingsRecursive(GroupPolicyCategory category)
+        {
+            int count = category.Items.Count;
+            foreach (var sub in category.SubCategories)
+                count += CountPolicySettingsRecursive(sub);
+            return count;
+        }
+
+        private void OnGroupPolicyRowSelected()
+        {
+            var row = SelectedGroupPolicyRow;
+            if (row == null || row.IsSectionHeader) return;
+
+            var item = row.PolicyItem;
+            if (item == null) return;
+
+            // Show registry path in the path bar
+            DetailRegistryPath = item.RegistryPath;
+
+            // Build rich detail text for the bottom panel
+            var sb = new System.Text.StringBuilder();
+
+            // Policy name
+            string policyName = !string.IsNullOrEmpty(item.FriendlyName)
+                ? item.FriendlyName
+                : item.Name;
+            sb.AppendLine(policyName);
+            sb.AppendLine();
+
+            // ADMX description (can be multi-paragraph)
+            // Strip leading policy name from description to avoid duplication
+            if (!string.IsNullOrEmpty(item.Description))
+            {
+                var desc = item.Description;
+                if (desc.StartsWith(policyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    desc = desc.Substring(policyName.Length).TrimStart('\r', '\n', ' ', '.', '-', ':');
+                }
+                if (!string.IsNullOrWhiteSpace(desc))
+                {
+                    sb.AppendLine(desc);
+                    sb.AppendLine();
+                }
+            }
+
+            // Registry details
+            sb.AppendLine($"Registry Path: {item.RegistryPath}");
+            sb.AppendLine($"Value Name: {item.RegistryValueName}");
+            if (!string.IsNullOrEmpty(item.ValueType))
+                sb.AppendLine($"Value Type: {item.ValueType}");
+            sb.AppendLine($"Raw Value: {item.Value}");
+
+            if (!string.IsNullOrEmpty(item.FriendlyValue))
+                sb.AppendLine($"Interpreted: {item.FriendlyValue}");
+
+            if (!string.IsNullOrEmpty(item.SupportedOn))
+                sb.AppendLine($"Supported On: {item.SupportedOn}");
+
+            DetailValueText = sb.ToString().TrimEnd();
         }
 
         private void DisplayRolesFeatures()

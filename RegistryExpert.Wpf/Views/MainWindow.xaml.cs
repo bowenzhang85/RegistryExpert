@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -8,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using RegistryExpert.Core;
+using RegistryExpert.Core.Models;
 using RegistryExpert.Wpf.Helpers;
 using RegistryExpert.Wpf.ViewModels;
 
@@ -49,6 +51,8 @@ namespace RegistryExpert.Wpf.Views
             ViewModel.RequestOpenAbout += OnRequestOpenAbout;
             ViewModel.RequestShowUpdateResult += OnRequestShowUpdateResult;
             ViewModel.RequestScrollToNode += OnRequestScrollToNode;
+            ViewModel.RequestShowHivePicker += OnRequestShowHivePicker;
+            ViewModel.RequestShowRecentBundles += OnRequestShowRecentBundles;
 
             // Auto-check for updates on startup
             _ = CheckForUpdatesOnStartupAsync();
@@ -69,11 +73,46 @@ namespace RegistryExpert.Wpf.Views
             ViewModel.RequestOpenAbout -= OnRequestOpenAbout;
             ViewModel.RequestShowUpdateResult -= OnRequestShowUpdateResult;
             ViewModel.RequestScrollToNode -= OnRequestScrollToNode;
+            ViewModel.RequestShowHivePicker -= OnRequestShowHivePicker;
+            ViewModel.RequestShowRecentBundles -= OnRequestShowRecentBundles;
         }
 
         private void OnThemeChanged(object? sender, EventArgs e)
         {
             ThemeManager.ApplyWindowChrome(this);
+        }
+
+        // ── Hive picker dialog ────────────────────────────────────────────
+
+        private List<DiscoveredHive>? OnRequestShowHivePicker(List<DiscoveredHive> discovered)
+        {
+            var items = discovered.Select(h => new HivePickerItem(h)).ToList();
+            var picker = new HivePickerWindow(items)
+            {
+                Owner = this
+            };
+
+            if (picker.ShowDialog() == true)
+            {
+                return picker.SelectedItems
+                    .Select(i => i.Hive)
+                    .ToList();
+            }
+
+            return null;
+        }
+
+        private (BundleInfo? Selected, bool BrowseRequested) OnRequestShowRecentBundles(List<BundleInfo> bundles)
+        {
+            var dialog = new RecentBundlesWindow(bundles)
+            {
+                Owner = this
+            };
+
+            if (dialog.ShowDialog() == true)
+                return (dialog.SelectedBundle, false);
+
+            return (null, dialog.BrowseRequested);
         }
 
         // ── Search window ─────────────────────────────────────────────────
@@ -604,11 +643,20 @@ namespace RegistryExpert.Wpf.Views
             if (!e.Data.GetDataPresent(DataFormats.FileDrop))
                 return;
 
-            if (e.Data.GetData(DataFormats.FileDrop) is string[] files)
+            if (e.Data.GetData(DataFormats.FileDrop) is string[] paths)
             {
-                foreach (var file in files)
+                foreach (var path in paths)
                 {
-                    await ViewModel.LoadHiveFileAsync(file);
+                    if (Directory.Exists(path))
+                    {
+                        // It's a folder — scan it for hive files
+                        await ViewModel.LoadHivesFromFolderAsync(path);
+                    }
+                    else
+                    {
+                        // It's a file — load it directly
+                        await ViewModel.LoadHiveFileAsync(path);
+                    }
                 }
             }
         }
@@ -633,15 +681,16 @@ namespace RegistryExpert.Wpf.Views
                 return;
             }
 
-            foreach (var kvp in loadedHives.OrderBy(h => h.Key.ToString()))
+            foreach (var kvp in loadedHives.OrderBy(h => h.Value.RootNode.DisplayName))
             {
-                var hiveType = kvp.Key;
+                var hiveKey = kvp.Key;
                 var hiveInfo = kvp.Value;
+                var displayName = hiveInfo.RootNode.DisplayName;
                 var item = new MenuItem
                 {
-                    Header = $"{hiveType} — {System.IO.Path.GetFileName(hiveInfo.FilePath)}"
+                    Header = $"{displayName} — {System.IO.Path.GetFileName(hiveInfo.FilePath)}"
                 };
-                item.Click += (s, args) => ViewModel.CloseHiveCommand.Execute(hiveType);
+                item.Click += (s, args) => ViewModel.CloseHiveCommand.Execute(hiveKey);
                 menuItem.Items.Add(item);
             }
         }

@@ -5,6 +5,8 @@ using System.Text;
 using System.Windows;
 using Microsoft.Win32;
 using RegistryExpert.Core;
+using RegistryExpert.Core.Models;
+using RegistryExpert.Core.Services;
 using RegistryExpert.Wpf.Helpers;
 using RegistryParser.Abstractions;
 using HiveType = RegistryExpert.Core.OfflineRegistryParser.HiveType;
@@ -24,11 +26,12 @@ namespace RegistryExpert.Wpf.ViewModels
         private bool _hasLoadedHives;
         private RegistryKeyNode? _selectedTreeNode;
         private RegistryValueItem? _selectedValue;
+        private bool _isPopulatingValues;
         private string _detailsText = "";
         private bool _isBookmarkPanelExpanded;
         private bool _hasBookmarks;
 
-        private readonly Dictionary<HiveType, LoadedHiveInfo> _loadedHives = new();
+        private readonly Dictionary<string, LoadedHiveInfo> _loadedHives = new();
         private CancellationTokenSource? _loadCts;
         private readonly AppSettings _settings;
 
@@ -114,7 +117,7 @@ namespace RegistryExpert.Wpf.ViewModels
             set => SetProperty(ref _hasBookmarks, value);
         }
 
-        public IReadOnlyDictionary<HiveType, LoadedHiveInfo> LoadedHives => _loadedHives;
+        public IReadOnlyDictionary<string, LoadedHiveInfo> LoadedHives => _loadedHives;
 
         /// <summary>
         /// Find the LoadedHiveInfo for the currently selected tree node by walking up to its root.
@@ -160,6 +163,7 @@ namespace RegistryExpert.Wpf.ViewModels
         public RelayCommand OpenTimelineCommand { get; }
         public RelayCommand AboutCommand { get; }
         public AsyncRelayCommand CheckForUpdatesCommand { get; }
+        public AsyncRelayCommand OpenFolderCommand { get; }
 
         // ── Events ──────────────────────────────────────────────────────────
 
@@ -187,6 +191,12 @@ namespace RegistryExpert.Wpf.ViewModels
         /// <summary>Raised when the View should scroll a navigated node (and optional value) into view.</summary>
         public event Action<RegistryKeyNode, string?>? RequestScrollToNode;
 
+        /// <summary>Raised when the View should show the hive picker dialog after folder scan.</summary>
+        public event Func<List<DiscoveredHive>, List<DiscoveredHive>?>? RequestShowHivePicker;
+
+        /// <summary>Raised when the View should show the recent bundles quick-pick dialog.</summary>
+        public event Func<List<BundleInfo>, (BundleInfo? Selected, bool BrowseRequested)>? RequestShowRecentBundles;
+
         // ── Constructor ─────────────────────────────────────────────────────
 
         public MainViewModel()
@@ -210,6 +220,7 @@ namespace RegistryExpert.Wpf.ViewModels
             OpenTimelineCommand = new RelayCommand(() => RequestOpenTimeline?.Invoke(), () => HasLoadedHives);
             AboutCommand = new RelayCommand(() => RequestOpenAbout?.Invoke());
             CheckForUpdatesCommand = new AsyncRelayCommand(OnCheckForUpdates);
+            OpenFolderCommand = new AsyncRelayCommand(OnOpenFolder);
         }
 
         // ── Command handlers ────────────────────────────────────────────────
@@ -219,7 +230,7 @@ namespace RegistryExpert.Wpf.ViewModels
             var dlg = new OpenFileDialog
             {
                 Title = "Open Registry Hive",
-                Filter = "Registry Hive Files|*.dat;SYSTEM;SOFTWARE;SAM;SECURITY;NTUSER*;USRCLASS*;DEFAULT;AMCACHE*;BCD;COMPONENTS|All Files|*.*",
+                Filter = "Registry Hive Files|*.dat;*.hiv;SYSTEM;SOFTWARE;SAM;SECURITY;NTUSER*;USRCLASS*;DEFAULT;AMCACHE*;BCD;COMPONENTS|All Files|*.*",
                 FilterIndex = 2,
                 CheckFileExists = true,
                 Multiselect = true
@@ -234,15 +245,155 @@ namespace RegistryExpert.Wpf.ViewModels
             }
         }
 
+        private async Task OnOpenFolder(object? _)
+        {
+            // Check for recent IID/TSS bundles in Downloads
+            var recentBundles = HiveBundleScanner.FindRecentBundles();
+            if (recentBundles.Count > 0 && RequestShowRecentBundles != null)
+            {
+                var (selected, browseRequested) = RequestShowRecentBundles.Invoke(recentBundles);
+                if (selected != null)
+                {
+                    await LoadHivesFromFolderAsync(selected.FolderPath);
+                    return;
+                }
+                if (!browseRequested)
+                    return; // User cancelled — do nothing
+                // Fall through to folder picker
+            }
+
+            var dlg = new OpenFolderDialog
+            {
+                Title = "Select a folder containing registry hive files",
+                Multiselect = false
+            };
+
+            if (dlg.ShowDialog() != true) return;
+
+            await LoadHivesFromFolderAsync(dlg.FolderName);
+        }
+
+        public async Task LoadHivesFromFolderAsync(string folderPath)
+        {
+            _loadCts?.Cancel();
+            _loadCts?.Dispose();
+            _loadCts = new CancellationTokenSource();
+            var ct = _loadCts.Token;
+
+            IsLoading = true;
+            LoadProgress = 0;
+            StatusText = "Scanning folder for registry hives...";
+
+            List<DiscoveredHive> discovered;
+            try
+            {
+                var scanner = new HiveBundleScanner();
+                var scanProgress = new Progress<string>(msg => StatusText = msg);
+
+                discovered = await scanner.ScanFolderAsync(folderPath, scanProgress, ct)
+                    .ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                StatusText = "Folder scan cancelled";
+                return;
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Error scanning folder: {ex.Message}";
+                return;
+            }
+            finally
+            {
+                IsLoading = false;
+                LoadProgress = 0;
+            }
+
+            if (discovered.Count == 0)
+            {
+                StatusText = "No registry hive files found in folder";
+                return;
+            }
+
+            // Show picker dialog and let the user select which hives to load
+            var selected = RequestShowHivePicker?.Invoke(discovered);
+            if (selected == null || selected.Count == 0)
+            {
+                StatusText = "No hives selected";
+                return;
+            }
+
+            // Load selected hives
+            IsLoading = true;
+            LoadProgress = 0;
+            var loaded = 0;
+            var failed = 0;
+
+            try
+            {
+                foreach (var hive in selected)
+                {
+                    loaded++;
+                    StatusText = $"Loading {Path.GetFileName(hive.FilePath)} ({loaded} of {selected.Count})...";
+                    LoadProgress = (double)loaded / selected.Count * 100;
+
+                    try
+                    {
+                        await LoadHiveFileAsync(hive.FilePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        failed++;
+                        Debug.WriteLine($"Failed to load hive {hive.FilePath}: {ex.Message}");
+                        StatusText = $"Failed to load {Path.GetFileName(hive.FilePath)}: {ex.Message}";
+                        await Task.Delay(1500, CancellationToken.None).ConfigureAwait(true);
+                    }
+                }
+
+                // When 3+ hives were selected, collapse all roots for a clean overview.
+                // Children are already cached from the initial expand during load,
+                // so re-expanding later is instant.
+                if (selected.Count >= 3)
+                {
+                    foreach (var root in TreeRoots)
+                        root.IsExpanded = false;
+                }
+
+                var successCount = loaded - failed;
+                StatusText = failed > 0
+                    ? $"Loaded {successCount} of {selected.Count} hive(s) ({failed} failed)"
+                    : $"Loaded {successCount} hive(s) from folder";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Error loading hives: {ex.Message}";
+            }
+            finally
+            {
+                IsLoading = false;
+                LoadProgress = 0;
+            }
+        }
+
         private void OnCloseHive(object? parameter)
         {
-            if (parameter is HiveType hiveType)
+            if (parameter is not string hiveKey) return;
+
+            // Direct key match (works for known types and for the Unload Hive menu)
+            if (_loadedHives.ContainsKey(hiveKey))
             {
-                CloseHive(hiveType);
+                CloseHive(hiveKey);
+                return;
             }
-            else if (parameter is string hiveTypeStr && Enum.TryParse<HiveType>(hiveTypeStr, true, out var parsed))
+
+            // Fallback: match by RootNode.DisplayName (for tree context menu "Unload Hive")
+            foreach (var kvp in _loadedHives)
             {
-                CloseHive(parsed);
+                if (string.Equals(kvp.Value.RootNode.DisplayName, hiveKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    CloseHive(kvp.Key);
+                    return;
+                }
             }
         }
 
@@ -405,10 +556,11 @@ namespace RegistryExpert.Wpf.ViewModels
                 }
 
                 var hiveType = parser.CurrentHiveType;
-                var hiveName = hiveType.ToString();
+                var hiveKey = GetHiveKey(hiveType, filePath);
+                var hiveName = GetFriendlyHiveName(hiveType, filePath);
 
                 // If this hive type is already loaded, ask to replace
-                if (_loadedHives.TryGetValue(hiveType, out var existing))
+                if (_loadedHives.TryGetValue(hiveKey, out var existing))
                 {
                     var existingFile = Path.GetFileName(existing.FilePath);
                     var result = System.Windows.MessageBox.Show(
@@ -426,7 +578,7 @@ namespace RegistryExpert.Wpf.ViewModels
 
                     TreeRoots.Remove(existing.RootNode);
                     existing.Dispose();
-                    _loadedHives.Remove(hiveType);
+                    _loadedHives.Remove(hiveKey);
                 }
 
                 var extractor = new RegistryInfoExtractor(parser);
@@ -439,7 +591,7 @@ namespace RegistryExpert.Wpf.ViewModels
                     RootNode = rootNode
                 };
 
-                _loadedHives[hiveType] = hiveInfo;
+                _loadedHives[hiveKey] = hiveInfo;
                 TreeRoots.Add(rootNode);
                 rootNode.IsExpanded = true;
 
@@ -470,15 +622,15 @@ namespace RegistryExpert.Wpf.ViewModels
         }
 
         /// <summary>
-        /// Close and remove a loaded hive by type.
+        /// Close and remove a loaded hive by its dictionary key.
         /// </summary>
-        public void CloseHive(HiveType hiveType)
+        public void CloseHive(string hiveKey)
         {
-            if (!_loadedHives.TryGetValue(hiveType, out var hiveInfo))
+            if (!_loadedHives.TryGetValue(hiveKey, out var hiveInfo))
                 return;
 
             TreeRoots.Remove(hiveInfo.RootNode);
-            _loadedHives.Remove(hiveType);
+            _loadedHives.Remove(hiveKey);
             hiveInfo.Dispose();
 
             UpdateHiveSeparators();
@@ -494,7 +646,8 @@ namespace RegistryExpert.Wpf.ViewModels
                 SelectedTreeNode = null;
             }
 
-            StatusText = $"Unloaded {hiveType} hive";
+            var displayName = hiveInfo.RootNode.DisplayName;
+            StatusText = $"Unloaded {displayName} hive";
 
             // Help free memory from large hive files
             GC.Collect();
@@ -506,6 +659,8 @@ namespace RegistryExpert.Wpf.ViewModels
         /// </summary>
         private void OnTreeNodeSelected()
         {
+            if (_isPopulatingValues) return;
+
             var node = SelectedTreeNode;
             if (node?.RegistryKey == null)
             {
@@ -515,18 +670,26 @@ namespace RegistryExpert.Wpf.ViewModels
             }
 
             // Populate values: default value first, then alphabetical by name
-            Values.Clear();
             var key = node.RegistryKey;
-            if (key.Values != null)
+            _isPopulatingValues = true;
+            try
             {
-                var ordered = key.Values
-                    .Select(v => new RegistryValueItem(v))
-                    .OrderBy(v => string.IsNullOrEmpty(v.KeyValue.ValueName) ? 0 : 1)
-                    .ThenBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                Values.Clear();
+                if (key.Values != null)
+                {
+                    var ordered = key.Values
+                        .Select(v => new RegistryValueItem(v))
+                        .OrderBy(v => string.IsNullOrEmpty(v.KeyValue.ValueName) ? 0 : 1)
+                        .ThenBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
 
-                foreach (var item in ordered)
-                    Values.Add(item);
+                    foreach (var item in ordered)
+                        Values.Add(item);
+                }
+            }
+            finally
+            {
+                _isPopulatingValues = false;
             }
 
             // Show key metadata in details panel
@@ -674,9 +837,9 @@ namespace RegistryExpert.Wpf.ViewModels
         {
             Bookmarks.Clear();
 
-            foreach (var hiveType in _loadedHives.Keys.OrderBy(h => h.ToString()))
+            foreach (var hive in _loadedHives.Values.OrderBy(h => h.RootNode.DisplayName))
             {
-                var hiveName = hiveType.ToString();
+                var hiveName = hive.Parser.FriendlyName;
                 if (_bookmarkDefinitions.TryGetValue(hiveName, out var defs))
                 {
                     foreach (var (name, path) in defs)
@@ -705,9 +868,9 @@ namespace RegistryExpert.Wpf.ViewModels
             }
             else
             {
-                var hiveNames = _loadedHives.Keys
-                    .OrderBy(h => h.ToString())
-                    .Select(h => h.ToString());
+                var hiveNames = _loadedHives.Values
+                    .Select(h => h.RootNode.DisplayName)
+                    .OrderBy(n => n);
                 WindowTitle = $"Registry Expert - {string.Join(", ", hiveNames)}";
             }
         }
@@ -723,7 +886,7 @@ namespace RegistryExpert.Wpf.ViewModels
             }
             else if (_loadedHives.Count == 1)
             {
-                HiveStatusText = $"● {_loadedHives.Keys.First()}";
+                HiveStatusText = $"● {_loadedHives.Values.First().RootNode.DisplayName}";
             }
             else
             {
@@ -741,6 +904,39 @@ namespace RegistryExpert.Wpf.ViewModels
             {
                 TreeRoots[i].ShowSeparator = i > 0;
             }
+        }
+
+        /// <summary>
+        /// Generate the dictionary key for a loaded hive.
+        /// Known hive types use their enum name (so SYSTEM, SOFTWARE, etc. are deduplicated).
+        /// Unknown hives use the full file path so multiple can coexist.
+        /// </summary>
+        private static string GetHiveKey(HiveType hiveType, string filePath)
+        {
+            if (hiveType != HiveType.Unknown)
+                return hiveType.ToString();
+            return filePath;
+        }
+
+        /// <summary>
+        /// Derive a friendly display name for a hive based on its type and filename.
+        /// For known types, returns the enum name. For Unknown hives, extracts a name
+        /// from the filename (e.g., TSS "_reg_" pattern or just the filename without extension).
+        /// </summary>
+        private static string GetFriendlyHiveName(HiveType hiveType, string filePath)
+        {
+            if (hiveType != HiveType.Unknown)
+                return hiveType.ToString();
+
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(filePath);
+
+            // TSS pattern: {hostname}_reg_{name}.hiv → show "{name}"
+            var regIndex = nameWithoutExt.IndexOf("_reg_", StringComparison.OrdinalIgnoreCase);
+            if (regIndex >= 0)
+                return nameWithoutExt.Substring(regIndex + 5);
+
+            // Fallback: just use the filename without extension
+            return nameWithoutExt;
         }
 
         /// <summary>

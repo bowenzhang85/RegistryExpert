@@ -233,7 +233,7 @@ namespace RegistryExpert.Wpf.ViewModels
             _activeHive = loadedHives[0];
 
             foreach (var h in loadedHives)
-                HiveNames.Add(h.HiveType.ToString());
+                HiveNames.Add(h.Parser.FriendlyName);
 
             ScanCommand = new AsyncRelayCommand(OnScanAsync);
             ExportCommand = new RelayCommand(OnExport);

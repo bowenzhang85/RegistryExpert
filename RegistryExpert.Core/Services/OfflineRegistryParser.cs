@@ -23,6 +23,13 @@ namespace RegistryExpert.Core
         public string? FilePath => _filePath;
         public HiveType CurrentHiveType => _hiveType;
 
+        /// <summary>
+        /// User-friendly display name for this hive.
+        /// For known types (SYSTEM, SOFTWARE, etc.) returns the enum name.
+        /// For Unknown types, extracts a name from the filename (e.g. "services" from "HOST_reg_services.hiv").
+        /// </summary>
+        public string FriendlyName { get; private set; } = "Unknown";
+
         // Health check properties — expose hive internals for integrity validation
         public bool HasValidSignature => _hive?.HasValidSignature() ?? false;
         public bool IsChecksumValid => _hive?.Header?.ValidateCheckSum() ?? false;
@@ -91,6 +98,7 @@ namespace RegistryExpert.Core
                 _hive = newHive;
                 _filePath = filePath;
                 _hiveType = DetectHiveType(filePath, _hive);
+                FriendlyName = BuildFriendlyName(_hiveType, filePath);
                 return true;
             }
             catch (InvalidOperationException)
@@ -117,7 +125,35 @@ namespace RegistryExpert.Core
         private HiveType DetectHiveType(string filePath, RegistryHive hive)
         {
             string fileName = Path.GetFileName(filePath).ToUpperInvariant();
-            
+
+            // Handle TSS pattern: {hostname}_REG_{name}.hiv
+            // Only match if the extracted name exactly matches a known hive name.
+            // This prevents false positives like "DriverDatabase_System.hiv" → SYSTEM.
+            var regIndex = fileName.IndexOf("_REG_", StringComparison.Ordinal);
+            if (regIndex >= 0)
+            {
+                var regName = Path.GetFileNameWithoutExtension(fileName.Substring(regIndex + 5));
+                var exactMatch = regName switch
+                {
+                    "SAM" => HiveType.SAM,
+                    "SECURITY" => HiveType.SECURITY,
+                    "SOFTWARE" => HiveType.SOFTWARE,
+                    "SYSTEM" => HiveType.SYSTEM,
+                    "NTUSER" => HiveType.NTUSER,
+                    "USRCLASS" => HiveType.USRCLASS,
+                    "DEFAULT" => HiveType.DEFAULT,
+                    "AMCACHE" => HiveType.AMCACHE,
+                    "BCD" => HiveType.BCD,
+                    "COMPONENTS" => HiveType.COMPONENTS,
+                    _ => (HiveType?)null
+                };
+                if (exactMatch.HasValue)
+                    return exactMatch.Value;
+
+                // Not a known name — try content-based detection, then Unknown
+                return DetectHiveTypeByContent(hive);
+            }
+
             if (fileName.Contains("SAM")) return HiveType.SAM;
             if (fileName.Contains("SECURITY")) return HiveType.SECURITY;
             if (fileName.Contains("SOFTWARE")) return HiveType.SOFTWARE;
@@ -130,13 +166,21 @@ namespace RegistryExpert.Core
             if (fileName.Contains("COMPONENTS")) return HiveType.COMPONENTS;
 
             // Try to detect by content
+            return DetectHiveTypeByContent(hive);
+        }
+
+        /// <summary>
+        /// Attempt to detect hive type by inspecting root subkey names.
+        /// </summary>
+        private static HiveType DetectHiveTypeByContent(RegistryHive hive)
+        {
             try
             {
                 var root = hive.Root;
                 if (root?.SubKeys != null)
                 {
                     var subKeyNames = root.SubKeys.Select(k => k.KeyName.ToUpperInvariant()).ToList();
-                    
+
                     if (subKeyNames.Contains("SAM")) return HiveType.SAM;
                     if (subKeyNames.Contains("POLICY")) return HiveType.SECURITY;
                     if (subKeyNames.Contains("MICROSOFT") && subKeyNames.Contains("CLASSES")) return HiveType.SOFTWARE;
@@ -148,11 +192,34 @@ namespace RegistryExpert.Core
             }
             catch
             {
-                // Silently fail content-based detection - filename detection already ran
-                // Return Unknown below as fallback
+                // Silently fail content-based detection
             }
 
             return HiveType.Unknown;
+        }
+
+        /// <summary>
+        /// Build a user-friendly display name for the hive.
+        /// Known types use the enum name; Unknown types extract a name from the filename.
+        /// </summary>
+        private static string BuildFriendlyName(HiveType hiveType, string filePath)
+        {
+            if (hiveType != HiveType.Unknown)
+                return hiveType.ToString();
+
+            var fileName = Path.GetFileNameWithoutExtension(filePath);
+
+            // TSS pattern: {hostname}_reg_{name}.hiv → show "{name}"
+            var regIndex = fileName.IndexOf("_reg_", StringComparison.OrdinalIgnoreCase);
+            if (regIndex >= 0)
+            {
+                var name = fileName.Substring(regIndex + 5);
+                if (!string.IsNullOrWhiteSpace(name))
+                    return name;
+            }
+
+            // Fallback: use the filename itself
+            return string.IsNullOrWhiteSpace(fileName) ? "Unknown" : fileName;
         }
 
         /// <summary>
@@ -317,7 +384,7 @@ namespace RegistryExpert.Core
             CountRecursive(_hive.Root, stats);
             if (!string.IsNullOrEmpty(_filePath) && File.Exists(_filePath))
                 stats.FileSize = new FileInfo(_filePath).Length;
-            stats.HiveType = _hiveType.ToString();
+            stats.HiveType = FriendlyName;
             
             return stats;
         }
@@ -345,7 +412,7 @@ namespace RegistryExpert.Core
         {
             if (string.IsNullOrEmpty(keyPath)) return keyPath;
             
-            var hiveName = _hiveType.ToString();
+            var hiveName = FriendlyName;
             var rootName = _hive?.Root?.KeyName ?? "ROOT";
             
             if (keyPath.StartsWith(rootName + "\\", StringComparison.OrdinalIgnoreCase))

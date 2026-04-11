@@ -143,4 +143,25 @@ namespace RegistryExpert.Wpf.Helpers
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
             => value is GridLength gl ? gl.Value : 280.0;
     }
+
+    /// <summary>
+    /// Selects between section header and policy row templates for the GPResult-style document view.
+    /// </summary>
+    public class GpDocumentTemplateSelector : System.Windows.Controls.DataTemplateSelector
+    {
+        public DataTemplate? SectionHeaderTemplate { get; set; }
+        public DataTemplate? PolicyRowTemplate { get; set; }
+        public DataTemplate? ListChildRowTemplate { get; set; }
+
+        public override DataTemplate? SelectTemplate(object item, DependencyObject container)
+        {
+            if (item is AnalyzeViewModel.GpDocumentRow row)
+            {
+                if (row.IsSectionHeader) return SectionHeaderTemplate;
+                if (row.IsListChild) return ListChildRowTemplate;
+                return PolicyRowTemplate;
+            }
+            return base.SelectTemplate(item, container);
+        }
+    }
 }

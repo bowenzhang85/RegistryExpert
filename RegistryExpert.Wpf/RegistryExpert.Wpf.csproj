@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>RegistryExpert.Wpf</RootNamespace>
     <AssemblyName>RegistryExpert</AssemblyName>
-    <Version>2.0.0</Version>
+    <Version>2.1.0</Version>
     <Company>RegistryExpert</Company>
     <Product>Registry Expert - Offline Registry Viewer</Product>
     <Description>A lightweight tool for viewing and analyzing offline Windows registry hive files</Description>
@@ -37,6 +37,7 @@
     <Resource Include="..\Assets\registry_icon_rdp.png" Link="Assets\registry_icon_rdp.png" />
     <Resource Include="..\Assets\registry_icon_update.png" Link="Assets\registry_icon_update.png" />
     <Resource Include="..\Assets\registry_icon_open.png" Link="Assets\registry_icon_open.png" />
+    <Resource Include="..\Assets\registry_icon_open_folder.png" Link="Assets\registry_icon_open_folder.png" />
     <Resource Include="..\Assets\registry_icon_search.png" Link="Assets\registry_icon_search.png" />
     <Resource Include="..\Assets\registry_icon_analyze.png" Link="Assets\registry_icon_analyze.png" />
     <Resource Include="..\Assets\registry_icon_statistics.png" Link="Assets\registry_icon_statistics.png" />

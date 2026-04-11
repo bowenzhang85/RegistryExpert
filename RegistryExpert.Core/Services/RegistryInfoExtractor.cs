@@ -6,6 +6,7 @@ using System.Text;
 using RegistryParser.Abstractions;
 using RegistryParser.Cells;
 using RegistryExpert.Core.Models;
+using RegistryExpert.Core.Services;
 
 namespace RegistryExpert.Core
 {
@@ -303,9 +304,9 @@ namespace RegistryExpert.Core
             hiveSection.Items.Add(new AnalysisItem 
             { 
                 Name = "Hive Type", 
-                Value = _parser.CurrentHiveType.ToString(),
+                Value = _parser.FriendlyName,
                 RegistryPath = _parser.FilePath ?? "Unknown",
-                RegistryValue = $"Detected hive type: {_parser.CurrentHiveType}"
+                RegistryValue = $"Detected hive type: {_parser.FriendlyName}"
             });
             
             // Control Sets (SYSTEM hive)
@@ -825,68 +826,6 @@ namespace RegistryExpert.Core
             }
 
             sections.Add(dumpSection); // Always add for UI consistency
-
-            // Guest Agent section - content depends on hive type
-            var guestSection = new AnalysisSection { Title = "☁️ Guest Agent" };
-            
-            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
-            {
-                // SOFTWARE hive: Show VmId, VmType, and grayed out agent status
-                string azurePath = @"Microsoft\Windows Azure";
-                var azureKey = _parser.GetKey(azurePath);
-                
-                // Get VmId
-                var vmId = GetValue(azurePath, "VmId");
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "VmId",
-                    Value = !string.IsNullOrEmpty(vmId) ? vmId : "Not Found",
-                    RegistryPath = azurePath,
-                    RegistryValue = !string.IsNullOrEmpty(vmId) ? $"VmId = {vmId}" : "VmId not present"
-                });
-                
-                // Get VmType if present
-                var vmType = GetValue(azurePath, "VmType");
-                if (!string.IsNullOrEmpty(vmType))
-                {
-                    guestSection.Items.Add(new AnalysisItem
-                    {
-                        Name = "VmType",
-                        Value = vmType,
-                        RegistryPath = azurePath,
-                        RegistryValue = $"VmType = {vmType}"
-                    });
-                }
-                
-                // Extensions are now shown via separate sub-tab (↳ Extensions)
-            }
-            else
-            {
-                // SYSTEM hive: Show agent service info
-                string waGuestAgentPath = $@"{_currentControlSet}\Services\WindowsAzureGuestAgent";
-                var waImagePath = GetValue(waGuestAgentPath, "ImagePath") ?? "";
-                var waVersion = ExtractAgentVersionInfo(waImagePath);
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "WindowsAzureGuestAgent",
-                    Value = string.IsNullOrEmpty(waImagePath) ? "Not Found" : (string.IsNullOrEmpty(waVersion) ? TruncatePath(waImagePath, 100) : waVersion),
-                    RegistryPath = waGuestAgentPath,
-                    RegistryValue = string.IsNullOrEmpty(waImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(waImagePath, 140)}"
-                });
-
-                string rdAgentPath = $@"{_currentControlSet}\Services\RdAgent";
-                var rdImagePath = GetValue(rdAgentPath, "ImagePath") ?? "";
-                var rdVersion = ExtractAgentVersionInfo(rdImagePath);
-                guestSection.Items.Add(new AnalysisItem
-                {
-                    Name = "RdAgent",
-                    Value = string.IsNullOrEmpty(rdImagePath) ? "Not Found" : (string.IsNullOrEmpty(rdVersion) ? TruncatePath(rdImagePath, 100) : rdVersion),
-                    RegistryPath = rdAgentPath,
-                    RegistryValue = string.IsNullOrEmpty(rdImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(rdImagePath, 140)}"
-                });
-            }
-
-            sections.Add(guestSection);
 
             // System Time Configuration (SYSTEM hive) - Windows Time Service (w32time)
             sections.Add(GetSystemTimeAnalysis());
@@ -6382,13 +6321,411 @@ namespace RegistryExpert.Core
         }
 
         /// <summary>
+        /// Get security software registered with Windows Security Center
+        /// </summary>
+        public AnalysisSection GetSecuritySoftwareAnalysis()
+        {
+            var section = new AnalysisSection { Title = "🛡️ Security Software" };
+
+            // ── Pre-read Defender details for enrichment ─────────────────────
+            string defenderPath = @"Microsoft\Windows Defender";
+            var defenderKey = _parser.GetKey(defenderPath);
+
+            // Check disable flags and policy overrides
+            var disableAV = defenderKey?.Values.FirstOrDefault(v => v.ValueName == "DisableAntiVirus")?.ValueData?.ToString() ?? "0";
+            var disableAS = defenderKey?.Values.FirstOrDefault(v => v.ValueName == "DisableAntiSpyware")?.ValueData?.ToString() ?? "0";
+
+            string policyPath = @"Policies\Microsoft\Windows Defender";
+            var policyKey = _parser.GetKey(policyPath);
+            var policyDisableAS = policyKey?.Values?.FirstOrDefault(v => v.ValueName == "DisableAntiSpyware")?.ValueData?.ToString();
+            var policyDisableAV = policyKey?.Values?.FirstOrDefault(v => v.ValueName == "DisableAntiVirus")?.ValueData?.ToString();
+
+            bool defenderDisabledByPolicy = policyDisableAS == "1" || policyDisableAV == "1";
+            bool defenderDisabledByFlag = disableAV == "1" || disableAS == "1";
+
+            // Read signature info
+            string sigPath = @"Microsoft\Windows Defender\Signature Updates";
+            var sigKey = _parser.GetKey(sigPath);
+            string defenderDefinition = "";
+            if (sigKey != null)
+            {
+                var avSigVer = sigKey.Values.FirstOrDefault(v => v.ValueName == "AVSignatureVersion")?.ValueData?.ToString() ?? "";
+                var sigLastUpdatedVal = sigKey.Values.FirstOrDefault(v => v.ValueName == "SignaturesLastUpdated");
+                string lastUpdatedStr = "";
+
+                if (sigLastUpdatedVal?.ValueDataRaw is byte[] sigBytes && sigBytes.Length >= 8)
+                {
+                    long fileTime = BitConverter.ToInt64(sigBytes, 0);
+                    var dt = FileTimeToDateTimeUtc(fileTime);
+                    if (dt.HasValue)
+                        lastUpdatedStr = dt.Value.ToString("MMM d, yyyy");
+                }
+
+                if (!string.IsNullOrEmpty(avSigVer) && !string.IsNullOrEmpty(lastUpdatedStr))
+                    defenderDefinition = $"{avSigVer} ({lastUpdatedStr})";
+                else if (!string.IsNullOrEmpty(avSigVer))
+                    defenderDefinition = avSigVer;
+            }
+
+            // ── Security Center Providers ────────────────────────────────────
+            string providerBasePath = @"Microsoft\Security Center\Provider";
+            var providerTypes = new[]
+            {
+                ("Av", "Antivirus"),
+                ("Fw", "Firewall")
+            };
+
+            bool foundAny = false;
+            var providers = new List<AnalysisItem>();
+
+            foreach (var (subKey, typeName) in providerTypes)
+            {
+                string typePath = $@"{providerBasePath}\{subKey}";
+                var typeKey = _parser.GetKey(typePath);
+                if (typeKey?.SubKeys == null) continue;
+
+                foreach (var guidKey in typeKey.SubKeys)
+                {
+                    var displayName = guidKey.Values.FirstOrDefault(v =>
+                        string.Equals(v.ValueName, "DISPLAYNAME", StringComparison.OrdinalIgnoreCase))?.ValueData?.ToString() ?? "";
+                    if (string.IsNullOrEmpty(displayName)) continue;
+
+                    var stateStr = guidKey.Values.FirstOrDefault(v =>
+                        string.Equals(v.ValueName, "STATE", StringComparison.OrdinalIgnoreCase))?.ValueData?.ToString() ?? "";
+                    var productExe = guidKey.Values.FirstOrDefault(v =>
+                        string.Equals(v.ValueName, "PRODUCTEXE", StringComparison.OrdinalIgnoreCase))?.ValueData?.ToString() ?? "";
+
+                    string status = "Unknown";
+                    bool isWarning = false;
+
+                    if (uint.TryParse(stateStr, out uint stateVal))
+                    {
+                        status = DecodeSecurityProductState(stateVal, out isWarning);
+                    }
+
+                    // Enrich Defender-specific entries with policy/disable warnings
+                    bool isDefender = displayName.Contains("Defender", StringComparison.OrdinalIgnoreCase);
+                    if (isDefender)
+                    {
+                        if (defenderDisabledByPolicy)
+                        {
+                            status += " — Disabled by Policy";
+                            isWarning = true;
+                        }
+                        else if (defenderDisabledByFlag)
+                        {
+                            status += " — Disabled";
+                            isWarning = true;
+                        }
+                    }
+
+                    // Definition column: Defender AV gets signature info, others get N/A
+                    string definition = "N/A";
+                    if (isDefender && typeName == "Antivirus" && !string.IsNullOrEmpty(defenderDefinition))
+                    {
+                        definition = defenderDefinition;
+                    }
+
+                    string providerPath = $@"{typePath}\{guidKey.KeyName}";
+                    foundAny = true;
+
+                    providers.Add(new AnalysisItem
+                    {
+                        Name = displayName,
+                        IsSubSection = true,
+                        IsWarning = isWarning,
+                        RegistryPath = providerPath,
+                        SubItems = new List<AnalysisItem>
+                        {
+                            new() { Name = "Type", Value = typeName },
+                            new() { Name = "Status", Value = status },
+                            new() { Name = "Definition", Value = definition },
+                            new() { Name = "Executable", Value = productExe }
+                        }
+                    });
+                }
+            }
+
+            // Deduplicate: security products often re-register with WSC,
+            // leaving stale GUID entries. Keep only the last entry per unique name+type.
+            var deduped = providers
+                .GroupBy(p => (p.Name, p.SubItems![0].Value))  // group by (DisplayName, Type)
+                .Select(g => g.Last())
+                .ToList();
+
+            foreach (var item in deduped)
+                section.Items.Add(item);
+
+            // Third detection source: scan Installed Programs for known security vendors
+            var installedSecItems = GetInstalledSecuritySoftwareItems();
+            foreach (var instItem in installedSecItems)
+            {
+                // Skip if already detected via WSC (match by contains or first-2-words)
+                bool alreadyDetected = deduped.Any(wsc =>
+                    wsc.Name.Contains(instItem.Name, StringComparison.OrdinalIgnoreCase) ||
+                    instItem.Name.Contains(wsc.Name, StringComparison.OrdinalIgnoreCase) ||
+                    string.Join(' ', wsc.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2))
+                        .Equals(string.Join(' ', instItem.Name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2)),
+                            StringComparison.OrdinalIgnoreCase));
+                if (alreadyDetected) continue;
+
+                foundAny = true;
+                section.Items.Add(instItem);
+            }
+
+            // Hint: suggest loading SYSTEM hive for ELAM-based detection
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Info",
+                Value = "Load a SYSTEM hive to detect additional security products via ELAM",
+                IsSubSection = false,
+                IsWarning = false
+            });
+
+            if (!foundAny)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Info",
+                    Value = "No security providers registered in Windows Security Center",
+                    RegistryPath = providerBasePath,
+                    IsWarning = true
+                });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// Detect security software via ELAM (Early Launch Anti-Malware) protected services.
+        /// Services with LaunchProtected = 3 hold a Microsoft anti-malware signing certificate.
+        /// Only valid for SYSTEM hive.
+        /// </summary>
+        public AnalysisSection GetElamSecurityServicesAnalysis()
+        {
+            var section = new AnalysisSection { Title = "🛡️ Security Software" };
+
+            if (_parser.CurrentHiveType != OfflineRegistryParser.HiveType.SYSTEM)
+                return section;
+
+            string servicesPath = $@"{_currentControlSet}\Services";
+            var servicesKey = _parser.GetKey(servicesPath);
+            if (servicesKey?.SubKeys == null)
+                return section;
+
+            foreach (var svcKey in servicesKey.SubKeys)
+            {
+                var launchProtectedStr = svcKey.Values
+                    .FirstOrDefault(v => v.ValueName == "LaunchProtected")?.ValueData?.ToString() ?? "";
+                if (launchProtectedStr != "3") continue;
+
+                var displayName = svcKey.Values
+                    .FirstOrDefault(v => v.ValueName == "DisplayName")?.ValueData?.ToString() ?? "";
+                displayName = ServiceDisplayNameLookup.Resolve(svcKey.KeyName, displayName);
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = svcKey.KeyName;
+
+                var imagePath = svcKey.Values
+                    .FirstOrDefault(v => v.ValueName == "ImagePath")?.ValueData?.ToString() ?? "";
+                // Clean quotes from ImagePath (e.g., "C:\...\Agent.exe" -> C:\...\Agent.exe)
+                imagePath = imagePath.Trim('"');
+                // If ImagePath has args, keep only the executable path
+                if (imagePath.Contains(".exe ", StringComparison.OrdinalIgnoreCase))
+                    imagePath = imagePath[..(imagePath.IndexOf(".exe ", StringComparison.OrdinalIgnoreCase) + 4)];
+
+                var startStr = svcKey.Values
+                    .FirstOrDefault(v => v.ValueName == "Start")?.ValueData?.ToString() ?? "";
+                string status = startStr switch
+                {
+                    "0" => "Boot Start",
+                    "2" => "Auto Start",
+                    "3" => "Manual",
+                    "4" => "Disabled",
+                    _ => $"Unknown ({startStr})"
+                };
+                bool isWarning = startStr == "4"; // Disabled security service is a warning
+
+                string registryPath = $@"{servicesPath}\{svcKey.KeyName}";
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = displayName,
+                    IsSubSection = true,
+                    IsWarning = isWarning,
+                    RegistryPath = registryPath,
+                    SubItems = new List<AnalysisItem>
+                    {
+                        new() { Name = "Type", Value = "Security Service" },
+                        new() { Name = "Status", Value = status },
+                        new() { Name = "Definition", Value = "N/A" },
+                        new() { Name = "Executable", Value = imagePath }
+                    }
+                });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// Detects security products by scanning the Uninstall registry keys for known
+        /// security vendor publishers. This is a fallback for products that don't register
+        /// with Windows Security Center or use ELAM.
+        /// </summary>
+        public List<AnalysisItem> GetInstalledSecuritySoftwareItems()
+        {
+            // Curated list of known security software publishers (exact match, case-insensitive)
+            var securityPublishers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Trend Micro Inc.",
+                "SentinelOne, Inc.",
+                "CrowdStrike, Inc.",
+                "ESET, spol. s r.o.",
+                "ESET",
+                "Symantec Corporation",
+                "Broadcom Inc.",
+                "McAfee, Inc.",
+                "McAfee, LLC",
+                "Trellix",
+                "Sophos Limited",
+                "Sophos Ltd",
+                "Kaspersky",
+                "AO Kaspersky Lab",
+                "Bitdefender",
+                "Palo Alto Networks",
+                "Carbon Black, Inc.",
+                "VMware Carbon Black",
+                "Cylance Inc.",
+                "BlackBerry",
+                "Webroot Inc.",
+                "Malwarebytes",
+                "Avast Software s.r.o.",
+                "AVG Technologies",
+                "NortonLifeLock Inc.",
+                "Gen Digital Inc.",
+                "Fortinet Inc.",
+                "Check Point Software Technologies Ltd.",
+                "Cisco Systems, Inc.",
+                "Comodo Security Solutions, Inc.",
+                "F-Secure Corporation",
+                "WithSecure",
+                "Deep Instinct Ltd.",
+            };
+
+            // DisplayName must contain at least one security keyword
+            // to avoid flagging non-security products from the same publisher
+            var securityKeywords = new[]
+            {
+                "security", "antivirus", "anti-virus", "anti-malware", "endpoint",
+                "protection", "defender", "threat", "firewall", "edr", "xdr",
+                "deep security", "sentinel", "falcon", "intercept", "amp",
+                "response", "detection"
+            };
+
+            var results = new List<AnalysisItem>();
+            var paths = new[]
+            {
+                @"Microsoft\Windows\CurrentVersion\Uninstall",
+                @"WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+            };
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var basePath in paths)
+            {
+                var baseKey = _parser.GetKey(basePath);
+                if (baseKey?.SubKeys == null) continue;
+
+                foreach (var program in baseKey.SubKeys)
+                {
+                    var displayName = program.Values
+                        .FirstOrDefault(v => v.ValueName == "DisplayName")?.ValueData?.ToString();
+                    if (string.IsNullOrEmpty(displayName)) continue;
+
+                    // Skip system components
+                    var systemComponent = program.Values
+                        .FirstOrDefault(v => v.ValueName == "SystemComponent")?.ValueData?.ToString() ?? "";
+                    if (systemComponent == "1") continue;
+
+                    var publisher = program.Values
+                        .FirstOrDefault(v => v.ValueName == "Publisher")?.ValueData?.ToString() ?? "";
+                    if (string.IsNullOrEmpty(publisher)) continue;
+
+                    // Check publisher match
+                    if (!securityPublishers.Contains(publisher)) continue;
+
+                    // Check DisplayName contains a security keyword
+                    bool hasKeyword = securityKeywords.Any(kw =>
+                        displayName.Contains(kw, StringComparison.OrdinalIgnoreCase));
+                    if (!hasKeyword) continue;
+
+                    // Deduplicate by DisplayName (same product in x64 and x86)
+                    if (!seen.Add(displayName)) continue;
+
+                    var version = program.Values
+                        .FirstOrDefault(v => v.ValueName == "DisplayVersion")?.ValueData?.ToString() ?? "";
+                    var installLocation = program.Values
+                        .FirstOrDefault(v => v.ValueName == "InstallLocation")?.ValueData?.ToString() ?? "";
+                    var programPath = $@"{basePath}\{program.KeyName}";
+
+                    results.Add(new AnalysisItem
+                    {
+                        Name = displayName,
+                        IsSubSection = true,
+                        IsWarning = false,
+                        RegistryPath = programPath,
+                        SubItems = new List<AnalysisItem>
+                        {
+                            new() { Name = "Type", Value = "Installed Software" },
+                            new() { Name = "Status", Value = "Installed" },
+                            new() { Name = "Definition", Value = version },
+                            new() { Name = "Executable", Value = installLocation }
+                        }
+                    });
+                }
+            }
+
+            return results;
+        }
+        private static string DecodeSecurityProductState(uint state, out bool isWarning)
+        {
+            int productState = (int)((state >> 16) & 0xFF);
+            int sigStatus = (int)((state >> 8) & 0xFF);
+
+            isWarning = false;
+
+            string productStr = productState switch
+            {
+                0x00 => "OFF",
+                0x01 => "Expired",
+                0x04 or 0x06 => "ON",
+                0x05 => "Snoozed",
+                _ => $"Unknown (0x{productState:X2})"
+            };
+
+            if (productStr != "ON")
+                isWarning = true;
+            if (sigStatus == 0x10)
+                isWarning = true;
+
+            return productStr;
+        }
+
+        /// <summary>
         /// Get software-related information as structured sections
         /// </summary>
         public List<AnalysisSection> GetSoftwareAnalysis()
         {
             var sections = new List<AnalysisSection>();
 
-            // Check if this is SOFTWARE hive
+            // SYSTEM hive: contribute ELAM security services and Guest Agent
+            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                sections.Add(GetElamSecurityServicesAnalysis());
+                sections.Add(GetGuestAgentAnalysis());
+                return sections;
+            }
+
+            // Other non-SOFTWARE hives: not applicable
             if (_parser.CurrentHiveType != OfflineRegistryParser.HiveType.SOFTWARE)
             {
                 var noticeSection = new AnalysisSection { Title = "ℹ️ Notice" };
@@ -6418,7 +6755,79 @@ namespace RegistryExpert.Core
             // Scheduled Tasks
             sections.Add(GetScheduledTasksAnalysis());
 
+            // Security Software (Security Center providers + Windows Defender)
+            sections.Add(GetSecuritySoftwareAnalysis());
+
+            // Guest Agent (Azure VM info from SOFTWARE hive)
+            sections.Add(GetGuestAgentAnalysis());
+
             return sections;
+        }
+
+        /// <summary>
+        /// Get Azure Guest Agent information (works with both SOFTWARE and SYSTEM hives)
+        /// </summary>
+        public AnalysisSection GetGuestAgentAnalysis()
+        {
+            var guestSection = new AnalysisSection { Title = "☁️ Guest Agent" };
+
+            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
+            {
+                // SOFTWARE hive: Show VmId, VmType
+                string azurePath = @"Microsoft\Windows Azure";
+
+                // Get VmId
+                var vmId = GetValue(azurePath, "VmId");
+                guestSection.Items.Add(new AnalysisItem
+                {
+                    Name = "VmId",
+                    Value = !string.IsNullOrEmpty(vmId) ? vmId : "Not Found",
+                    RegistryPath = azurePath,
+                    RegistryValue = !string.IsNullOrEmpty(vmId) ? $"VmId = {vmId}" : "VmId not present"
+                });
+
+                // Get VmType if present
+                var vmType = GetValue(azurePath, "VmType");
+                if (!string.IsNullOrEmpty(vmType))
+                {
+                    guestSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "VmType",
+                        Value = vmType,
+                        RegistryPath = azurePath,
+                        RegistryValue = $"VmType = {vmType}"
+                    });
+                }
+
+                // Extensions are shown via separate sub-tab (↳ Extensions)
+            }
+            else if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                // SYSTEM hive: Show agent service info
+                string waGuestAgentPath = $@"{_currentControlSet}\Services\WindowsAzureGuestAgent";
+                var waImagePath = GetValue(waGuestAgentPath, "ImagePath") ?? "";
+                var waVersion = ExtractAgentVersionInfo(waImagePath);
+                guestSection.Items.Add(new AnalysisItem
+                {
+                    Name = "WindowsAzureGuestAgent",
+                    Value = string.IsNullOrEmpty(waImagePath) ? "Not Found" : (string.IsNullOrEmpty(waVersion) ? TruncatePath(waImagePath, 100) : waVersion),
+                    RegistryPath = waGuestAgentPath,
+                    RegistryValue = string.IsNullOrEmpty(waImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(waImagePath, 140)}"
+                });
+
+                string rdAgentPath = $@"{_currentControlSet}\Services\RdAgent";
+                var rdImagePath = GetValue(rdAgentPath, "ImagePath") ?? "";
+                var rdVersion = ExtractAgentVersionInfo(rdImagePath);
+                guestSection.Items.Add(new AnalysisItem
+                {
+                    Name = "RdAgent",
+                    Value = string.IsNullOrEmpty(rdImagePath) ? "Not Found" : (string.IsNullOrEmpty(rdVersion) ? TruncatePath(rdImagePath, 100) : rdVersion),
+                    RegistryPath = rdAgentPath,
+                    RegistryValue = string.IsNullOrEmpty(rdImagePath) ? "ImagePath missing" : $"ImagePath = {TruncatePath(rdImagePath, 140)}"
+                });
+            }
+
+            return guestSection;
         }
 
         /// <summary>
@@ -7542,6 +7951,461 @@ namespace RegistryExpert.Core
             ["AddressBook"] = 13,
             ["REQUEST"] = 14
         };
+
+        #region Group Policy Analysis
+
+        /// <summary>
+        /// Checks whether this SOFTWARE hive contains group policy data worth displaying.
+        /// Looks at SOFTWARE\Policies and SOFTWARE\Microsoft\Windows\CurrentVersion\Policies.
+        /// </summary>
+        public bool HasGroupPolicies()
+        {
+            var policiesRoot = _parser.GetKey("Policies");
+            if (policiesRoot?.SubKeys != null && policiesRoot.SubKeys.Count > 0)
+                return true;
+
+            var cvPolicies = _parser.GetKey(@"Microsoft\Windows\CurrentVersion\Policies");
+            if (cvPolicies?.SubKeys != null && cvPolicies.SubKeys.Count > 0)
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Extracts all group policy settings from the SOFTWARE hive.
+        /// Returns a list of GroupPolicyCategory, each representing a policy area.
+        /// </summary>
+        public List<GroupPolicyCategory> GetGroupPolicyData()
+        {
+            var allItems = new List<GroupPolicyItem>();
+            var metadata = PolicyMetadataService.Instance;
+
+            // ── Collect all policy values from known registry locations ──
+            CollectPolicyValues(@"Policies", allItems);
+            CollectPolicyValues(@"Microsoft\Windows\CurrentVersion\Policies", allItems);
+
+            // Track which registry paths have enabledList children so we can create parent rows
+            // Key = registryPath (case-insensitive), Value = PolicyInfo for the list parent
+            var listParentPaths = new Dictionary<string, PolicyInfo>(StringComparer.OrdinalIgnoreCase);
+
+            // ── Enrich each item with ADMX metadata ──
+            foreach (var item in allItems)
+            {
+                PolicyInfo? info = null;
+                if (metadata.TryGetPolicyInfo(item.RegistryPath, item.RegistryValueName, out var foundInfo, out var isKeyLevelMatch))
+                {
+                    info = foundInfo;
+
+                    if (isKeyLevelMatch)
+                    {
+                        // This is an enabledList child — keep original value name, mark as list child
+                        item.IsListChild = true;
+                        item.Description = info.Description;
+                        item.SupportedOn = info.SupportedOn;
+                        item.AdmxCategoryPath = info.CategoryPath;
+                        // Don't override FriendlyName — keep the original value name (.bak, %windir%\spool, etc.)
+
+                        // Track this path for parent row creation
+                        if (!listParentPaths.ContainsKey(item.RegistryPath))
+                            listParentPaths[item.RegistryPath] = info;
+                    }
+                    else
+                    {
+                        if (!string.IsNullOrEmpty(info.Name))
+                            item.FriendlyName = info.Name;
+                        item.Description = info.Description;
+                        item.SupportedOn = info.SupportedOn;
+                        item.AdmxCategoryPath = info.CategoryPath;
+                    }
+                }
+
+                // Try ADMX data-driven value translation first (skip for list children — they show raw values)
+                if (!item.IsListChild)
+                {
+                    var friendlyVal = GetAdmxFriendlyValue(info, item.Value);
+
+                    // Fall back to hardcoded translations (Security Options, etc.)
+                    if (string.IsNullOrEmpty(friendlyVal))
+                        friendlyVal = GetFriendlyPolicyValue(item.RegistryValueName, item.Value, item.ValueType);
+
+                    if (!string.IsNullOrEmpty(friendlyVal))
+                        item.FriendlyValue = friendlyVal;
+                }
+            }
+
+            // ── Create synthetic parent rows for enabledList policies ──
+            foreach (var kvp in listParentPaths)
+            {
+                var parentInfo = kvp.Value;
+                var parentItem = new GroupPolicyItem
+                {
+                    Name = parentInfo.Name,
+                    FriendlyName = parentInfo.Name,
+                    FriendlyValue = "Enabled",
+                    RegistryPath = kvp.Key,
+                    RegistryValueName = "",
+                    Description = parentInfo.Description,
+                    SupportedOn = parentInfo.SupportedOn,
+                    AdmxCategoryPath = parentInfo.CategoryPath,
+                    IsListParent = true
+                };
+                allItems.Add(parentItem);
+            }
+
+            // ── Build tree from ADMX category paths ──
+            return BuildGpCategoryTree(allItems);
+        }
+
+        /// <summary>
+        /// Recursively collects all registry values under a root path.
+        /// </summary>
+        private void CollectPolicyValues(string rootPath, List<GroupPolicyItem> items)
+        {
+            var rootKey = _parser.GetKey(rootPath);
+            if (rootKey == null) return;
+            CollectPolicyValuesRecursive(rootKey, rootPath, items, 0);
+        }
+
+        private void CollectPolicyValuesRecursive(RegistryKey key, string currentPath,
+            List<GroupPolicyItem> items, int depth)
+        {
+            if (depth > 10) return; // Safety limit
+
+            // Skip certificate stores (handled by Certificate Stores feature)
+            if (currentPath.Contains("SystemCertificates", StringComparison.OrdinalIgnoreCase))
+                return;
+            // Skip PeerDist (typically empty/unrelated)
+            if (currentPath.Contains("PeerDist", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (key.Values != null)
+            {
+                foreach (var val in key.Values)
+                {
+                    items.Add(new GroupPolicyItem
+                    {
+                        Name = val.ValueName ?? "",
+                        Value = val.ValueData ?? "",
+                        ValueType = val.ValueType?.ToString() ?? "",
+                        RegistryPath = currentPath,
+                        RegistryValueName = val.ValueName ?? ""
+                    });
+                }
+            }
+
+            if (key.SubKeys != null)
+            {
+                foreach (var sub in key.SubKeys.OrderBy(k => k.KeyName, StringComparer.OrdinalIgnoreCase))
+                {
+                    CollectPolicyValuesRecursive(sub, $@"{currentPath}\{sub.KeyName}", items, depth + 1);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Builds a hierarchical category tree from ADMX category paths.
+        /// Items without ADMX matches go into "Extra Registry Settings".
+        /// </summary>
+        private List<GroupPolicyCategory> BuildGpCategoryTree(List<GroupPolicyItem> allItems)
+        {
+            var matched = allItems.Where(i => !string.IsNullOrEmpty(i.AdmxCategoryPath)).ToList();
+            var unmatched = allItems.Where(i => string.IsNullOrEmpty(i.AdmxCategoryPath)).ToList();
+
+            var rootCategories = new Dictionary<string, GroupPolicyCategory>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in matched.GroupBy(i => i.AdmxCategoryPath, StringComparer.OrdinalIgnoreCase))
+            {
+                InsertIntoGpCategoryTree(rootCategories, group.Key, group.ToList());
+            }
+
+            var result = rootCategories.Values
+                .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // Add "Extra Registry Settings" as a flat list sorted by full path (matches GPResult)
+            if (unmatched.Count > 0)
+            {
+                var extraCategory = new GroupPolicyCategory
+                {
+                    Name = "Extra Registry Settings",
+                    RegistryPath = "",
+                    Items = unmatched
+                        .OrderBy(i => $@"Software\{i.RegistryPath}\{i.Name}", StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                };
+
+                result.Add(extraCategory);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Inserts items into the GP category tree at the position specified by their "/" separated path.
+        /// </summary>
+        private void InsertIntoGpCategoryTree(Dictionary<string, GroupPolicyCategory> rootCategories,
+            string categoryPath, List<GroupPolicyItem> items)
+        {
+            var parts = categoryPath.Split('/');
+            if (parts.Length == 0) return;
+
+            var rootName = parts[0].Trim();
+            if (!rootCategories.TryGetValue(rootName, out var current))
+            {
+                current = new GroupPolicyCategory { Name = rootName, RegistryPath = "" };
+                rootCategories[rootName] = current;
+            }
+
+            for (int i = 1; i < parts.Length; i++)
+            {
+                var partName = parts[i].Trim();
+                var existing = current.SubCategories.FirstOrDefault(
+                    c => c.Name.Equals(partName, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    existing = new GroupPolicyCategory { Name = partName, RegistryPath = "" };
+                    current.SubCategories.Add(existing);
+                }
+                current = existing;
+            }
+
+            // Sort items: list parents sort by their friendly name alongside regular items,
+            // list children sort by name and are placed immediately after their parent
+            var parents = items.Where(i => i.IsListParent)
+                .OrderBy(i => i.FriendlyName, StringComparer.OrdinalIgnoreCase).ToList();
+            var childrenByPath = items.Where(i => i.IsListChild)
+                .GroupBy(i => i.RegistryPath, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                    StringComparer.OrdinalIgnoreCase);
+            var regular = items.Where(i => !i.IsListParent && !i.IsListChild)
+                .OrderBy(i => !string.IsNullOrEmpty(i.FriendlyName) ? i.FriendlyName : i.Name,
+                    StringComparer.OrdinalIgnoreCase).ToList();
+
+            // Merge: interleave parents (with their children) and regular items alphabetically
+            var merged = new List<GroupPolicyItem>();
+            int pi = 0, ri = 0;
+            while (pi < parents.Count || ri < regular.Count)
+            {
+                string pName = pi < parents.Count ? parents[pi].FriendlyName : "\xFF";
+                string rName = ri < regular.Count
+                    ? (!string.IsNullOrEmpty(regular[ri].FriendlyName) ? regular[ri].FriendlyName : regular[ri].Name)
+                    : "\xFF";
+
+                if (string.Compare(pName, rName, StringComparison.OrdinalIgnoreCase) <= 0)
+                {
+                    var parent = parents[pi++];
+                    merged.Add(parent);
+                    if (childrenByPath.TryGetValue(parent.RegistryPath, out var children))
+                        merged.AddRange(children);
+                }
+                else
+                {
+                    merged.Add(regular[ri++]);
+                }
+            }
+            current.Items.AddRange(merged);
+        }
+
+        /// <summary>
+        /// Uses ADMX value definitions to translate a registry value into a friendly string.
+        /// Returns empty string if no ADMX data is available or the value doesn't match.
+        /// </summary>
+        private static string GetAdmxFriendlyValue(PolicyInfo? info, string valueData)
+        {
+            if (info == null || string.IsNullOrEmpty(valueData)) return "";
+
+            // Check enum values first (most specific)
+            if (info.EnumValues != null && info.EnumValues.TryGetValue(valueData, out var enumDisplay))
+                return enumDisplay;
+
+            // Check enabledValue / disabledValue
+            if (info.EnabledValue.HasValue && info.DisabledValue.HasValue)
+            {
+                if (int.TryParse(valueData, out var numVal))
+                {
+                    if (numVal == info.EnabledValue.Value) return "Enabled";
+                    if (numVal == info.DisabledValue.Value) return "Disabled";
+                }
+            }
+
+            // Bare policies: DWORD 1 = Enabled (value absent = Not Configured, but if present as 0, show "Disabled")
+            if (info.IsBare)
+            {
+                return valueData switch
+                {
+                    "1" => "Enabled",
+                    "0" => "Disabled",
+                    _ => ""
+                };
+            }
+
+            return "";
+        }
+
+        /// <summary>
+        /// Interprets well-known policy values into human-readable descriptions.
+        /// </summary>
+        private static string GetFriendlyPolicyValue(string valueName, string valueData, string valueType)
+        {
+            if (!string.Equals(valueType, "RegDword", StringComparison.OrdinalIgnoreCase)) return "";
+
+            // Common boolean-style policies: 0 = Disabled, 1 = Enabled
+            var booleanPolicies = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "EnableLUA", "EnableVirtualization", "EnableSecureUIAPaths",
+                "EnableInstallerDetection", "EnableUIADesktopToggle",
+                "FilterAdministratorToken", "ValidateAdminCodeSignatures",
+                "PromptOnSecureDesktop", "DisableAntiSpyware", "AdmPwdEnabled",
+                "PwdExpirationProtectionEnabled", "DisablePasswordSaving",
+                "fEncryptRPCTraffic", "fPromptForPassword", "KeepAliveEnable",
+                "UserAuthentication", "fEnableTimeZoneRedirection",
+                "fAllowToGetHelp", "fAllowUnsolicited", "fDisableCdm",
+                "DeleteTempDirsOnExit", "DisableDualScan",
+                "DoNotShowFeedbackNotifications", "EnableOneSettingsAuditing",
+                "LimitDiagnosticLogCollection", "LimitDumpCollection",
+                "AllowCrossDeviceClipboard", "AllowDomainPINLogon",
+                "BlockDomainPicturePassword", "DontDisplayNetworkSelectionUI",
+                "EnableSmartScreen", "NoLocalPasswordResetQuestions",
+                "DisableAutomaticRestartSignOn", "DisableCAD",
+                "DontDisplayLastUserName",
+                "DisableLockScreenAppNotifications", "DontEnumerateConnectedUsers",
+                "SmartScreenEnabled", "SmartScreenPuaEnabled",
+                "PasswordManagerEnabled", "SavingBrowserHistoryDisabled",
+                "RendererCodeIntegrityEnabled",
+                "NoAutoplayfornonVolume",
+                // Security Options (Interactive Logon, Shutdown, Devices)
+                "scforceoption", "shutdownwithoutlogon", "undockwithoutlogon"
+            };
+
+            if (booleanPolicies.Contains(valueName))
+            {
+                // Some policies use inverted logic (Disable* = 1 means disabled)
+                return valueData == "1" ? "Enabled" : valueData == "0" ? "Disabled" : "";
+            }
+
+            // ConsentPromptBehaviorAdmin
+            if (valueName.Equals("ConsentPromptBehaviorAdmin", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "Elevate without prompting",
+                    "1" => "Prompt for credentials on the secure desktop",
+                    "2" => "Prompt for consent on the secure desktop",
+                    "3" => "Prompt for credentials",
+                    "4" => "Prompt for consent",
+                    "5" => "Prompt for consent for non-Windows binaries",
+                    _ => ""
+                };
+            }
+
+            if (valueName.Equals("ConsentPromptBehaviorUser", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "Automatically deny elevation requests",
+                    "1" => "Prompt for credentials on the secure desktop",
+                    "3" => "Prompt for credentials",
+                    _ => ""
+                };
+            }
+
+            // AllowTelemetry
+            if (valueName.Equals("AllowTelemetry", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "Security (Enterprise only)",
+                    "1" => "Basic",
+                    "2" => "Enhanced",
+                    "3" => "Full",
+                    _ => ""
+                };
+            }
+
+            // MinEncryptionLevel (Terminal Services)
+            if (valueName.Equals("MinEncryptionLevel", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "1" => "Low",
+                    "2" => "Client Compatible",
+                    "3" => "High",
+                    "4" => "FIPS Compliant",
+                    _ => ""
+                };
+            }
+
+            // SecurityLayer (Terminal Services)
+            if (valueName.Equals("SecurityLayer", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "RDP Security Layer",
+                    "1" => "Negotiate",
+                    "2" => "SSL/TLS",
+                    _ => ""
+                };
+            }
+
+            // Shadow (Terminal Services remote control)
+            if (valueName.Equals("Shadow", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "No remote control allowed",
+                    "1" => "Full control with user's permission",
+                    "2" => "Full control without user's permission",
+                    "3" => "View session with user's permission",
+                    "4" => "View session without user's permission",
+                    _ => ""
+                };
+            }
+
+            // PasswordComplexity (LAPS)
+            if (valueName.Equals("PasswordComplexity", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "1" => "Large letters",
+                    "2" => "Large + small letters",
+                    "3" => "Large + small letters + numbers",
+                    "4" => "Large + small letters + numbers + specials",
+                    _ => ""
+                };
+            }
+
+            // InactivityTimeoutSecs
+            if (valueName.Equals("InactivityTimeoutSecs", StringComparison.OrdinalIgnoreCase) ||
+                valueName.Equals("MaxIdleTime", StringComparison.OrdinalIgnoreCase) ||
+                valueName.Equals("MaxDisconnectionTime", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(valueData, out int secs) && secs > 0)
+                {
+                    if (secs >= 3600)
+                        return $"{secs / 3600}h {(secs % 3600) / 60}m";
+                    if (secs >= 60)
+                        return $"{secs / 60} minutes";
+                    return $"{secs} seconds";
+                }
+                return valueData == "0" ? "No timeout" : "";
+            }
+
+            // NoConnectedUser
+            if (valueName.Equals("NoConnectedUser", StringComparison.OrdinalIgnoreCase))
+            {
+                return valueData switch
+                {
+                    "0" => "Allow connected users",
+                    "1" => "Cannot add Microsoft account",
+                    "3" => "Cannot add or log on with Microsoft account",
+                    _ => ""
+                };
+            }
+
+            return "";
+        }
+
+        #endregion
 
         /// <summary>
         /// Checks whether this SOFTWARE hive contains any certificate stores.
@@ -9364,5 +10228,41 @@ namespace RegistryExpert.Core
         public string KeyProvider { get; set; } = "";
         public string KeyContainer { get; set; } = "";
         public string RegistryPath { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Represents a group policy category (e.g., "Windows Update", "UAC &amp; Logon").
+    /// Contains a collection of policy settings extracted from a specific registry path.
+    /// </summary>
+    public class GroupPolicyCategory
+    {
+        public string Name { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public List<GroupPolicyItem> Items { get; set; } = new();
+        public List<GroupPolicyCategory> SubCategories { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Represents a single group policy setting (registry value).
+    /// </summary>
+    public class GroupPolicyItem
+    {
+        public string Name { get; set; } = "";
+        public string Value { get; set; } = "";
+        public string ValueType { get; set; } = "";
+        public string FriendlyName { get; set; } = "";
+        public string FriendlyValue { get; set; } = "";
+        public string RegistryPath { get; set; } = "";
+        public string RegistryValueName { get; set; } = "";
+        /// <summary>Full ADMX description / help text</summary>
+        public string Description { get; set; } = "";
+        /// <summary>Minimum supported OS from ADMX</summary>
+        public string SupportedOn { get; set; } = "";
+        /// <summary>GPResult-style category path (e.g., "Network/BITS")</summary>
+        public string AdmxCategoryPath { get; set; } = "";
+        /// <summary>True for synthetic parent rows of enabledList policies (e.g., "Extension Exclusions = Enabled")</summary>
+        public bool IsListParent { get; set; }
+        /// <summary>True for child items under an enabledList policy (e.g., ".bak", "%windir%\spool")</summary>
+        public bool IsListChild { get; set; }
     }
 }
