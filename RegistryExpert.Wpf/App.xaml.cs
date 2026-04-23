@@ -1,3 +1,4 @@
+using System;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -5,9 +6,24 @@ namespace RegistryExpert.Wpf
 {
     public partial class App : Application
     {
+        /// <summary>
+        /// When set, indicates the previous installed version that the auto-updater
+        /// just upgraded from. Populated from the "--just-updated &lt;version&gt;"
+        /// command-line argument written by AutoUpdater.LaunchUpdaterAndExit.
+        /// MainWindow uses this to show the post-update success banner.
+        /// </summary>
+        public static string? UpgradedFromVersion { get; private set; }
+
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+
+            // Detect post-auto-update relaunch: "--just-updated <oldVersion>"
+            var idx = Array.IndexOf(e.Args, "--just-updated");
+            if (idx >= 0 && idx + 1 < e.Args.Length)
+            {
+                UpgradedFromVersion = e.Args[idx + 1];
+            }
 
             // Register code page encoding support (required by Lib/Registry parser)
             System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);

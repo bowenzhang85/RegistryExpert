@@ -120,6 +120,7 @@
 
                 <!-- Category list -->
                 <ListBox x:Name="CategoryList"
+                         AutomationProperties.Name="Analysis categories"
                          ItemsSource="{Binding Categories}"
                          SelectedItem="{Binding SelectedCategory}"
                          ItemTemplate="{StaticResource CategoryItemTemplate}"
@@ -207,12 +208,14 @@
                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                        Margin="0,0,6,0" />
                             <TextBox Text="{Binding ServiceSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Search services"
                                      Width="200" Padding="6,3"
                                      VerticalAlignment="Center"
                                      FontSize="12" />
                         </StackPanel>
                         <!-- Subcategory filter buttons -->
                         <ItemsControl ItemsSource="{Binding Subcategories}"
+                                      AutomationProperties.Name="Subcategories"
                                       ItemTemplate="{StaticResource SubcategoryButtonTemplate}">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -230,6 +233,7 @@
                         Padding="12,4"
                         Visibility="{Binding ShowSubTabs, Converter={StaticResource BoolToVis}}">
                     <ItemsControl ItemsSource="{Binding SubTabs}"
+                                  AutomationProperties.Name="Analysis sections"
                                   ItemTemplate="{StaticResource SubcategoryButtonTemplate}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -253,6 +257,7 @@
                                        Foreground="{DynamicResource TextPrimaryBrush}"
                                        Margin="0,0,6,0" />
                             <TextBox Text="{Binding CbsSearchText, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="Search updates"
                                      Width="200" Padding="6,3"
                                      VerticalAlignment="Center"
                                      FontSize="12" />
@@ -295,6 +300,7 @@
 
                 <!-- Default Grid View -->
                 <DataGrid x:Name="DefaultGrid"
+                          AutomationProperties.Name="Analysis properties"
                           ItemsSource="{Binding DefaultGridRows}"
                           SelectedItem="{Binding SelectedGridRow}"
                           Visibility="{Binding CurrentMode, Converter={StaticResource ModeToVis}, ConverterParameter=DefaultGrid}"
@@ -424,6 +430,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <TreeView ItemsSource="{Binding RolesFeatureNodes}"
+                                  AutomationProperties.Name="Roles and features"
                                   SelectedItemChanged="RolesTree_SelectedItemChanged"
                                   Background="{DynamicResource BackgroundBrush}"
                                   BorderThickness="0">
@@ -431,6 +438,7 @@
                                 <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                     <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
                                 </Style>
                             </TreeView.ItemContainerStyle>
                             <TreeView.Resources>
@@ -525,6 +533,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding MountedDevices}"
+                                  AutomationProperties.Name="Mounted devices"
                                   SelectedItem="{Binding SelectedMountedDevice}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -577,6 +586,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding MountedDeviceDetails}"
+                                  AutomationProperties.Name="Mounted device properties"
                                   SelectedItem="{Binding SelectedMountedDeviceDetail}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -640,6 +650,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding PhysicalDisksList}"
+                                  AutomationProperties.Name="Physical disks"
                                   SelectedItem="{Binding SelectedPhysicalDisk}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -702,6 +713,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding PhysicalDiskDetails}"
+                                  AutomationProperties.Name="Physical disk properties"
                                   SelectedItem="{Binding SelectedPhysicalDiskDetail}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -747,6 +759,7 @@
 
                 <!-- ═══ Services View ═══ -->
                 <DataGrid x:Name="ServicesGrid"
+                          AutomationProperties.Name="Services"
                           ItemsSource="{Binding FilteredServices}"
                           SelectedItem="{Binding SelectedService}"
                           Visibility="{Binding CurrentMode, Converter={StaticResource ModeToVis}, ConverterParameter=Services}"
@@ -828,6 +841,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <ListBox ItemsSource="{Binding NetworkAdapters}"
+                                 AutomationProperties.Name="Network adapters"
                                  SelectedItem="{Binding SelectedNetworkAdapter}"
                                  DisplayMemberPath="DisplayName"
                                  Background="{DynamicResource BackgroundBrush}"
@@ -840,6 +854,7 @@
 
                     <!-- Properties grid -->
                     <DataGrid Grid.Column="2"
+                              AutomationProperties.Name="Network adapter properties"
                               ItemsSource="{Binding NetworkProperties}"
                               SelectedItem="{Binding SelectedNetworkProperty}"
                               AlternationCount="2"
@@ -891,7 +906,8 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}"
                                        VerticalAlignment="Center"
                                        Margin="0,0,12,0" />
-                            <ItemsControl ItemsSource="{Binding FirewallProfiles}">
+                            <ItemsControl ItemsSource="{Binding FirewallProfiles}"
+                                          AutomationProperties.Name="Firewall profiles">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <StackPanel Orientation="Horizontal" />
@@ -1012,6 +1028,7 @@
 
                     <!-- Rules DataGrid -->
                     <DataGrid Grid.Row="2"
+                              AutomationProperties.Name="Firewall rules"
                               ItemsSource="{Binding FirewallRules}"
                               SelectedItem="{Binding SelectedFirewallRule}"
                               AlternationCount="2"
@@ -1280,6 +1297,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <TreeView ItemsSource="{Binding DeviceManagerNodes}"
+                                  AutomationProperties.Name="Device classes"
                                   SelectedItemChanged="DeviceManagerTree_SelectedItemChanged"
                                   Background="{DynamicResource BackgroundBrush}"
                                   BorderThickness="0">
@@ -1287,6 +1305,7 @@
                                 <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                     <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
                                 </Style>
                             </TreeView.ItemContainerStyle>
                             <TreeView.Resources>
@@ -1332,6 +1351,7 @@
                                 BorderThickness="0,0,0,1"
                                 Padding="8,4">
                             <ItemsControl ItemsSource="{Binding DeviceDetailTabs}"
+                                          AutomationProperties.Name="Device detail sections"
                                           ItemTemplate="{StaticResource SubcategoryButtonTemplate}">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
@@ -1344,6 +1364,7 @@
                         <!-- Device Properties DataGrid -->
                         <Grid>
                             <DataGrid ItemsSource="{Binding DeviceProperties}"
+                                      AutomationProperties.Name="Device properties"
                                       SelectedItem="{Binding SelectedDeviceProperty}"
                                       AlternationCount="2"
                                       HeadersVisibility="Column"
@@ -1376,6 +1397,7 @@
 
                             <!-- Driver Details DataGrid -->
                             <DataGrid ItemsSource="{Binding DriverProperties}"
+                                      AutomationProperties.Name="Driver properties"
                                       SelectedItem="{Binding SelectedDriverProperty}"
                                       AlternationCount="2"
                                       HeadersVisibility="Column"
@@ -1429,6 +1451,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <TreeView ItemsSource="{Binding ScheduledTaskNodes}"
+                                  AutomationProperties.Name="Scheduled tasks"
                                   SelectedItemChanged="ScheduledTasksTree_SelectedItemChanged"
                                   Background="{DynamicResource BackgroundBrush}"
                                   BorderThickness="0">
@@ -1436,6 +1459,7 @@
                                 <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                     <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
                                 </Style>
                             </TreeView.ItemContainerStyle>
                             <TreeView.Resources>
@@ -1474,6 +1498,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding ScheduledTaskDetails}"
+                                  AutomationProperties.Name="Task properties"
                                   SelectedItem="{Binding SelectedScheduledTaskDetail}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -1523,6 +1548,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <TreeView ItemsSource="{Binding CertStoreNodes}"
+                                  AutomationProperties.Name="Certificate stores"
                                   SelectedItemChanged="CertStoresTree_SelectedItemChanged"
                                   Background="{DynamicResource BackgroundBrush}"
                                   BorderThickness="0">
@@ -1530,6 +1556,7 @@
                                 <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                     <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
                                 </Style>
                             </TreeView.ItemContainerStyle>
                             <TreeView.Resources>
@@ -1568,6 +1595,7 @@
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
                         <DataGrid ItemsSource="{Binding CertificateDetails}"
+                                  AutomationProperties.Name="Certificate properties"
                                   SelectedItem="{Binding SelectedCertificateDetail}"
                                   AlternationCount="2"
                                   HeadersVisibility="Column">
@@ -1619,7 +1647,8 @@
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                                         VerticalAlignment="Center" Margin="12,0,0,0">
                                 <!-- Info icon with scope popup -->
-                                <Button x:Name="GpInfoButton" 
+                                <Button x:Name="GpInfoButton"
+                                        AutomationProperties.Name="Policy scope info"
                                         Background="Transparent" BorderThickness="0"
                                         Cursor="Hand" Padding="4,2" Margin="0,0,8,0"
                                         ToolTip="Policy scope info"
@@ -1677,6 +1706,7 @@
                                            Foreground="{DynamicResource TextSecondaryBrush}"
                                            FontSize="11" Margin="0,0,6,0" />
                                 <TextBox Text="{Binding GpSearchText, UpdateSourceTrigger=PropertyChanged, Delay=300}"
+                                         AutomationProperties.Name="Search policies"
                                          Width="200" Padding="6,3"
                                          VerticalAlignment="Center"
                                          FontSize="12"
@@ -1693,6 +1723,7 @@
 
                     <!-- Scrollable document of section headers + policy rows -->
                     <ListBox ItemsSource="{Binding GroupPolicyDocRows}"
+                             AutomationProperties.Name="Group Policy settings"
                              SelectedItem="{Binding SelectedGroupPolicyRow}"
                              Background="{DynamicResource BackgroundBrush}"
                              BorderThickness="0"
@@ -1876,6 +1907,7 @@
                 <DockPanel>
                     <!-- Registry path -->
                     <TextBox DockPanel.Dock="Top"
+                             AutomationProperties.Name="Selected registry path"
                              Text="{Binding DetailRegistryPath, Mode=OneWay}"
                              IsReadOnly="True"
                              FontSize="11"
@@ -1887,6 +1919,7 @@
 
                     <!-- Value detail -->
                     <TextBox Text="{Binding DetailValueText, Mode=OneWay}"
+                             AutomationProperties.Name="Selected value details"
                              Style="{DynamicResource MonoTextBoxStyle}" />
                 </DockPanel>
             </Border>

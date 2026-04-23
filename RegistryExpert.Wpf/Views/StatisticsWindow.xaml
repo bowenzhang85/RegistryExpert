@@ -68,6 +68,7 @@
             <Setter Property="Padding" Value="2,0" />
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
@@ -274,6 +275,7 @@
                                    Foreground="{DynamicResource TextSecondaryBrush}"
                                    Margin="0,0,8,0" />
                         <ComboBox ItemsSource="{Binding HiveNames}"
+                                  AutomationProperties.Name="Hive"
                                   SelectedItem="{Binding SelectedHiveName}"
                                   Width="160"
                                   VerticalAlignment="Center" />
@@ -284,7 +286,9 @@
                 </DockPanel>
 
                 <!-- Stat cards row -->
-                <ItemsControl ItemsSource="{Binding StatCards}" Margin="0,12,0,0">
+                <ItemsControl ItemsSource="{Binding StatCards}"
+                              AutomationProperties.Name="Hive statistics summary"
+                              Margin="0,12,0,0">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <StackPanel Orientation="Horizontal" />
@@ -346,6 +350,7 @@
                 <Grid>
                     <!-- TreeView with bar charts -->
                     <TreeView x:Name="KeyCountTree"
+                              AutomationProperties.Name="Key counts"
                               ItemsSource="{Binding KeyCountNodes}"
                               ItemTemplate="{StaticResource KeyStatNodeTemplate}"
                               ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"
@@ -402,6 +407,7 @@
                 <Grid>
                     <!-- TreeView with bar charts -->
                     <TreeView x:Name="DataSizeTree"
+                              AutomationProperties.Name="Data sizes"
                               ItemsSource="{Binding DataSizeNodes}"
                               ItemTemplate="{StaticResource KeyStatNodeTemplate}"
                               ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"
@@ -458,6 +464,7 @@
                 <Grid>
                     <!-- TreeView with bar charts -->
                     <TreeView x:Name="ValueCountTree"
+                              AutomationProperties.Name="Value counts"
                               ItemsSource="{Binding ValueCountNodes}"
                               ItemTemplate="{StaticResource KeyStatNodeTemplate}"
                               ItemContainerStyle="{StaticResource StretchTreeViewItemStyle}"

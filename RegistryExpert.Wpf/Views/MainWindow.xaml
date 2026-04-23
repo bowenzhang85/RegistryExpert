@@ -45,6 +45,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />  <!-- Menu -->
+            <RowDefinition Height="Auto" />  <!-- Update banner (collapsed by default) -->
             <RowDefinition Height="Auto" />  <!-- Toolbar -->
             <RowDefinition Height="*" />     <!-- Content -->
             <RowDefinition Height="Auto" />  <!-- Status bar -->
@@ -53,7 +54,7 @@
         <!-- ═══════════════════════════════════════════════════════════════
              Row 0: Menu Bar
              ═══════════════════════════════════════════════════════════════ -->
-        <Menu Grid.Row="0">
+        <Menu Grid.Row="0" AutomationProperties.Name="Application commands">
             <MenuItem Header="_File">
                 <MenuItem Header="_Open Hive..." InputGestureText="Ctrl+O"
                           Command="{Binding OpenHiveCommand}" />
@@ -98,13 +99,56 @@
         </Menu>
 
         <!-- ═══════════════════════════════════════════════════════════════
-             Row 1: Toolbar
+             Row 1: "Updated" banner (shown briefly after a successful update)
              ═══════════════════════════════════════════════════════════════ -->
-        <Border Grid.Row="1"
-                Background="{DynamicResource SurfaceBrush}"
-                BorderBrush="{DynamicResource BorderBrush}"
-                BorderThickness="0,0,0,1"
-                Padding="6,4">
+        <Border x:Name="UpdatedBanner"
+                Grid.Row="1"
+                Visibility="Collapsed"
+                Background="{DynamicResource AccentBrush}"
+                Padding="16,8">
+            <DockPanel LastChildFill="True">
+                <Button x:Name="UpdatedBannerCloseBtn"
+                        DockPanel.Dock="Right"
+                        Content="✕"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Foreground="White"
+                        FontSize="14"
+                        Padding="8,2"
+                        Margin="8,0,0,0"
+                        Cursor="Hand"
+                        ToolTip="Dismiss"
+                        Click="UpdatedBannerCloseBtn_Click" />
+                <Button x:Name="UpdatedBannerReleaseNotesBtn"
+                        DockPanel.Dock="Right"
+                        Content="View Release Notes"
+                        Background="Transparent"
+                        BorderThickness="1"
+                        BorderBrush="White"
+                        Foreground="White"
+                        Padding="10,3"
+                        Margin="8,0,0,0"
+                        Cursor="Hand"
+                        Visibility="Collapsed"
+                        Click="UpdatedBannerReleaseNotesBtn_Click" />
+                <TextBlock x:Name="UpdatedBannerText"
+                           Foreground="White"
+                           FontWeight="SemiBold"
+                           VerticalAlignment="Center"
+                           Text="" />
+            </DockPanel>
+        </Border>
+
+        <!-- ═══════════════════════════════════════════════════════════════
+             Row 2: Toolbar
+             ═══════════════════════════════════════════════════════════════ -->
+        <ScrollViewer Grid.Row="2"
+                      HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Disabled">
+            <Border Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="6,4">
             <StackPanel Orientation="Horizontal">
                 <!-- Open -->
                 <Button Style="{DynamicResource ToolbarButtonStyle}"
@@ -184,66 +228,68 @@
                     </StackPanel>
                 </Button>
             </StackPanel>
-        </Border>
+            </Border>
+        </ScrollViewer>
 
         <!-- ═══════════════════════════════════════════════════════════════
-             Row 2: Content Area
+             Row 3: Content Area
              ═══════════════════════════════════════════════════════════════ -->
-        <Grid Grid.Row="2" Background="{DynamicResource BackgroundBrush}">
+        <Grid Grid.Row="3" Background="{DynamicResource BackgroundBrush}">
 
             <!-- Layer 1: Welcome Panel (visible when no hives loaded) -->
             <Border Visibility="{Binding HasLoadedHives, Converter={StaticResource InverseBoolToVisibilityConverter}}"
-                    VerticalAlignment="Center" HorizontalAlignment="Center">
-                <Border Background="{DynamicResource SurfaceBrush}"
-                        BorderBrush="{DynamicResource BorderBrush}"
-                        BorderThickness="1"
-                        CornerRadius="8"
-                        Padding="48,40">
-                    <Border.Effect>
-                        <DropShadowEffect ShadowDepth="4" BlurRadius="20" Opacity="0.3" Color="Black" />
-                    </Border.Effect>
-                    <StackPanel HorizontalAlignment="Center">
-                        <Image Source="pack://application:,,,/Assets/registry.png"
-                               Width="64" Height="64"
-                               RenderOptions.BitmapScalingMode="HighQuality"
+                    VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Background="{DynamicResource SurfaceBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="48,40"
+                    AutomationProperties.Name="Welcome panel">
+                <Border.Effect>
+                    <DropShadowEffect ShadowDepth="4" BlurRadius="20" Opacity="0.3" Color="Black" />
+                </Border.Effect>
+                <StackPanel HorizontalAlignment="Center">
+                    <Image Source="pack://application:,,,/Assets/registry.png"
+                           Width="64" Height="64"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           HorizontalAlignment="Center"
+                           Margin="0,0,0,16"
+                           AutomationProperties.Name="Registry Expert logo" />
+                    <TextBlock Text="Registry Expert"
+                               Style="{DynamicResource TitleStyle}"
                                HorizontalAlignment="Center"
-                               Margin="0,0,0,16" />
-                        <TextBlock Text="Registry Expert"
-                                   Style="{DynamicResource TitleStyle}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,8" />
-                        <TextBlock Text="Drag and drop a registry hive file to get started"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,0,0,24" />
-                        <Button Style="{DynamicResource WelcomeButtonStyle}"
-                                Command="{Binding OpenHiveCommand}"
-                                HorizontalAlignment="Center">
-                            <TextBlock Text="Open Hive Files" />
-                        </Button>
-                        <Button Style="{DynamicResource WelcomeButtonStyle}"
-                                Command="{Binding OpenFolderCommand}"
-                                HorizontalAlignment="Center"
-                                Margin="0,12,0,0">
-                            <TextBlock Text="Open Folder" />
-                        </Button>
-                        <TextBlock Text="Auto-detects registry hives in InspectIaaSDisk and TSS log bundles"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   FontSize="11"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,8,0,0" />
-                        <TextBlock Text="Also scans any folder recursively for hive files"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   FontSize="11"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,2,0,0" />
-                        <TextBlock Text="Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, and more"
-                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                   FontSize="11"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,16,0,0" />
-                    </StackPanel>
-                </Border>
+                               Margin="0,0,0,8" />
+                    <TextBlock Text="Drag and drop a registry hive file to get started"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               HorizontalAlignment="Center"
+                               Margin="0,0,0,24" />
+                    <Button Style="{DynamicResource WelcomeButtonStyle}"
+                            Command="{Binding OpenHiveCommand}"
+                            HorizontalAlignment="Center">
+                        <TextBlock Text="Open Hive Files" />
+                    </Button>
+                    <Button Style="{DynamicResource WelcomeButtonStyle}"
+                            Command="{Binding OpenFolderCommand}"
+                            HorizontalAlignment="Center"
+                            Margin="0,12,0,0">
+                        <TextBlock Text="Open Folder" />
+                    </Button>
+                    <TextBlock Text="Auto-detects registry hives in InspectIaaSDisk and TSS log bundles"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11"
+                               HorizontalAlignment="Center"
+                               Margin="0,8,0,0" />
+                    <TextBlock Text="Also scans any folder recursively for hive files"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11"
+                               HorizontalAlignment="Center"
+                               Margin="0,2,0,0" />
+                    <TextBlock Text="Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, and more"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               FontSize="11"
+                               HorizontalAlignment="Center"
+                               Margin="0,16,0,0" />
+                </StackPanel>
             </Border>
 
             <!-- Layer 2: Main Content (visible when hives are loaded) -->
@@ -324,7 +370,8 @@
                                                     Foreground="{DynamicResource TextSecondaryBrush}"
                                                     Cursor="Hand"
                                                     Command="{Binding ToggleBookmarksCommand}"
-                                                    ToolTip="Hide Bookmarks" />
+                                                    ToolTip="Hide Bookmarks"
+                                                    AutomationProperties.Name="Hide bookmarks" />
                                             <TextBlock Text="Bookmarks"
                                                        Style="{DynamicResource SectionHeaderStyle}"
                                                        Padding="0" />
@@ -335,7 +382,8 @@
                                     <ScrollViewer Grid.Row="1"
                                                   VerticalScrollBarVisibility="Auto"
                                                   HorizontalScrollBarVisibility="Disabled">
-                                        <ItemsControl ItemsSource="{Binding Source={StaticResource GroupedBookmarks}}">
+                                        <ItemsControl ItemsSource="{Binding Source={StaticResource GroupedBookmarks}}"
+                                                      AutomationProperties.Name="Bookmarks">
                                             <ItemsControl.GroupStyle>
                                                 <GroupStyle>
                                                     <GroupStyle.HeaderTemplate>
@@ -361,12 +409,12 @@
                                                             MouseLeftButtonDown="BookmarkItem_MouseDown"
                                                             ToolTip="{Binding Path}">
                                                         <DockPanel>
-                                                            <TextBlock Text="&#xE76C;"
-                                                                       FontFamily="Segoe MDL2 Assets"
-                                                                       FontSize="10"
-                                                                       Foreground="{DynamicResource TextSecondaryBrush}"
-                                                                       VerticalAlignment="Center"
-                                                                       Margin="0,0,6,0" />
+                                                            <Path Data="M 0,0 L 4,4 L 0,8 Z"
+                                                                  Fill="{DynamicResource TextSecondaryBrush}"
+                                                                  Width="4" Height="8"
+                                                                  Stretch="Uniform"
+                                                                  VerticalAlignment="Center"
+                                                                  Margin="0,0,6,0" />
                                                             <TextBlock Text="{Binding Name}"
                                                                        FontSize="12"
                                                                        Foreground="{DynamicResource AccentBrush}"
@@ -404,7 +452,8 @@
                                         Command="{Binding OpenHiveCommand}"
                                         Padding="8,2"
                                         FontSize="11"
-                                        ToolTip="Load another hive file">
+                                        ToolTip="Load another hive file"
+                                        AutomationProperties.Name="Load hive">
                                     <StackPanel Orientation="Horizontal">
                                         <Image Source="pack://application:,,,/Assets/registry_icon_load-hive.png"
                                                Width="14" Height="14"
@@ -430,6 +479,7 @@
                                   AutomationProperties.Name="Registry keys">
                             <TreeView.ItemContainerStyle>
                                 <Style TargetType="TreeViewItem">
+                                    <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
                                     <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                                     <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
                                     <Setter Property="FontWeight" Value="{Binding IsRootNode, Converter={StaticResource BoolToFontWeightConverter}}" />
@@ -696,7 +746,8 @@
                         <!-- Details TextBox -->
                         <TextBox Grid.Row="1"
                                  Style="{DynamicResource MonoTextBoxStyle}"
-                                 Text="{Binding DetailsText, Mode=OneWay}" />
+                                 Text="{Binding DetailsText, Mode=OneWay}"
+                                 AutomationProperties.Name="Details" />
                     </Grid>
                 </Grid>
             </Grid>
@@ -705,7 +756,7 @@
         <!-- ═══════════════════════════════════════════════════════════════
              Row 3: Status Bar
              ═══════════════════════════════════════════════════════════════ -->
-        <StatusBar Grid.Row="3">
+        <StatusBar Grid.Row="4">
             <StatusBar.ItemsPanel>
                 <ItemsPanelTemplate>
                     <DockPanel LastChildFill="True" />
@@ -737,7 +788,17 @@
                     <TextBlock Text="{Binding HiveStatusText}"
                                Foreground="{DynamicResource AccentBrush}"
                                FontWeight="SemiBold"
-                               VerticalAlignment="Center" />
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HiveStatusText}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
                 </StackPanel>
             </StatusBarItem>
 

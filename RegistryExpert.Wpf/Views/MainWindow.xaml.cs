@@ -56,6 +56,10 @@ namespace RegistryExpert.Wpf.Views
 
             // Auto-check for updates on startup
             _ = CheckForUpdatesOnStartupAsync();
+
+            // If launched after an auto-update (or if version changed since last
+            // run), show the green "Updated successfully" banner at the top.
+            CheckAndShowUpdatedBanner();
         }
 
         private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -315,6 +319,11 @@ namespace RegistryExpert.Wpf.Views
 
         // ── Update check ──────────────────────────────────────────────────
 
+        // Once a downloaded update is ready (silent background flow), we cache
+        // the local path here so the "Restart & Update" button can launch it.
+        private string? _pendingUpdateLocalPath;
+        private UpdateInfo? _pendingUpdateInfo;
+
         private void OnRequestShowUpdateResult(UpdateInfo? info, bool isManualCheck)
         {
             if (info == null)
@@ -333,16 +342,210 @@ namespace RegistryExpert.Wpf.Views
                 return;
             }
 
-            ShowUpdateAvailableDialog(info);
+            // If we already silently downloaded this version, jump to the
+            // "Update Ready to Install" dialog directly.
+            if (AutoUpdater.IsUpdateAlreadyDownloaded(info))
+            {
+                _pendingUpdateInfo = info;
+                _pendingUpdateLocalPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion);
+                ShowUpdateReadyDialog(info);
+            }
+            else
+            {
+                ShowUpdateAvailableDialog(info);
+            }
         }
 
+        // Dialog used when the update has NOT yet been downloaded.
+        // Provides "Download & Install" (in-app) and "View on GitHub" (browser).
         private void ShowUpdateAvailableDialog(UpdateInfo info)
+        {
+            var dialog = BuildUpdateDialogShell(
+                title: "Update Available",
+                heading: "A new version is available!",
+                info: info,
+                out var buttonPanel,
+                out var progressHost);
+
+            // Progress UI (hidden until Download clicked)
+            var progressBar = new ProgressBar
+            {
+                Height = 8,
+                Minimum = 0,
+                Maximum = 1,
+                Value = 0,
+                Foreground = (Brush)FindResource("AccentBrush"),
+                Background = (Brush)FindResource("SurfaceBrush"),
+                BorderThickness = new Thickness(0),
+                Margin = new Thickness(0, 0, 0, 6),
+                Visibility = Visibility.Collapsed
+            };
+            var progressLabel = new TextBlock
+            {
+                Foreground = (Brush)FindResource("TextSecondaryBrush"),
+                FontSize = 12,
+                Visibility = Visibility.Collapsed
+            };
+            progressHost.Children.Add(progressBar);
+            progressHost.Children.Add(progressLabel);
+
+            var downloadBtn = new Button
+            {
+                Content = "Download & Install",
+                Style = (Style)FindResource("AccentButtonStyle"),
+                Width = 150,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            var githubBtn = new Button
+            {
+                Content = "View on GitHub",
+                Style = (Style)FindResource("SecondaryButtonStyle"),
+                Width = 130,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            var laterBtn = new Button
+            {
+                Content = "Later",
+                Style = (Style)FindResource("SecondaryButtonStyle"),
+                Width = 80
+            };
+
+            CancellationTokenSource? cts = null;
+
+            downloadBtn.Click += async (s, e) =>
+            {
+                if (string.IsNullOrEmpty(info.DownloadUrl))
+                {
+                    MessageBox.Show(dialog,
+                        "This release does not include a downloadable RegistryExpert.exe asset.\nPlease use 'View on GitHub' instead.",
+                        "Download Unavailable", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                downloadBtn.IsEnabled = false;
+                githubBtn.IsEnabled = false;
+                laterBtn.Content = "Cancel";
+                progressBar.Visibility = Visibility.Visible;
+                progressLabel.Visibility = Visibility.Visible;
+                progressLabel.Text = "Starting download...";
+
+                cts = new CancellationTokenSource();
+                var progress = new Progress<double>(p =>
+                {
+                    progressBar.Value = p;
+                    progressLabel.Text = $"Downloading... {p * 100:0}%";
+                });
+
+                laterBtn.Click -= LaterCloseHandler; // detach close
+                EventHandler? cancelHandler = null;
+                cancelHandler = (cs, ce) => cts?.Cancel();
+                laterBtn.Click += (cs, ce) => cancelHandler?.Invoke(cs, EventArgs.Empty);
+
+                var localPath = await AutoUpdater.DownloadUpdateAsync(info, progress, cts.Token);
+
+                if (localPath == null)
+                {
+                    if (cts.IsCancellationRequested)
+                    {
+                        dialog.Close();
+                        return;
+                    }
+                    MessageBox.Show(dialog,
+                        "The update could not be downloaded or failed verification.\nPlease try again later or use 'View on GitHub'.",
+                        "Download Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                    downloadBtn.IsEnabled = true;
+                    githubBtn.IsEnabled = true;
+                    laterBtn.Content = "Later";
+                    progressBar.Visibility = Visibility.Collapsed;
+                    progressLabel.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                _pendingUpdateInfo = info;
+                _pendingUpdateLocalPath = localPath;
+
+                dialog.Close();
+                ShowUpdateReadyDialog(info);
+            };
+
+            githubBtn.Click += (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(info.ReleaseUrl) && info.ReleaseUrl.StartsWith("https://github.com/"))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = info.ReleaseUrl,
+                        UseShellExecute = true
+                    });
+                }
+                dialog.Close();
+            };
+
+            void LaterCloseHandler(object s, RoutedEventArgs e) => dialog.Close();
+            laterBtn.Click += LaterCloseHandler;
+
+            buttonPanel.Children.Add(downloadBtn);
+            buttonPanel.Children.Add(githubBtn);
+            buttonPanel.Children.Add(laterBtn);
+
+            dialog.Loaded += (s, e) => ThemeManager.ApplyWindowChrome(dialog);
+            dialog.ShowDialog();
+        }
+
+        // Dialog used once the update has been downloaded & verified.
+        // Provides "Restart & Update" and "Later".
+        private void ShowUpdateReadyDialog(UpdateInfo info)
+        {
+            var dialog = BuildUpdateDialogShell(
+                title: "Update Ready to Install",
+                heading: "Update downloaded \u2014 ready to install",
+                info: info,
+                out var buttonPanel,
+                out _);
+
+            var restartBtn = new Button
+            {
+                Content = "Restart & Update",
+                Style = (Style)FindResource("AccentButtonStyle"),
+                Width = 150,
+                Margin = new Thickness(0, 0, 8, 0)
+            };
+            var laterBtn = new Button
+            {
+                Content = "Later",
+                Style = (Style)FindResource("SecondaryButtonStyle"),
+                Width = 100
+            };
+
+            restartBtn.Click += (s, e) =>
+            {
+                dialog.Close();
+                ApplyPendingUpdate();
+            };
+            laterBtn.Click += (s, e) => dialog.Close();
+
+            buttonPanel.Children.Add(restartBtn);
+            buttonPanel.Children.Add(laterBtn);
+
+            dialog.Loaded += (s, e) => ThemeManager.ApplyWindowChrome(dialog);
+            dialog.ShowDialog();
+        }
+
+        // Shared layout used by both update dialogs above.
+        // Returns the dialog window plus the empty button panel and an empty
+        // host StackPanel where progress UI can be inserted (above the buttons).
+        private Window BuildUpdateDialogShell(
+            string title,
+            string heading,
+            UpdateInfo info,
+            out StackPanel buttonPanel,
+            out StackPanel progressHost)
         {
             var dialog = new Window
             {
-                Title = "Update Available",
+                Title = title,
                 Width = 500,
-                Height = 450,
+                Height = 470,
                 ResizeMode = ResizeMode.NoResize,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Owner = this,
@@ -352,10 +555,9 @@ namespace RegistryExpert.Wpf.Views
 
             var mainPanel = new StackPanel { Margin = new Thickness(24) };
 
-            // Title
             mainPanel.Children.Add(new TextBlock
             {
-                Text = "A new version is available!",
+                Text = heading,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontWeight = FontWeights.SemiBold,
                 FontSize = 14,
@@ -363,7 +565,6 @@ namespace RegistryExpert.Wpf.Views
                 Margin = new Thickness(0, 0, 0, 16)
             });
 
-            // Version panel
             var versionBorder = new Border
             {
                 Background = (Brush)FindResource("SurfaceBrush"),
@@ -386,21 +587,30 @@ namespace RegistryExpert.Wpf.Views
                 FontWeight = FontWeights.Bold,
                 FontSize = 13
             });
+            if (UpdateChecker.IsUsingOverrideUrl)
+            {
+                versionPanel.Children.Add(new TextBlock
+                {
+                    Text = "(Update source overridden via REGEXPERT_UPDATE_URL)",
+                    Foreground = (Brush)FindResource("TextSecondaryBrush"),
+                    FontStyle = FontStyles.Italic,
+                    FontSize = 11,
+                    Margin = new Thickness(0, 6, 0, 0)
+                });
+            }
             versionBorder.Child = versionPanel;
             mainPanel.Children.Add(versionBorder);
 
-            // Release notes header
             mainPanel.Children.Add(new TextBlock
             {
-                Text = "New Features",
+                Text = "Release Notes",
                 FontWeight = FontWeights.Bold,
                 Foreground = (Brush)FindResource("TextPrimaryBrush"),
                 FontSize = 13,
                 Margin = new Thickness(0, 0, 0, 8)
             });
 
-            // Release notes
-            var notesBox = new TextBox
+            mainPanel.Children.Add(new TextBox
             {
                 Text = info.ReleaseNotes,
                 IsReadOnly = true,
@@ -413,53 +623,268 @@ namespace RegistryExpert.Wpf.Views
                 BorderBrush = (Brush)FindResource("BorderBrush"),
                 Padding = new Thickness(12, 8, 12, 8),
                 FontSize = 12,
-                Height = 140
-            };
-            mainPanel.Children.Add(notesBox);
+                Height = 130
+            });
 
-            // Button panel
-            var buttonPanel = new StackPanel
+            // Host for optional progress UI (used by ShowUpdateAvailableDialog)
+            progressHost = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
+            mainPanel.Children.Add(progressHost);
+
+            buttonPanel = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right,
                 Margin = new Thickness(0, 16, 0, 0)
             };
-
-            var downloadBtn = new Button
-            {
-                Content = "Download",
-                Style = (Style)FindResource("AccentButtonStyle"),
-                Width = 100,
-                Margin = new Thickness(0, 0, 8, 0)
-            };
-            downloadBtn.Click += (s, e) =>
-            {
-                if (!string.IsNullOrEmpty(info.ReleaseUrl) && info.ReleaseUrl.StartsWith("https://github.com/"))
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = info.ReleaseUrl,
-                        UseShellExecute = true
-                    });
-                }
-                dialog.Close();
-            };
-            buttonPanel.Children.Add(downloadBtn);
-
-            var laterBtn = new Button
-            {
-                Content = "Later",
-                Style = (Style)FindResource("SecondaryButtonStyle"),
-                Width = 100
-            };
-            laterBtn.Click += (s, e) => dialog.Close();
-            buttonPanel.Children.Add(laterBtn);
-
             mainPanel.Children.Add(buttonPanel);
 
             dialog.Content = mainPanel;
+            return dialog;
+        }
+
+        // Launches the updater script and shuts down the application.
+        // Detects whether elevation is required and prompts the user accordingly.
+        // Shows a brief modal "Installing update..." dialog before exiting so
+        // the user gets visual feedback during the swap.
+        private void ApplyPendingUpdate()
+        {
+            if (string.IsNullOrEmpty(_pendingUpdateLocalPath) || !File.Exists(_pendingUpdateLocalPath))
+            {
+                MessageBox.Show("The downloaded update file could not be found. Please try again.",
+                    "Update Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var currentExe = AutoUpdater.GetCurrentExecutablePath();
+            var canWrite = AutoUpdater.CanWriteToInstallLocation(currentExe);
+            bool elevated = false;
+
+            if (!canWrite)
+            {
+                var resp = MessageBox.Show(this,
+                    "RegistryExpert needs administrator rights to install this update because it is " +
+                    "located in a protected folder.\n\nClick Yes to continue (a UAC prompt will appear), " +
+                    "or No to cancel.",
+                    "Administrator Rights Required",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (resp != MessageBoxResult.Yes) return;
+                elevated = true;
+            }
+
+            // Show modal "Installing update..." with spinner; after a brief delay
+            // (so the user sees the message), launch the updater and shut down.
+            var installingDialog = BuildInstallingDialog();
+            var localExe = _pendingUpdateLocalPath!;
+            var fromVersion = UpdateChecker.GetCurrentVersion();
+
+            installingDialog.Loaded += async (s, e) =>
+            {
+                // Allow the user ~700ms to see the "installing" message
+                await Task.Delay(700);
+
+                var ok = AutoUpdater.LaunchUpdaterAndExit(localExe, currentExe, elevated, fromVersion);
+                if (!ok)
+                {
+                    installingDialog.Close();
+                    MessageBox.Show(this,
+                        "Failed to launch the update process. The update was not applied.",
+                        "Update Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                // The updater script waits for our process to exit before swapping the file.
+                Application.Current.Shutdown();
+            };
+
+            installingDialog.ShowDialog();
+        }
+
+        // Compact "Installing update..." modal with indeterminate progress bar.
+        // No close button, no chrome buttons -- displayed briefly before exit.
+        private Window BuildInstallingDialog()
+        {
+            var dialog = new Window
+            {
+                Title = "Installing Update",
+                Width = 380,
+                Height = 200,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ShowInTaskbar = false,
+                Style = (Style)FindResource("ModernWindowStyle")
+            };
+
+            var stack = new StackPanel
+            {
+                Margin = new Thickness(28, 24, 28, 24),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            stack.Children.Add(new TextBlock
+            {
+                Text = "Installing update\u2026",
+                FontFamily = new FontFamily("Segoe UI"),
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 15,
+                Foreground = (Brush)FindResource("AccentBrush"),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 14)
+            });
+
+            stack.Children.Add(new ProgressBar
+            {
+                IsIndeterminate = true,
+                Height = 4,
+                Foreground = (Brush)FindResource("AccentBrush"),
+                Background = (Brush)FindResource("SurfaceBrush"),
+                BorderThickness = new Thickness(0),
+                Margin = new Thickness(0, 0, 0, 14)
+            });
+
+            stack.Children.Add(new TextBlock
+            {
+                Text = "Registry Expert will restart automatically in a moment.",
+                Foreground = (Brush)FindResource("TextSecondaryBrush"),
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                TextAlignment = TextAlignment.Center
+            });
+
+            dialog.Content = stack;
             dialog.Loaded += (s, e) => ThemeManager.ApplyWindowChrome(dialog);
-            dialog.ShowDialog();
+            return dialog;
+        }
+
+        // ── Post-update success banner ────────────────────────────────────
+
+        private DispatcherTimer? _bannerHideTimer;
+
+        // Decides whether to show the banner based on:
+        //   1. App.UpgradedFromVersion (set when launched with --just-updated arg)
+        //   2. Settings.LastSeenVersion vs current version (sideload fallback)
+        private void CheckAndShowUpdatedBanner()
+        {
+            try
+            {
+                var settings = ViewModel.Settings;
+                var currentVersion = UpdateChecker.GetCurrentVersion();
+                var upgradedFrom = App.UpgradedFromVersion;
+
+                if (!string.IsNullOrEmpty(upgradedFrom))
+                {
+                    // Auto-update detected: full banner with release notes button
+                    ShowUpdatedBanner(
+                        $"Updated to Registry Expert {currentVersion} (from {upgradedFrom})",
+                        showReleaseNotesButton: true);
+                }
+                else if (!string.IsNullOrEmpty(settings.LastSeenVersion)
+                    && !string.Equals(settings.LastSeenVersion, currentVersion, StringComparison.Ordinal))
+                {
+                    // Manual / sideload upgrade: simpler welcome banner.
+                    // Only show on UPGRADE (current > last); suppress on downgrade or unparseable.
+                    if (Version.TryParse(currentVersion, out var curV)
+                        && Version.TryParse(settings.LastSeenVersion, out var lastV)
+                        && curV > lastV)
+                    {
+                        ShowUpdatedBanner(
+                            $"Welcome to Registry Expert {currentVersion}",
+                            showReleaseNotesButton: false);
+                    }
+                }
+
+                // Always remember current version so we don't repeat the banner next launch
+                if (!string.Equals(settings.LastSeenVersion, currentVersion, StringComparison.Ordinal))
+                {
+                    settings.LastSeenVersion = currentVersion;
+                    settings.Save();
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"CheckAndShowUpdatedBanner failed: {ex.Message}");
+            }
+        }
+
+        private void ShowUpdatedBanner(string text, bool showReleaseNotesButton)
+        {
+            UpdatedBannerText.Text = "\u2713  " + text;
+            UpdatedBannerReleaseNotesBtn.Visibility = showReleaseNotesButton
+                ? Visibility.Visible : Visibility.Collapsed;
+            UpdatedBanner.Visibility = Visibility.Visible;
+
+            // Auto-hide after 12 seconds
+            _bannerHideTimer?.Stop();
+            _bannerHideTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(12) };
+            _bannerHideTimer.Tick += (s, e) =>
+            {
+                _bannerHideTimer?.Stop();
+                HideUpdatedBanner();
+            };
+            _bannerHideTimer.Start();
+        }
+
+        private void HideUpdatedBanner()
+        {
+            UpdatedBanner.Visibility = Visibility.Collapsed;
+            _bannerHideTimer?.Stop();
+            _bannerHideTimer = null;
+        }
+
+        private void UpdatedBannerCloseBtn_Click(object sender, RoutedEventArgs e)
+            => HideUpdatedBanner();
+
+        private void UpdatedBannerReleaseNotesBtn_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var version = UpdateChecker.GetCurrentVersion();
+
+                // Smart URL: if REGEXPERT_UPDATE_URL is set, derive the test repo
+                // release URL from it; otherwise use the production repo URL.
+                string url;
+                if (UpdateChecker.IsUsingOverrideUrl)
+                {
+                    // Try to derive owner/repo from the override URL.
+                    // Expected shape: https://api.github.com/repos/<owner>/<repo>/releases/latest
+                    var apiUrl = UpdateChecker.GitHubApiUrl;
+                    var marker = "/repos/";
+                    var ownerStart = apiUrl.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                    if (ownerStart >= 0)
+                    {
+                        var rest = apiUrl.Substring(ownerStart + marker.Length);
+                        var slash = rest.IndexOf('/');
+                        if (slash > 0)
+                        {
+                            var owner = rest.Substring(0, slash);
+                            var afterOwner = rest.Substring(slash + 1);
+                            var nextSlash = afterOwner.IndexOf('/');
+                            var repo = nextSlash > 0 ? afterOwner.Substring(0, nextSlash) : afterOwner;
+                            url = $"https://github.com/{owner}/{repo}/releases/tag/v{version}";
+                        }
+                        else
+                        {
+                            url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
+                        }
+                    }
+                    else
+                    {
+                        url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
+                    }
+                }
+                else
+                {
+                    url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
+                }
+
+                Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Release notes link failed: {ex.Message}");
+            }
         }
 
         private async Task CheckForUpdatesOnStartupAsync()
@@ -468,8 +893,37 @@ namespace RegistryExpert.Wpf.Views
             {
                 await Task.Delay(2000);
                 var info = await UpdateChecker.CheckForUpdatesAsync();
-                if (info?.UpdateAvailable == true)
-                    ShowUpdateAvailableDialog(info);
+                if (info == null || !info.UpdateAvailable) return;
+
+                var settings = ViewModel.Settings;
+
+                // Best-effort: clean up cache folders for older versions
+                AutoUpdater.CleanupOldCaches(info.LatestVersion);
+
+                if (settings.AutoDownloadUpdates && !string.IsNullOrEmpty(info.DownloadUrl))
+                {
+                    string? localPath;
+                    if (AutoUpdater.IsUpdateAlreadyDownloaded(info))
+                    {
+                        localPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion);
+                    }
+                    else
+                    {
+                        // Silent background download (no progress UI on startup)
+                        localPath = await AutoUpdater.DownloadUpdateAsync(info, progress: null, cancellationToken: default);
+                    }
+
+                    if (localPath != null)
+                    {
+                        _pendingUpdateInfo = info;
+                        _pendingUpdateLocalPath = localPath;
+                        ShowUpdateReadyDialog(info);
+                        return;
+                    }
+                    // If silent download failed, fall through to the manual prompt
+                }
+
+                ShowUpdateAvailableDialog(info);
             }
             catch (Exception ex)
             {

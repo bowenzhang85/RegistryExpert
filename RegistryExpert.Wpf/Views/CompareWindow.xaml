@@ -59,6 +59,7 @@
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
             <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
@@ -461,6 +462,7 @@
                                 Background="Transparent" BorderThickness="0"
                                 Cursor="Hand" Padding="4,2" Margin="4,0,0,0"
                                 ToolTip="Color legend"
+                                AutomationProperties.Name="Color legend"
                                 Click="HelpButton_Click">
                             <Grid Width="18" Height="18">
                                 <Ellipse Stroke="{DynamicResource TextSecondaryBrush}" StrokeThickness="1.2" Fill="Transparent" />
@@ -532,7 +534,7 @@
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           SelectedItemChanged="LeftTree_SelectedItemChanged"
-                          AutomationProperties.Name="Left hive tree" />
+                          AutomationProperties.Name="Left hive" />
 
                 <!-- Horizontal splitter -->
                 <GridSplitter Grid.Row="3" Height="4"
@@ -635,7 +637,7 @@
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           SelectedItemChanged="RightTree_SelectedItemChanged"
-                          AutomationProperties.Name="Right hive tree" />
+                          AutomationProperties.Name="Right hive" />
 
                 <!-- Horizontal splitter -->
                 <GridSplitter Grid.Row="3" Height="4"

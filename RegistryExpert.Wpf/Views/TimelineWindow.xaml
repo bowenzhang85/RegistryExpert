@@ -41,7 +41,8 @@
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
                         <ComboBox ItemsSource="{Binding HiveNames}"
                                   SelectedIndex="{Binding SelectedHiveIndex}"
-                                  Width="140" />
+                                  Width="140"
+                                  AutomationProperties.Name="Hive" />
                     </StackPanel>
 
                     <!-- Time filter -->
@@ -51,7 +52,8 @@
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
                         <ComboBox ItemsSource="{Binding TimeFilterOptions}"
                                   SelectedIndex="{Binding SelectedTimeFilterIndex}"
-                                  Width="160" />
+                                  Width="160"
+                                  AutomationProperties.Name="Time" />
                     </StackPanel>
 
                     <!-- Limit -->
@@ -61,7 +63,8 @@
                                    VerticalAlignment="Center" Margin="0,0,6,0" />
                         <ComboBox ItemsSource="{Binding LimitOptions}"
                                   SelectedIndex="{Binding SelectedLimitIndex}"
-                                  Width="90" />
+                                  Width="90"
+                                  AutomationProperties.Name="Show" />
                     </StackPanel>
 
                     <!-- Scan button -->
@@ -115,7 +118,8 @@
                          Background="{DynamicResource BackgroundBrush}"
                          BorderBrush="{DynamicResource BorderBrush}"
                          Padding="6,4"
-                         Margin="0,6,0,0">
+                         Margin="0,6,0,0"
+                         AutomationProperties.Name="Search key path">
                     <TextBox.Style>
                         <Style TargetType="TextBox">
                             <Setter Property="Tag" Value="Search key path..." />

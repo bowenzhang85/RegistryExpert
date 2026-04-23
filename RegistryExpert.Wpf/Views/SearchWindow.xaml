@@ -252,6 +252,7 @@
                            Margin="0,0,0,6" />
 
                 <RichTextBox x:Name="PreviewRichTextBox"
+                             AutomationProperties.Name="Registry value preview"
                              IsReadOnly="True"
                              FontFamily="Consolas"
                              FontSize="12"
