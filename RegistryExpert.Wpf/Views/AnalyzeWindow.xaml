@@ -325,7 +325,7 @@
                                                 Visibility="{Binding Data.GridColumnCount, Source={StaticResource Proxy}, Converter={StaticResource ColCountToVis}, ConverterParameter=2}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding Column2}"
+                                    <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                TextTrimming="CharacterEllipsis"
                                                Margin="8,2" />
                                 </DataTemplate>
@@ -492,7 +492,7 @@
                                 <DataGridTemplateColumn Header="Value" Width="*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding Column2}"
+                                            <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="8,2" />
                                         </DataTemplate>
@@ -605,7 +605,7 @@
                                 <DataGridTemplateColumn Header="Value" Width="*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding Column2}"
+                                            <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="8,2" />
                                         </DataTemplate>
@@ -732,7 +732,7 @@
                                 <DataGridTemplateColumn Header="Value" Width="*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding Column2}"
+                                            <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="8,2" />
                                         </DataTemplate>
@@ -876,7 +876,7 @@
                                                     SortMemberPath="Value">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <TextBlock Text="{Binding Value}"
+                                        <TextBlock helpers:RichText.FormattedText="{Binding Value}"
                                                    TextTrimming="CharacterEllipsis"
                                                    Margin="8,2" />
                                     </DataTemplate>
@@ -1386,7 +1386,7 @@
                                                             SortMemberPath="Value">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding Value}"
+                                                <TextBlock helpers:RichText.FormattedText="{Binding Value}"
                                                            TextTrimming="CharacterEllipsis"
                                                            Margin="8,2" />
                                             </DataTemplate>
@@ -1419,7 +1419,7 @@
                                                             SortMemberPath="Value">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
-                                                <TextBlock Text="{Binding Value}"
+                                                <TextBlock helpers:RichText.FormattedText="{Binding Value}"
                                                            TextTrimming="CharacterEllipsis"
                                                            Margin="8,2" />
                                             </DataTemplate>
@@ -1517,7 +1517,7 @@
                                 <DataGridTemplateColumn Header="Value" Width="*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding Column2}"
+                                            <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="8,2" />
                                         </DataTemplate>
@@ -1614,7 +1614,7 @@
                                 <DataGridTemplateColumn Header="Value" Width="*">
                                     <DataGridTemplateColumn.CellTemplate>
                                         <DataTemplate>
-                                            <TextBlock Text="{Binding Column2}"
+                                            <TextBlock helpers:RichText.FormattedText="{Binding Column2}"
                                                        TextTrimming="CharacterEllipsis"
                                                        Margin="8,2" />
                                         </DataTemplate>

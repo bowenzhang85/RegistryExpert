@@ -961,11 +961,31 @@ namespace RegistryExpert.Wpf.ViewModels
             }
         }
 
+        /// <summary>
+        /// <summary>
+        /// Child entry for the "Boot &amp; Logon" parent subcategory.
+        /// </summary>
+        internal sealed class BootLogonChild
+        {
+            public string Title { get; set; } = "";
+            public AnalysisSection? Section { get; set; }   // null when required hive is missing
+            public LoadedHiveInfo? Hive { get; set; }
+            public string RequiredHive { get; set; } = "";
+            public bool IsAvailable => Section != null && Hive != null;
+        }
+
         private void LoadCategoryData(string key)
         {
             var allSections = new List<AnalysisSection>();
+            var bootLogonChildren = new List<BootLogonChild>();
 
             if (!_categoryHiveMap.TryGetValue(key, out var hives)) return;
+
+            // AppLocker requires data from BOTH SYSTEM and SOFTWARE for an accurate
+            // single-Status verdict. Collect per-hive data here, build one section after the loop.
+            RegistryInfoExtractor.AppLockerData? systemAppLockerData = null;
+            RegistryInfoExtractor.AppLockerData? softwareAppLockerData = null;
+            LoadedHiveInfo? appLockerPrimaryHive = null;
 
             foreach (var hive in hives)
             {
@@ -1024,10 +1044,148 @@ namespace RegistryExpert.Wpf.ViewModels
                         try
                         {
                             if (ext.HasBootConfigurations())
-                                hiveSections.Add(ext.GetBootConfigurationAnalysis());
+                            {
+                                var bcSection = ext.GetBootConfigurationAnalysis();
+                                bootLogonChildren.Add(new BootLogonChild
+                                {
+                                    Title = bcSection.Title,
+                                    Section = bcSection,
+                                    Hive = hive,
+                                    RequiredHive = "SYSTEM"
+                                });
+                            }
                         }
                         catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Boot config analysis error: {ex.Message}"); }
+
+                        try
+                        {
+                            if (ext.HasBootExecution())
+                            {
+                                var beSection = ext.GetBootExecutionAnalysis();
+                                bootLogonChildren.Add(new BootLogonChild
+                                {
+                                    Title = beSection.Title,
+                                    Section = beSection,
+                                    Hive = hive,
+                                    RequiredHive = "SYSTEM"
+                                });
+                            }
+                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Boot execution analysis error: {ex.Message}"); }
+
+                        try
+                        {
+                            if (ext.HasDriverVerifier())
+                            {
+                                var dvSection = ext.GetDriverVerifierAnalysis();
+                                bootLogonChildren.Add(new BootLogonChild
+                                {
+                                    Title = dvSection.Title,
+                                    Section = dvSection,
+                                    Hive = hive,
+                                    RequiredHive = "SYSTEM"
+                                });
+                            }
+                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Driver verifier analysis error: {ex.Message}"); }
                     }
+
+                    if (hive.HiveType == HiveType.SOFTWARE)
+                    {
+                        try
+                        {
+                            if (ext.HasLogonIntegrity())
+                            {
+                                var liSection = ext.GetLogonIntegrityAnalysis();
+                                bootLogonChildren.Add(new BootLogonChild
+                                {
+                                    Title = liSection.Title,
+                                    Section = liSection,
+                                    Hive = hive,
+                                    RequiredHive = "SOFTWARE"
+                                });
+                            }
+                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Logon integrity analysis error: {ex.Message}"); }
+                    }
+
+                    // VBS may exist in either SYSTEM or SOFTWARE; prefer SYSTEM, fall back to SOFTWARE.
+                    if (hive.HiveType == HiveType.SYSTEM || hive.HiveType == HiveType.SOFTWARE)
+                    {
+                        try
+                        {
+                            if (ext.HasVbsAndCredentialGuard())
+                            {
+                                var vbsSection = ext.GetVbsAndCredentialGuardAnalysis();
+                                // Only add VBS once. SYSTEM wins over SOFTWARE if both contribute.
+                                var existingVbs = bootLogonChildren.FirstOrDefault(c => c.Title == vbsSection.Title);
+                                if (existingVbs == null)
+                                {
+                                    bootLogonChildren.Add(new BootLogonChild
+                                    {
+                                        Title = vbsSection.Title,
+                                        Section = vbsSection,
+                                        Hive = hive,
+                                        RequiredHive = "SYSTEM or SOFTWARE"
+                                    });
+                                }
+                                else if (hive.HiveType == HiveType.SYSTEM && existingVbs.Hive?.HiveType == HiveType.SOFTWARE)
+                                {
+                                    existingVbs.Section = vbsSection;
+                                    existingVbs.Hive = hive;
+                                }
+                            }
+                        }
+                        catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"VBS analysis error: {ex.Message}"); }
+                    }
+                }
+
+                // ── Tier A health-check sections (Items 6, 7, 8) ──
+                // Item 6: Proxy Configuration → Network category, SOFTWARE hive
+                if (key == "Network" && hive.HiveType == HiveType.SOFTWARE)
+                {
+                    try
+                    {
+                        if (ext.HasProxyConfiguration())
+                            hiveSections.Add(ext.GetProxyConfigurationAnalysis());
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Proxy analysis error: {ex.Message}"); }
+                }
+
+                // Item 8: SAN Policy → Storage category, SYSTEM hive
+                if (key == "Storage" && hive.HiveType == HiveType.SYSTEM)
+                {
+                    try
+                    {
+                        if (ext.HasSanPolicy())
+                            hiveSections.Add(ext.GetSanPolicyAnalysis());
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"SAN policy analysis error: {ex.Message}"); }
+                }
+
+                // Item 7: AppLocker → Software category, SYSTEM or SOFTWARE hive.
+                // Collect data here; build a single combined section after the per-hive loop.
+                if (key == "Software" && (hive.HiveType == HiveType.SYSTEM || hive.HiveType == HiveType.SOFTWARE))
+                {
+                    try
+                    {
+                        var alData = ext.CollectAppLockerData();
+                        if (alData != null)
+                        {
+                            if (alData.HaveSystem)
+                            {
+                                systemAppLockerData = alData;
+                                // SOFTWARE preferred as primary; only set SYSTEM if nothing better yet.
+                                appLockerPrimaryHive ??= hive;
+                            }
+                            if (alData.HaveSoftware)
+                            {
+                                softwareAppLockerData = alData;
+                                appLockerPrimaryHive = hive; // SOFTWARE wins
+                            }
+                        }
+                    }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"AppLocker analysis error: {ex.Message}"); }
                 }
 
                 // Merge sections by title across hives
@@ -1055,6 +1213,54 @@ namespace RegistryExpert.Wpf.ViewModels
                         _sectionHiveMap.Remove(existing);
                     }
                 }
+            }
+
+            // Build the single combined AppLocker section from data collected across SYSTEM + SOFTWARE.
+            // Done outside the per-hive loop so we get one accurate Status row instead of duplicates.
+            if (key == "Software" && (systemAppLockerData != null || softwareAppLockerData != null))
+            {
+                try
+                {
+                    var appLockerSection = RegistryInfoExtractor.BuildAppLockerSection(systemAppLockerData, softwareAppLockerData);
+                    if (appLockerPrimaryHive != null)
+                        _sectionHiveMap[appLockerSection] = appLockerPrimaryHive;
+                    allSections.Add(appLockerSection);
+                }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"AppLocker section build error: {ex.Message}"); }
+            }
+
+            // Assemble the "Boot & Logon" parent subcategory (System category only).
+            // Combines Boot Configurations, Boot Execution, Logon Integrity, VBS, Driver Verifier
+            // as sub-tabs under one parent. Available if SYSTEM or SOFTWARE hive is loaded.
+            if (key == "System" && bootLogonChildren.Count > 0)
+            {
+                // Order matches execution order on a real system.
+                var order = new[]
+                {
+                    "\U0001f4bb Boot Configurations",
+                    "\u2699\ufe0f Boot Execution",
+                    "\U0001f510 Logon Integrity",
+                    "\U0001f6e1\ufe0f Virtualization-Based Security",
+                    "\U0001f50d Driver Verifier",
+                };
+                bootLogonChildren = bootLogonChildren
+                    .OrderBy(c =>
+                    {
+                        var idx = Array.IndexOf(order, c.Title);
+                        return idx < 0 ? int.MaxValue : idx;
+                    })
+                    .ToList();
+
+                var parent = new AnalysisSection
+                {
+                    Title = "\U0001f4bb Boot & Logon",
+                    Tag = bootLogonChildren
+                };
+                allSections.Add(parent);
+                // Map parent to the first child's hive so existing "switch active hive on click"
+                // logic in BuildSubcategoryButtons still works.
+                var firstHive = bootLogonChildren.First(c => c.Hive != null).Hive!;
+                _sectionHiveMap[parent] = firstHive;
             }
 
             // Cross-source dedup for Security Software:
@@ -1219,7 +1425,7 @@ namespace RegistryExpert.Wpf.ViewModels
                     {
                         "💻 Computer Information", "🔄 CPU Hyper-Threading",
                         "💥 Crash Dump Configuration", "🕐 System Time Config",
-                        "\U0001f5a5\ufe0f Device Manager", "\U0001f4bb Boot Configurations"
+                        "\U0001f5a5\ufe0f Device Manager"
                     };
                     foreach (var title in missingSystem)
                     {
@@ -1307,7 +1513,18 @@ namespace RegistryExpert.Wpf.ViewModels
 
                 if (!isSoftwareHive)
                 {
-                    // No SOFTWARE-only Network subcategories currently
+                    var missingNetSoftware = new[] { "🌐 Proxy Configuration" };
+                    foreach (var title in missingNetSoftware)
+                    {
+                        if (existingTitles.Contains(title)) continue;
+                        unavailable.Add(new SubcategoryItem
+                        {
+                            Title = title,
+                            IsEnabled = false,
+                            Tooltip = "Requires SOFTWARE hive to be loaded",
+                            SelectCommand = new RelayCommand(() => { })
+                        });
+                    }
                 }
             }
 
@@ -1336,7 +1553,7 @@ namespace RegistryExpert.Wpf.ViewModels
             // Storage: all subcategories require SYSTEM
             if (categoryKey == "Storage" && !isSystemHive)
             {
-                var missing = new[] { "🔧 Filters", "💿 Mounted Devices", "💽 Physical Disks" };
+                var missing = new[] { "🔧 Filters", "💿 Mounted Devices", "💽 Physical Disks", "🔌 SAN Policy" };
                 foreach (var title in missing)
                 {
                     if (existingTitles.Contains(title)) continue;
@@ -1395,6 +1612,18 @@ namespace RegistryExpert.Wpf.ViewModels
                             SelectCommand = new RelayCommand(() => { })
                         });
                     }
+
+                    // AppLocker: only unavailable if NEITHER SOFTWARE nor SYSTEM is loaded
+                    if (!isSystemHive && !existingTitles.Contains("🚫 AppLocker"))
+                    {
+                        unavailable.Add(new SubcategoryItem
+                        {
+                            Title = "🚫 AppLocker",
+                            IsEnabled = false,
+                            Tooltip = "Requires SOFTWARE or SYSTEM hive to be loaded",
+                            SelectCommand = new RelayCommand(() => { })
+                        });
+                    }
                 }
 
                 if (!isNtuserHive)
@@ -1447,7 +1676,10 @@ namespace RegistryExpert.Wpf.ViewModels
             // Network: some subcategories need SYSTEM, some need SOFTWARE
             if (categoryKey == "Network")
             {
-                var networkSoftwareSubcats = new HashSet<string>();
+                var networkSoftwareSubcats = new HashSet<string>
+                {
+                    "🌐 Proxy Configuration"
+                };
                 var networkSystemSubcats = new HashSet<string>
                 {
                     "🔌 Network Interfaces", "🧭 DNS Registered Adapters",
@@ -1483,7 +1715,7 @@ namespace RegistryExpert.Wpf.ViewModels
             // and Guest Agent are available with either SOFTWARE or SYSTEM hive
             if (categoryKey == "Software")
             {
-                if (title.Contains("Security Software") || title.Contains("Guest Agent"))
+                if (title.Contains("Security Software") || title.Contains("Guest Agent") || title.Contains("AppLocker"))
                 {
                     if (!isSoftwareHive && !isSystemHive)
                     {
@@ -1561,6 +1793,13 @@ namespace RegistryExpert.Wpf.ViewModels
 
             // Route to specialized views based on section title
             var title = section.Title;
+
+            // Boot & Logon parent: build sub-tabs for child sections
+            if (title.Contains("Boot & Logon") && section.Tag is List<BootLogonChild> children)
+            {
+                BuildBootLogonSubTabs(children);
+                return;
+            }
 
             if (title.Contains("Network Interfaces"))
             {
@@ -2031,6 +2270,48 @@ namespace RegistryExpert.Wpf.ViewModels
                 target[0].SelectCommand.Execute(null);
         }
 
+        /// <summary>
+        /// Build sub-tabs for the "Boot &amp; Logon" parent subcategory.
+        /// Each child sub-tab is enabled only if its required hive is loaded;
+        /// disabled tabs show a tooltip explaining which hive is missing.
+        /// </summary>
+        private void BuildBootLogonSubTabs(List<BootLogonChild> children)
+        {
+            SubTabs.Clear();
+
+            foreach (var child in children)
+            {
+                var childRef = child;
+                SubTabs.Add(new SubcategoryItem
+                {
+                    Title = child.Title,
+                    IsEnabled = child.IsAvailable,
+                    Tooltip = child.IsAvailable ? null : $"Requires {child.RequiredHive} hive to be loaded",
+                    SelectCommand = new RelayCommand(() =>
+                    {
+                        if (!childRef.IsAvailable || childRef.Section == null) return;
+
+                        // Switch active hive context to this child's source hive.
+                        if (childRef.Hive != null)
+                        {
+                            _activeParser = childRef.Hive.Parser;
+                            _activeExtractor = childRef.Hive.InfoExtractor;
+                        }
+
+                        DisplayDefaultGrid(childRef.Section);
+                        ContentHeader = childRef.Section.Title;
+                        UpdateSubTabActiveState(childRef.Section.Title);
+                    })
+                });
+            }
+
+            ShowSubTabs = SubTabs.Count > 0;
+
+            // Auto-select first AVAILABLE sub-tab
+            var firstEnabled = SubTabs.FirstOrDefault(t => t.IsEnabled);
+            firstEnabled?.SelectCommand.Execute(null);
+        }
+
         // ── Network Interfaces view ────────────────────────────────────────
 
         private void DisplayNetworkInterfaces(AnalysisSection section)
@@ -2283,10 +2564,11 @@ namespace RegistryExpert.Wpf.ViewModels
                                             Name = driverProp.Name,
                                             Value = driverProp.Value ?? "",
                                             RegistryValueName = driverProp.RegistryValue ?? driverProp.Name,
-                                            RegistryPath = driverProp.RegistryPath ?? prop.RegistryPath ?? ""
+                                             RegistryPath = driverProp.RegistryPath ?? prop.RegistryPath ?? ""
                                         });
-                                    }
-                                }
+                }
+            }
+
                                 else
                                 {
                                     deviceData.Properties.Add(new DevicePropertyItem

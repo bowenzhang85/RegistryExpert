@@ -404,6 +404,23 @@ namespace RegistryExpert.Core
             if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
             {
                 computerSection.Items.AddRange(GetBiosAndTpmItems());
+
+                // Tier A health check: domain-joined-but-Netlogon-misconfigured.
+                // Correlates domain-join evidence with Netlogon service Start value
+                // to surface a known failure mode where domain auth will be unreliable
+                // even though the machine appears configured for the domain.
+                var (verdict, isWarn, detail) = GetDomainNetlogonStatus();
+                if (!string.IsNullOrEmpty(verdict))
+                {
+                    computerSection.Items.Add(new AnalysisItem
+                    {
+                        Name = "Domain Logon Health",
+                        Value = verdict,
+                        IsWarning = isWarn,
+                        RegistryPath = $@"{_currentControlSet}\Services\Netlogon",
+                        RegistryValue = detail
+                    });
+                }
             }
 
             // Always add for UI consistency (will appear greyed out if empty)
@@ -10147,6 +10164,1293 @@ namespace RegistryExpert.Core
             public int TotalValues { get; set; }
             public int MaxDepth { get; set; }
             public int InvalidParentPointers { get; set; }
+        }
+
+        #endregion
+
+        #region Boot & Logon Diagnostics (Boot Execution, Logon Integrity, VBS, Driver Verifier)
+
+        // Default values used to detect tampering / non-default configurations.
+        private const string DefaultBootExecute = "autocheck autochk *";
+        private const string DefaultUserinit = @"C:\Windows\system32\userinit.exe,";
+        private const string DefaultShell = "explorer.exe";
+
+        // Documented autochk.exe switches. Whitelist used by IsValidAutochkInvocation
+        // so legitimate customizations like "/q /v" do not raise false-positive warnings.
+        private static readonly HashSet<string> AutochkSimpleSwitches = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "/f", "/v", "/r", "/x", "/i", "/c", "/b", "/p", "/q", "/?", "/l"
+        };
+
+        /// <summary>
+        /// Validates a multi-string BootExecute value. Each entry must be a recognized
+        /// autocheck/autochk invocation. Returns false if any entry is unrecognized.
+        /// </summary>
+        private static bool IsValidBootExecuteEntries(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return false;
+
+            var entries = raw.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries)
+                             .Select(s => s.Trim())
+                             .Where(s => s.Length > 0)
+                             .ToArray();
+
+            if (entries.Length == 0) return false;
+
+            foreach (var entry in entries)
+            {
+                if (!IsValidAutochkInvocation(entry)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Validates a single "autocheck autochk [switches] [volume-spec]" entry.
+        /// Recognized switches: /f /v /r /x /i /c /b /p /q /? /l[:size] /k:&lt;drive&gt;.
+        /// Volume specs: *, \??\..., \DosDevices\..., \Device\..., or X: drive letters.
+        /// </summary>
+        private static bool IsValidAutochkInvocation(string entry)
+        {
+            var tokens = entry.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2) return false;
+            if (!string.Equals(tokens[0], "autocheck", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!string.Equals(tokens[1], "autochk", StringComparison.OrdinalIgnoreCase)) return false;
+
+            for (int i = 2; i < tokens.Length; i++)
+            {
+                var t = tokens[i];
+
+                // Switch form
+                if (t.StartsWith("/", StringComparison.Ordinal))
+                {
+                    if (AutochkSimpleSwitches.Contains(t)) continue;
+
+                    // Switches with colon-suffixed argument: /k:<drive>, /l:<size>
+                    var colonIdx = t.IndexOf(':');
+                    if (colonIdx > 0 && colonIdx < t.Length - 1)
+                    {
+                        var prefix = t.Substring(0, colonIdx);
+                        if (string.Equals(prefix, "/k", StringComparison.OrdinalIgnoreCase)) continue;
+                        if (string.Equals(prefix, "/l", StringComparison.OrdinalIgnoreCase)) continue;
+                    }
+                    return false;
+                }
+
+                // Volume spec form
+                if (t == "*") continue;
+                if (t.StartsWith(@"\??\", StringComparison.Ordinal)) continue;
+                if (t.StartsWith(@"\DosDevices\", StringComparison.OrdinalIgnoreCase)) continue;
+                if (t.StartsWith(@"\Device\", StringComparison.OrdinalIgnoreCase)) continue;
+                // Drive letter like "C:" or "C:\"
+                if (t.Length >= 2 && char.IsLetter(t[0]) && t[1] == ':') continue;
+
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Validates the Winlogon Shell value. Accepts bare "explorer.exe", quoted
+        /// "explorer.exe", or an explicit path ending in explorer.exe. Anything else
+        /// (other binary names, multiple values) is rejected.
+        /// </summary>
+        private static bool IsValidShellValue(string trimmed)
+        {
+            if (string.IsNullOrWhiteSpace(trimmed)) return false;
+
+            var s = trimmed.Trim('"').Trim();
+            if (s.Length == 0) return false;
+
+            // Reject if it looks like multiple commands (semicolon, comma, embedded quote)
+            if (s.IndexOfAny(new[] { ';', ',', '\r', '\n' }) >= 0) return false;
+
+            // Take filename portion (after last backslash or slash)
+            var lastSep = s.LastIndexOfAny(new[] { '\\', '/' });
+            var fileName = lastSep >= 0 ? s.Substring(lastSep + 1) : s;
+
+            return string.Equals(fileName, DefaultShell, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Validates the Winlogon Userinit value. Accepts a comma-separated chain
+        /// where every non-empty entry is a path ending in userinit.exe. Duplicated
+        /// userinit.exe entries are tolerated (some installers do this benignly).
+        /// </summary>
+        private static bool IsValidUserinitChain(string trimmed)
+        {
+            if (string.IsNullOrWhiteSpace(trimmed)) return false;
+            if (trimmed.Contains(';')) return false;
+
+            var parts = trimmed.Split(',');
+            int validCount = 0;
+            foreach (var raw in parts)
+            {
+                var p = raw.Trim().Trim('"').Trim();
+                if (p.Length == 0) continue; // tolerate trailing comma
+
+                var lastSep = p.LastIndexOfAny(new[] { '\\', '/' });
+                var fileName = lastSep >= 0 ? p.Substring(lastSep + 1) : p;
+                if (!string.Equals(fileName, "userinit.exe", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                validCount++;
+            }
+            return validCount > 0;
+        }
+
+        /// <summary>
+        /// True if the SYSTEM hive is loaded (required for Session Manager BootExecute / SetupExecute).
+        /// </summary>
+        public bool HasBootExecution()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM;
+        }
+
+        /// <summary>
+        /// Boot Execution diagnostics: Session Manager BootExecute / SetupExecute / ExcludeFromKnownDlls.
+        /// These values run before Windows finishes booting and are classic boot-time persistence vectors.
+        /// </summary>
+        public AnalysisSection GetBootExecutionAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\u2699\ufe0f Boot Execution" };
+
+            if (!HasBootExecution())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM hive to be loaded"
+                });
+                return section;
+            }
+
+            var smPath = $@"{_currentControlSet}\Control\Session Manager";
+            var smKey = _parser.GetKey(smPath);
+
+            // BootExecute is REG_MULTI_SZ — may already be joined by the parser
+            var bootExecuteRaw = smKey?.Values.FirstOrDefault(v => v.ValueName == "BootExecute");
+            var bootExecuteDisplay = bootExecuteRaw?.ValueData?.ToString()?.Trim() ?? "";
+            // Normalize multi-line MULTI_SZ for comparison
+            var bootExecuteNormalized = string.Join(" ", bootExecuteDisplay.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim())).Trim();
+            var isDefaultBootExec = string.Equals(bootExecuteNormalized, DefaultBootExecute, StringComparison.OrdinalIgnoreCase);
+            var isValidCustomBootExec = !isDefaultBootExec
+                                        && !string.IsNullOrEmpty(bootExecuteDisplay)
+                                        && IsValidBootExecuteEntries(bootExecuteDisplay);
+
+            string bootExecValue;
+            bool bootExecWarn;
+            if (string.IsNullOrEmpty(bootExecuteDisplay))
+            {
+                bootExecValue = "(empty) \u2014 unusual; default is 'autocheck autochk *'";
+                bootExecWarn = true;
+            }
+            else if (isDefaultBootExec)
+            {
+                bootExecValue = $"{bootExecuteDisplay}  \u2705 Default";
+                bootExecWarn = false;
+            }
+            else if (isValidCustomBootExec)
+            {
+                // Customized but structurally valid (e.g., autochk with /q /v switches).
+                // Per UX decision: show value plain, no annotation, no warning.
+                bootExecValue = bootExecuteDisplay;
+                bootExecWarn = false;
+            }
+            else
+            {
+                bootExecValue = $"{bootExecuteDisplay}  \u26a0 Non-default \u2014 may indicate tampering or extra boot-time tasks";
+                bootExecWarn = true;
+            }
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "BootExecute",
+                Value = bootExecValue,
+                IsWarning = bootExecWarn,
+                RegistryPath = smPath,
+                RegistryValue = $"BootExecute = {bootExecuteDisplay}"
+            });
+
+            // SetupExecute should be empty after install completes
+            var setupExecuteRaw = smKey?.Values.FirstOrDefault(v => v.ValueName == "SetupExecute");
+            var setupExecuteDisplay = setupExecuteRaw?.ValueData?.ToString()?.Trim() ?? "";
+            var setupExecuteNormalized = string.Join(" ", setupExecuteDisplay.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim())).Trim();
+            var hasSetupExec = !string.IsNullOrWhiteSpace(setupExecuteNormalized);
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "SetupExecute",
+                Value = hasSetupExec
+                    ? $"{setupExecuteDisplay}  \u26a0 Non-empty \u2014 setup did not complete cleanly, or extra boot-time program registered"
+                    : "(empty) \u2705 Normal post-install state",
+                IsWarning = hasSetupExec,
+                RegistryPath = smPath,
+                RegistryValue = $"SetupExecute = {setupExecuteDisplay}"
+            });
+
+            // ExcludeFromKnownDlls — DLL hijacking indicator if non-empty
+            var excludeKnownDlls = smKey?.Values.FirstOrDefault(v => v.ValueName == "ExcludeFromKnownDlls");
+            var excludeDisplay = excludeKnownDlls?.ValueData?.ToString()?.Trim() ?? "";
+            var excludeNormalized = string.Join(" ", excludeDisplay.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim())).Trim();
+            var hasExcludes = !string.IsNullOrWhiteSpace(excludeNormalized);
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "ExcludeFromKnownDlls",
+                Value = hasExcludes
+                    ? $"{excludeDisplay}  \u26a0 Non-empty \u2014 review for DLL hijacking / side-loading"
+                    : "(empty) \u2705 Default",
+                IsWarning = hasExcludes,
+                RegistryPath = smPath,
+                RegistryValue = $"ExcludeFromKnownDlls = {excludeDisplay}"
+            });
+
+            return section;
+        }
+
+        /// <summary>
+        /// True if the SOFTWARE hive is loaded (required for Winlogon / AppInit_DLLs values).
+        /// </summary>
+        public bool HasLogonIntegrity()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+        }
+
+        /// <summary>
+        /// Logon Integrity diagnostics: Winlogon Shell / Userinit and AppInit_DLLs.
+        /// Tampering with these values is a classic persistence / hijack indicator.
+        /// </summary>
+        public AnalysisSection GetLogonIntegrityAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f510 Logon Integrity" };
+
+            if (!HasLogonIntegrity())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SOFTWARE hive to be loaded"
+                });
+                return section;
+            }
+
+            const string winlogonPath = @"Microsoft\Windows NT\CurrentVersion\Winlogon";
+            const string windowsPath = @"Microsoft\Windows NT\CurrentVersion\Windows";
+
+            // Shell — should be exactly "explorer.exe"; tolerate quotes and explicit path.
+            var shell = GetValue(winlogonPath, "Shell") ?? "";
+            var shellTrim = shell.Trim();
+            var isDefaultShell = string.Equals(shellTrim, DefaultShell, StringComparison.OrdinalIgnoreCase);
+            var isValidCustomShell = !isDefaultShell
+                                     && !string.IsNullOrEmpty(shellTrim)
+                                     && IsValidShellValue(shellTrim);
+
+            string shellValue;
+            bool shellWarn;
+            if (string.IsNullOrEmpty(shell))
+            {
+                shellValue = "(not set)  \u26a0 Missing \u2014 logon will fail";
+                shellWarn = true;
+            }
+            else if (isDefaultShell)
+            {
+                shellValue = $"{shell}  \u2705 Default";
+                shellWarn = false;
+            }
+            else if (isValidCustomShell)
+            {
+                // Quoted form or explicit path to explorer.exe — benign.
+                shellValue = shell;
+                shellWarn = false;
+            }
+            else
+            {
+                shellValue = $"{shell}  \u26a0 Non-default \u2014 anything other than 'explorer.exe' is suspicious (possible hijack)";
+                shellWarn = true;
+            }
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Winlogon Shell",
+                Value = shellValue,
+                IsWarning = shellWarn,
+                RegistryPath = winlogonPath,
+                RegistryValue = $"Shell = {shell}"
+            });
+
+            // Userinit — must be a comma-separated chain of paths each ending in userinit.exe.
+            var userinit = GetValue(winlogonPath, "Userinit") ?? "";
+            var userinitTrim = userinit.Trim();
+            var isDefaultUserinit = string.Equals(userinitTrim, DefaultUserinit, StringComparison.OrdinalIgnoreCase);
+            var isValidCustomUserinit = !isDefaultUserinit
+                                        && !string.IsNullOrEmpty(userinitTrim)
+                                        && IsValidUserinitChain(userinitTrim);
+
+            string userinitValue;
+            bool userinitWarn;
+            if (string.IsNullOrEmpty(userinit))
+            {
+                userinitValue = "(not set)  \u26a0 Missing \u2014 logon will fail";
+                userinitWarn = true;
+            }
+            else if (isDefaultUserinit)
+            {
+                userinitValue = $"{userinit}  \u2705 Default";
+                userinitWarn = false;
+            }
+            else if (isValidCustomUserinit)
+            {
+                // Path variation, quoting, or duplicated userinit.exe — benign.
+                userinitValue = userinit;
+                userinitWarn = false;
+            }
+            else
+            {
+                userinitValue = $"{userinit}  \u26a0 Suspicious \u2014 default is '{DefaultUserinit}'";
+                userinitWarn = true;
+            }
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Winlogon Userinit",
+                Value = userinitValue,
+                IsWarning = userinitWarn,
+                RegistryPath = winlogonPath,
+                RegistryValue = $"Userinit = {userinit}"
+            });
+
+            // AppInit_DLLs / LoadAppInit_DLLs — non-empty + load=1 means every process loads these DLLs
+            var appInitDlls = GetValue(windowsPath, "AppInit_DLLs") ?? "";
+            var loadAppInit = GetValue(windowsPath, "LoadAppInit_DLLs") ?? "";
+            var hasAppInitDlls = !string.IsNullOrWhiteSpace(appInitDlls.Trim('\0', ' ', '\r', '\n'));
+            var loadEnabled = loadAppInit == "1";
+
+            var appInitDisplay = string.IsNullOrEmpty(appInitDlls) ? "(empty)" : appInitDlls;
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "AppInit_DLLs",
+                Value = !hasAppInitDlls
+                    ? "(empty) \u2705 Default"
+                    : (loadEnabled
+                        ? $"{appInitDisplay}  \u26a0 ACTIVE \u2014 these DLLs are injected into EVERY user-mode process"
+                        : $"{appInitDisplay}  \u26a0 Configured but LoadAppInit_DLLs=0 (currently inactive)"),
+                IsWarning = hasAppInitDlls,
+                RegistryPath = windowsPath,
+                RegistryValue = $"AppInit_DLLs = {appInitDlls}"
+            });
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "LoadAppInit_DLLs",
+                Value = string.IsNullOrEmpty(loadAppInit)
+                    ? "(not set) \u2014 treated as disabled"
+                    : (loadEnabled
+                        ? "1 \u2014 AppInit_DLLs loading is ENABLED"
+                        : "0 \u2014 AppInit_DLLs loading is disabled (default on modern Windows)"),
+                IsWarning = loadEnabled && hasAppInitDlls,
+                RegistryPath = windowsPath,
+                RegistryValue = $"LoadAppInit_DLLs = {loadAppInit}"
+            });
+
+            return section;
+        }
+
+        /// <summary>
+        /// True if either SYSTEM or SOFTWARE is loaded (different parts of VBS configuration live in each).
+        /// </summary>
+        public bool HasVbsAndCredentialGuard()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM
+                || _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+        }
+
+        /// <summary>
+        /// Virtualization-Based Security diagnostics: Credential Guard (LSA + DeviceGuard mirror + GPO),
+        /// VBS, HVCI, and required platform features.
+        /// </summary>
+        public AnalysisSection GetVbsAndCredentialGuardAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f6e1\ufe0f Virtualization-Based Security" };
+
+            if (!HasVbsAndCredentialGuard())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM or SOFTWARE hive to be loaded"
+                });
+                return section;
+            }
+
+            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                var lsaPath = $@"{_currentControlSet}\Control\Lsa";
+                var dgPath = $@"{_currentControlSet}\Control\DeviceGuard";
+                var hvciPath = $@"{_currentControlSet}\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity";
+
+                // Credential Guard — effective state (LSA)
+                var lsaCfgFlags = GetValue(lsaPath, "LsaCfgFlags");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Credential Guard (LSA)",
+                    Value = DecodeLsaCfgFlags(lsaCfgFlags),
+                    IsWarning = lsaCfgFlags == "1" || lsaCfgFlags == "2",
+                    RegistryPath = lsaPath,
+                    RegistryValue = $"LsaCfgFlags = {lsaCfgFlags ?? "(not set)"}"
+                });
+
+                // Credential Guard — DeviceGuard mirror
+                var dgLsaCfgFlags = GetValue(dgPath, "LsaCfgFlags");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Credential Guard (DeviceGuard)",
+                    Value = DecodeLsaCfgFlags(dgLsaCfgFlags),
+                    IsWarning = dgLsaCfgFlags == "1" || dgLsaCfgFlags == "2",
+                    RegistryPath = dgPath,
+                    RegistryValue = $"LsaCfgFlags = {dgLsaCfgFlags ?? "(not set)"}"
+                });
+
+                // VBS enabled
+                var vbsEnabled = GetValue(dgPath, "EnableVirtualizationBasedSecurity");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "VBS Enabled",
+                    Value = vbsEnabled switch
+                    {
+                        "1" => "1 \u2014 Virtualization-Based Security is ENABLED",
+                        "0" => "0 \u2014 Disabled",
+                        null => "(not set) \u2014 Default (disabled unless policy enables)",
+                        _ => vbsEnabled
+                    },
+                    RegistryPath = dgPath,
+                    RegistryValue = $"EnableVirtualizationBasedSecurity = {vbsEnabled ?? "(not set)"}"
+                });
+
+                // Required platform security features
+                var reqPlatSec = GetValue(dgPath, "RequirePlatformSecurityFeatures");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Required Platform Features",
+                    Value = DecodeRequirePlatformSec(reqPlatSec),
+                    RegistryPath = dgPath,
+                    RegistryValue = $"RequirePlatformSecurityFeatures = {reqPlatSec ?? "(not set)"}"
+                });
+
+                // HVCI (Memory Integrity)
+                var hvciEnabled = GetValue(hvciPath, "Enabled");
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "HVCI (Memory Integrity)",
+                    Value = hvciEnabled switch
+                    {
+                        "1" => "1 \u2014 Hypervisor-Enforced Code Integrity is ENABLED",
+                        "0" => "0 \u2014 Disabled",
+                        null => "(not set) \u2014 Default (disabled unless policy enables)",
+                        _ => hvciEnabled
+                    },
+                    RegistryPath = hvciPath,
+                    RegistryValue = $"Enabled = {hvciEnabled ?? "(not set)"}"
+                });
+            }
+            else if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
+            {
+                // Policy mirror — Group Policy source for Credential Guard
+                const string policyPath = @"Policies\Microsoft\Windows\DeviceGuard";
+                var policyLsaCfg = GetValue(policyPath, "LsaCfgFlags");
+                var policyVbs = GetValue(policyPath, "EnableVirtualizationBasedSecurity");
+                var policyHvci = GetValue(policyPath, "HypervisorEnforcedCodeIntegrity");
+                var policyReqPlat = GetValue(policyPath, "RequirePlatformSecurityFeatures");
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Credential Guard (Policy)",
+                    Value = DecodeLsaCfgFlags(policyLsaCfg),
+                    IsWarning = policyLsaCfg == "1" || policyLsaCfg == "2",
+                    RegistryPath = policyPath,
+                    RegistryValue = $"LsaCfgFlags = {policyLsaCfg ?? "(not set)"}"
+                });
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "VBS (Policy)",
+                    Value = policyVbs switch
+                    {
+                        "1" => "1 \u2014 Policy enables VBS",
+                        "0" => "0 \u2014 Policy disables VBS",
+                        null => "(not set) \u2014 No policy configured",
+                        _ => policyVbs
+                    },
+                    RegistryPath = policyPath,
+                    RegistryValue = $"EnableVirtualizationBasedSecurity = {policyVbs ?? "(not set)"}"
+                });
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "HVCI (Policy)",
+                    Value = policyHvci switch
+                    {
+                        "1" => "1 \u2014 Policy enables HVCI / Memory Integrity",
+                        "0" => "0 \u2014 Policy disables HVCI",
+                        null => "(not set) \u2014 No policy configured",
+                        _ => policyHvci
+                    },
+                    RegistryPath = policyPath,
+                    RegistryValue = $"HypervisorEnforcedCodeIntegrity = {policyHvci ?? "(not set)"}"
+                });
+
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Required Platform Features (Policy)",
+                    Value = DecodeRequirePlatformSec(policyReqPlat),
+                    RegistryPath = policyPath,
+                    RegistryValue = $"RequirePlatformSecurityFeatures = {policyReqPlat ?? "(not set)"}"
+                });
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// True if the SYSTEM hive is loaded (Driver Verifier values live in Memory Management).
+        /// </summary>
+        public bool HasDriverVerifier()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM;
+        }
+
+        /// <summary>
+        /// Driver Verifier diagnostics with novice-friendly explanations.
+        /// Verdict-first design: status banner, plain-English explainer, decoded settings, raw data last.
+        /// </summary>
+        public AnalysisSection GetDriverVerifierAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f50d Driver Verifier" };
+
+            if (!HasDriverVerifier())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM hive to be loaded"
+                });
+                return section;
+            }
+
+            var mmPath = $@"{_currentControlSet}\Control\Session Manager\Memory Management";
+            var verifyDriversRaw = GetValue(mmPath, "VerifyDrivers") ?? "";
+            var verifyLevelRaw = GetValue(mmPath, "VerifyDriverLevel") ?? "";
+
+            // Normalize multi-sz / null bytes
+            var verifyDrivers = string.Join(" ", verifyDriversRaw.Split(new[] { '\r', '\n', '\0' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim())).Trim();
+            var isActive = !string.IsNullOrWhiteSpace(verifyDrivers);
+
+            // ── 1. Verdict banner (always first) ──────────────────────────────
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = isActive ? "\u26a0 ON" : "\u2705 OFF",
+                IsWarning = isActive,
+                RegistryPath = mmPath,
+                RegistryValue = $"VerifyDrivers = {(string.IsNullOrEmpty(verifyDrivers) ? "(not set)" : verifyDrivers)}"
+            });
+
+            // ── 2. Plain-English explainer (always second) ────────────────────
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "What is this?",
+                Value = "A built-in Windows tool that intentionally crashes the system to expose driver bugs. Usually only enabled during debugging."
+            });
+
+            if (isActive)
+            {
+                // ── 3. Drivers Being Watched (with severity classification) ────
+                var classification = ClassifyVerifyDriversValue(verifyDrivers);
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Drivers Being Watched",
+                    Value = $"{verifyDrivers} \u2014 Severity: {classification.SeverityLabel}",
+                    IsWarning = true,
+                    RegistryPath = mmPath,
+                    RegistryValue = $"VerifyDrivers = {verifyDrivers}"
+                });
+
+                // ── 4. Verification Checks Enabled (decoded bitmask) ───────────
+                uint level = ParseVerifyLevel(verifyLevelRaw);
+                var preset = GetVerifierLevelPresetName(level);
+                var presetSuffix = preset != null ? $" ({preset})" : " (Custom configuration)";
+                var levelHeader = $"0x{level:X8}{presetSuffix}";
+
+                var checks = DecodeVerifyDriverLevel(level);
+                var checkItem = new AnalysisItem
+                {
+                    Name = "Verification Checks",
+                    Value = checks.Count == 0
+                        ? $"{levelHeader}\n   (No checks enabled)"
+                        : levelHeader,
+                    IsSubSection = true,
+                    RegistryPath = mmPath,
+                    RegistryValue = $"VerifyDriverLevel = {verifyLevelRaw}",
+                    SubItems = new List<AnalysisItem>()
+                };
+
+                foreach (var (name, description) in checks)
+                {
+                    checkItem.SubItems.Add(new AnalysisItem
+                    {
+                        Name = name,
+                        Value = description
+                    });
+                }
+                section.Items.Add(checkItem);
+            }
+
+            // ── 5. Raw registry values (flat rows for experts) ────────────────
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Registry Path",
+                Value = mmPath,
+                RegistryPath = mmPath
+            });
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "VerifyDrivers",
+                Value = string.IsNullOrEmpty(verifyDriversRaw) ? "(not set)" : verifyDriversRaw,
+                RegistryPath = mmPath,
+                RegistryValue = $"VerifyDrivers = {(string.IsNullOrEmpty(verifyDriversRaw) ? "(not set)" : verifyDriversRaw)}"
+            });
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "VerifyDriverLevel",
+                Value = string.IsNullOrEmpty(verifyLevelRaw)
+                    ? "(not set)"
+                    : $"{verifyLevelRaw}  (0x{ParseVerifyLevel(verifyLevelRaw):X8})",
+                RegistryPath = mmPath,
+                RegistryValue = $"VerifyDriverLevel = {(string.IsNullOrEmpty(verifyLevelRaw) ? "(not set)" : verifyLevelRaw)}"
+            });
+
+            return section;
+        }
+
+        // ── Helper decoders ──────────────────────────────────────────────────
+
+        private static string DecodeLsaCfgFlags(string? value)
+        {
+            return value switch
+            {
+                "0" => "0 \u2014 Disabled",
+                "1" => "1 \u2014 ENABLED with UEFI lock (cannot be disabled remotely; clear NVRAM to remove)",
+                "2" => "2 \u2014 ENABLED without UEFI lock (registry-only)",
+                null => "(not set) \u2014 Default (Credential Guard not configured)",
+                _ => $"{value} \u2014 Unknown value"
+            };
+        }
+
+        private static string DecodeRequirePlatformSec(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return "(not set)";
+            if (!int.TryParse(value, out var n)) return value;
+
+            // Bit 0 = Secure Boot, Bit 1 = DMA Protection
+            var parts = new List<string>();
+            if ((n & 1) != 0) parts.Add("Secure Boot");
+            if ((n & 2) != 0) parts.Add("DMA Protection");
+            if (parts.Count == 0) parts.Add("None");
+
+            return $"{n} \u2014 Requires: {string.Join(" + ", parts)}";
+        }
+
+        private static uint ParseVerifyLevel(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return 0;
+            raw = raw.Trim();
+            if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                return uint.TryParse(raw.Substring(2), System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var hx) ? hx : 0u;
+            return uint.TryParse(raw, out var dec) ? dec : 0u;
+        }
+
+        private static string? GetVerifierLevelPresetName(uint level)
+        {
+            return level switch
+            {
+                0x209BB => "Standard preset",
+                0x29B   => "Older standard preset",
+                0x9BB   => "Standard (without DDI)",
+                _       => null
+            };
+        }
+
+        private static List<(string Name, string Description)> DecodeVerifyDriverLevel(uint level)
+        {
+            var result = new List<(string, string)>();
+            void Add(uint bit, string name, string desc) { if ((level & bit) != 0) result.Add((name, desc)); }
+
+            Add(0x00000001, "Special Pool",                "Catches drivers that write past their memory buffers");
+            Add(0x00000002, "Force IRQL Checking",         "Catches drivers calling functions at the wrong CPU priority");
+            Add(0x00000008, "Pool Tracking",               "Catches drivers that leak memory");
+            Add(0x00000010, "I/O Verification",            "Catches drivers that misuse I/O requests");
+            Add(0x00000020, "Deadlock Detection",          "Catches drivers that cause locks to deadlock");
+            Add(0x00000080, "DMA Verification",            "Catches drivers performing illegal DMA operations");
+            Add(0x00000100, "Security Checks",             "Catches drivers with security weaknesses");
+            Add(0x00000200, "Force Pending I/O Requests",  "Catches drivers that don't handle pending I/O correctly");
+            Add(0x00000400, "Low Resources Simulation",    "Simulates low memory to expose error-handling bugs");
+            Add(0x00000800, "IRP Logging",                 "Logs I/O Request Packets for diagnosis");
+            Add(0x00001000, "Miscellaneous Checks",        "Catches assorted driver bugs");
+            Add(0x00002000, "DDI Compliance Checking",     "Catches drivers calling Windows APIs in undocumented ways");
+            Add(0x00020000, "Randomized Low Resources",    "Random low-memory injection for harder-to-find bugs");
+            Add(0x00040000, "DDI Compliance (Additional)", "Extra device driver interface compliance checks");
+            Add(0x00080000, "Power Framework Delay Fuzzing", "Catches drivers handling power state changes incorrectly");
+            Add(0x00100000, "Port/Miniport Interface",     "Catches port/miniport driver interface violations");
+            Add(0x00800000, "Systematic Low Resources",    "Systematic low-memory testing of all code paths");
+
+            return result;
+        }
+
+        private static (string SeverityIcon, string SeverityLabel, string Meaning) ClassifyVerifyDriversValue(string verifyDrivers)
+        {
+            var v = verifyDrivers.Trim();
+            if (v == "*")
+                return ("\U0001f534", "EXTREME", "ALL drivers on the system are being verified. This almost always causes immediate BSOD on boot. Highly unusual outside a developer test environment.");
+
+            // Wildcard targeting kernel components (nt*, ntoskrnl*, hal*, ci*, ndis*, etc.)
+            if (v.Contains("*"))
+            {
+                var lower = v.ToLowerInvariant();
+                bool kernelWild = lower.Contains("nt*") || lower.Contains("ntoskrnl") || lower.Contains("hal") ||
+                                  lower.StartsWith("*.sys") || lower.Contains("ndis") || lower.Contains("ci*");
+                if (kernelWild)
+                    return ("\U0001f534", "EXTREME", "Wildcard pattern includes core kernel drivers \u2014 will almost certainly BSOD on boot.");
+                return ("\U0001f7e0", "BROAD", "Wildcard pattern matches multiple drivers \u2014 significantly raises BSOD risk.");
+            }
+
+            // Count individual drivers (whitespace separated)
+            var drivers = v.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (drivers.Length == 1)
+                return ("\U0001f7e1", "TARGETED", $"One specific driver is being verified: '{drivers[0]}'. Look up this driver name to see what it does.");
+            if (drivers.Length <= 5)
+                return ("\U0001f7e1", "TARGETED", $"{drivers.Length} specific drivers are being verified: {string.Join(", ", drivers)}.");
+            return ("\U0001f7e0", "BROAD", $"{drivers.Length} drivers under verification \u2014 significantly raises BSOD risk.");
+        }
+
+        #endregion
+
+        #region Tier A Health Checks (Proxy, AppLocker, SAN Policy, Domain/Netlogon)
+
+        // ── Item 9: Domain-Joined-but-Netlogon-Disabled (derived) ─────────────
+
+        /// <summary>
+        /// Correlates domain-join evidence with Netlogon service Start value.
+        /// SYSTEM-only check. Returns empty verdict if no determination can be made.
+        /// </summary>
+        private (string Verdict, bool IsWarning, string Detail) GetDomainNetlogonStatus()
+        {
+            if (_parser.CurrentHiveType != OfflineRegistryParser.HiveType.SYSTEM)
+                return ("", false, "");
+
+            // Domain join evidence — most reliable signal is Tcpip\Parameters Domain or
+            // Netlogon\Parameters DnsDomain. Either non-empty → domain-joined.
+            var tcpipDomain = GetValue($@"{_currentControlSet}\Services\Tcpip\Parameters", "Domain") ?? "";
+            var tcpipNvDomain = GetValue($@"{_currentControlSet}\Services\Tcpip\Parameters", "NV Domain") ?? "";
+            var netlogonDnsDomain = GetValue($@"{_currentControlSet}\Services\Netlogon\Parameters", "DnsDomain") ?? "";
+
+            var domainJoined = !string.IsNullOrWhiteSpace(tcpipDomain)
+                              || !string.IsNullOrWhiteSpace(tcpipNvDomain)
+                              || !string.IsNullOrWhiteSpace(netlogonDnsDomain);
+
+            // Netlogon service Start
+            var netlogonStart = GetValue($@"{_currentControlSet}\Services\Netlogon", "Start") ?? "";
+            var domainName = !string.IsNullOrWhiteSpace(netlogonDnsDomain)
+                ? netlogonDnsDomain
+                : (!string.IsNullOrWhiteSpace(tcpipDomain) ? tcpipDomain : tcpipNvDomain);
+
+            var detail = $"Netlogon Start = {(string.IsNullOrEmpty(netlogonStart) ? "(not set)" : netlogonStart)}; DnsDomain = {(string.IsNullOrEmpty(netlogonDnsDomain) ? "(not set)" : netlogonDnsDomain)}";
+
+            if (!domainJoined)
+            {
+                return ("\u2705 Workgroup machine \u2014 Netlogon state irrelevant", false, detail);
+            }
+
+            return netlogonStart switch
+            {
+                "2" => ($"\u2705 Domain-joined ({domainName}) with Netlogon Auto", false, detail),
+                "3" => ($"\u26a0 Domain-joined ({domainName}) but Netlogon set to Manual \u2014 domain auth will be unreliable", true, detail),
+                "4" => ($"\u26a0 Domain-joined ({domainName}) but Netlogon DISABLED \u2014 domain auth will fail", true, detail),
+                ""  => ($"\u26a0 Domain-joined ({domainName}) but Netlogon Start value missing", true, detail),
+                _   => ($"\u26a0 Domain-joined ({domainName}) with Netlogon Start = {netlogonStart} (unexpected)", true, detail)
+            };
+        }
+
+        // ── Item 8: SAN Policy ────────────────────────────────────────────────
+
+        /// <summary>
+        /// True when SYSTEM hive is loaded. SAN Policy section always renders
+        /// (default value = OnlineAll when not set, per partmgr documentation).
+        /// </summary>
+        public bool HasSanPolicy()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM;
+        }
+
+        /// <summary>
+        /// SAN Policy diagnostics: explains why data disks may not auto-online after attach.
+        /// </summary>
+        public AnalysisSection GetSanPolicyAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f50c SAN Policy" };
+
+            if (!HasSanPolicy())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM hive to be loaded"
+                });
+                return section;
+            }
+
+            var sanPath = $@"{_currentControlSet}\Services\partmgr\Parameters";
+            var sanRaw = GetValue(sanPath, "SanPolicy");
+            var (verdict, isWarn) = DecodeSanPolicy(sanRaw);
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = verdict,
+                IsWarning = isWarn,
+                RegistryPath = sanPath,
+                RegistryValue = $"SanPolicy = {(string.IsNullOrEmpty(sanRaw) ? "(not set)" : sanRaw)}"
+            });
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "SanPolicy",
+                Value = string.IsNullOrEmpty(sanRaw) ? "(not set) \u2014 implicit default OnlineAll" : sanRaw,
+                RegistryPath = sanPath,
+                RegistryValue = $"SanPolicy = {(string.IsNullOrEmpty(sanRaw) ? "(not set)" : sanRaw)}"
+            });
+
+            return section;
+        }
+
+        private static (string Verdict, bool IsWarning) DecodeSanPolicy(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return ("\u2705 Default (OnlineAll, implicit) \u2014 all disks brought online", false);
+
+            return raw.Trim() switch
+            {
+                "1" => ("\u2705 OnlineAll \u2014 all disks brought online", false),
+                "2" => ("\u2139 OfflineShared \u2014 shared (clustered) disks stay offline", false),
+                "3" => ("\u26a0 OfflineInternal \u2014 internal disks stay offline (rare)", true),
+                "4" => ("\u26a0 OfflineAll \u2014 all non-boot disks stay offline (explains 'data disks not online')", true),
+                _   => ($"\u26a0 Unknown value: {raw}", true)
+            };
+        }
+
+        // ── Item 6: Proxy Configuration ───────────────────────────────────────
+
+        /// <summary>
+        /// True when SOFTWARE hive is loaded.
+        /// </summary>
+        public bool HasProxyConfiguration()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+        }
+
+        /// <summary>
+        /// System-wide proxy configuration (Internet Settings + Wow6432Node mirror).
+        /// Per-user proxy lives in NTUSER and is out of scope.
+        /// </summary>
+        public AnalysisSection GetProxyConfigurationAnalysis()
+        {
+            var section = new AnalysisSection { Title = "\U0001f310 Proxy Configuration" };
+
+            if (!HasProxyConfiguration())
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SOFTWARE hive to be loaded"
+                });
+                return section;
+            }
+
+            const string nativePath = @"Microsoft\Windows\CurrentVersion\Internet Settings";
+            const string wow64Path = @"Wow6432Node\Microsoft\Windows\CurrentVersion\Internet Settings";
+
+            var native = ReadProxySettings(nativePath);
+            var wow64 = ReadProxySettings(wow64Path);
+
+            // ── Status verdict (combines all signals) ──
+            var indicators = new List<string>();
+            if (native.ProxyEnable == "1" && !string.IsNullOrWhiteSpace(native.ProxyServer))
+                indicators.Add($"Manual proxy ({native.ProxyServer})");
+            if (!string.IsNullOrWhiteSpace(native.AutoConfigURL))
+                indicators.Add("PAC URL configured");
+            if (native.AutoDetect == "1")
+                indicators.Add("WPAD auto-detect on");
+
+            string statusValue;
+            if (indicators.Count == 0)
+                statusValue = "\u2705 Direct (no proxy)";
+            else if (indicators.Count == 1)
+                statusValue = $"\u2139 {indicators[0]}";
+            else
+                statusValue = $"\u2139 Mixed: {string.Join("; ", indicators)}";
+
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = statusValue,
+                RegistryPath = nativePath
+            });
+
+            // ── Native (64-bit) values ──
+            AddProxyRows(section, nativePath, native, "");
+
+            // ── Wow6432Node mirror — only if it differs ──
+            if (ProxySettingsDiffer(native, wow64))
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Wow6432Node mirror",
+                    Value = "(differs from 64-bit \u2014 32-bit apps see different proxy)",
+                    IsWarning = true,
+                    RegistryPath = wow64Path
+                });
+                AddProxyRows(section, wow64Path, wow64, " (Wow64)");
+            }
+            else
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Wow6432Node mirror",
+                    Value = "(matches 64-bit)",
+                    RegistryPath = wow64Path
+                });
+            }
+
+            return section;
+        }
+
+        private (string ProxyEnable, string ProxyServer, string ProxyOverride, string AutoConfigURL, string AutoDetect)
+            ReadProxySettings(string path)
+        {
+            return (
+                GetValue(path, "ProxyEnable") ?? "",
+                GetValue(path, "ProxyServer") ?? "",
+                GetValue(path, "ProxyOverride") ?? "",
+                GetValue(path, "AutoConfigURL") ?? "",
+                GetValue(path, "AutoDetect") ?? ""
+            );
+        }
+
+        private static bool ProxySettingsDiffer(
+            (string ProxyEnable, string ProxyServer, string ProxyOverride, string AutoConfigURL, string AutoDetect) a,
+            (string ProxyEnable, string ProxyServer, string ProxyOverride, string AutoConfigURL, string AutoDetect) b)
+        {
+            return a.ProxyEnable != b.ProxyEnable
+                || a.ProxyServer != b.ProxyServer
+                || a.ProxyOverride != b.ProxyOverride
+                || a.AutoConfigURL != b.AutoConfigURL
+                || a.AutoDetect != b.AutoDetect;
+        }
+
+        private static void AddProxyRows(AnalysisSection section, string path,
+            (string ProxyEnable, string ProxyServer, string ProxyOverride, string AutoConfigURL, string AutoDetect) v,
+            string suffix)
+        {
+            section.Items.Add(new AnalysisItem
+            {
+                Name = $"ProxyEnable{suffix}",
+                Value = v.ProxyEnable switch
+                {
+                    "0" => "0 \u2014 Disabled",
+                    "1" => "1 \u2014 Manual proxy enabled",
+                    ""  => "(not set)",
+                    _   => v.ProxyEnable
+                },
+                RegistryPath = path,
+                RegistryValue = $"ProxyEnable = {(string.IsNullOrEmpty(v.ProxyEnable) ? "(not set)" : v.ProxyEnable)}"
+            });
+            section.Items.Add(new AnalysisItem
+            {
+                Name = $"ProxyServer{suffix}",
+                Value = string.IsNullOrEmpty(v.ProxyServer) ? "(not set)" : v.ProxyServer,
+                RegistryPath = path,
+                RegistryValue = $"ProxyServer = {(string.IsNullOrEmpty(v.ProxyServer) ? "(not set)" : v.ProxyServer)}"
+            });
+            section.Items.Add(new AnalysisItem
+            {
+                Name = $"ProxyOverride{suffix}",
+                Value = string.IsNullOrEmpty(v.ProxyOverride) ? "(not set)" : v.ProxyOverride,
+                RegistryPath = path,
+                RegistryValue = $"ProxyOverride = {(string.IsNullOrEmpty(v.ProxyOverride) ? "(not set)" : v.ProxyOverride)}"
+            });
+            section.Items.Add(new AnalysisItem
+            {
+                Name = $"AutoConfigURL{suffix}",
+                Value = string.IsNullOrEmpty(v.AutoConfigURL) ? "(not set)" : v.AutoConfigURL,
+                RegistryPath = path,
+                RegistryValue = $"AutoConfigURL = {(string.IsNullOrEmpty(v.AutoConfigURL) ? "(not set)" : v.AutoConfigURL)}"
+            });
+            section.Items.Add(new AnalysisItem
+            {
+                Name = $"AutoDetect{suffix}",
+                Value = v.AutoDetect switch
+                {
+                    "0" => "0 \u2014 Disabled",
+                    "1" => "1 \u2014 WPAD auto-detect enabled",
+                    ""  => "(not set)",
+                    _   => v.AutoDetect
+                },
+                RegistryPath = path,
+                RegistryValue = $"AutoDetect = {(string.IsNullOrEmpty(v.AutoDetect) ? "(not set)" : v.AutoDetect)}"
+            });
+        }
+
+        // ── Item 7: AppLocker Posture ─────────────────────────────────────────
+
+        /// <summary>
+        /// True when SYSTEM or SOFTWARE hive is loaded. Either contributes partial info.
+        /// </summary>
+        public bool HasAppLockerPosture()
+        {
+            return _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM
+                || _parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE;
+        }
+
+        /// <summary>
+        /// AppLocker posture data collected from a single hive.
+        /// SYSTEM contributes service info; SOFTWARE contributes enforcement modes + rule counts.
+        /// </summary>
+        public sealed class AppLockerData
+        {
+            public bool HaveSystem { get; set; }
+            public bool HaveSoftware { get; set; }
+            public string? AppIdStart { get; set; }
+            public string? AppIdSvcPath { get; set; }
+            public Dictionary<string, string?> Enforcement { get; set; } = new();
+            /// <summary>Per-collection rule count (number of GUID-named subkeys under SrpV2\{coll}).</summary>
+            public Dictionary<string, int> RuleCounts { get; set; } = new();
+        }
+
+        /// <summary>
+        /// Collects AppLocker-related data from the current hive (SYSTEM or SOFTWARE).
+        /// Returns null when the current hive doesn't contribute any AppLocker info.
+        /// </summary>
+        public AppLockerData? CollectAppLockerData()
+        {
+            if (!HasAppLockerPosture()) return null;
+            var data = new AppLockerData();
+
+            if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SYSTEM)
+            {
+                data.HaveSystem = true;
+                data.AppIdSvcPath = $@"{_currentControlSet}\Services\AppIDSvc";
+                data.AppIdStart = GetValue(data.AppIdSvcPath, "Start");
+            }
+            else if (_parser.CurrentHiveType == OfflineRegistryParser.HiveType.SOFTWARE)
+            {
+                data.HaveSoftware = true;
+                foreach (var coll in new[] { "Exe", "Dll", "Script", "Msi", "Appx" })
+                {
+                    var collPath = $@"Policies\Microsoft\Windows\SrpV2\{coll}";
+                    data.Enforcement[coll] = GetValue(collPath, "EnforcementMode");
+
+                    // Count rule subkeys (GUID-named children) under each collection.
+                    var collKey = _parser.GetKey(collPath);
+                    data.RuleCounts[coll] = collKey?.SubKeys?.Count ?? 0;
+                }
+            }
+            return data;
+        }
+
+        /// <summary>
+        /// Builds a single AppLocker AnalysisSection from data collected across one or both hives.
+        /// Always emits exactly one Status row (no duplicates), then per-hive detail rows.
+        /// </summary>
+        public static AnalysisSection BuildAppLockerSection(AppLockerData? systemData, AppLockerData? softwareData)
+        {
+            var section = new AnalysisSection { Title = "\U0001f6ab AppLocker" };
+
+            bool haveSystem = systemData?.HaveSystem == true;
+            bool haveSoftware = softwareData?.HaveSoftware == true;
+
+            if (!haveSystem && !haveSoftware)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "Notice",
+                    Value = "This information requires the SYSTEM or SOFTWARE hive to be loaded"
+                });
+                return section;
+            }
+
+            string? appIdStart = systemData?.AppIdStart;
+            string? appIdSvcPath = systemData?.AppIdSvcPath;
+            var enforcement = softwareData?.Enforcement ?? new Dictionary<string, string?>();
+            var ruleCounts = softwareData?.RuleCounts ?? new Dictionary<string, int>();
+
+            // ── Single combined Status verdict ──
+            var (verdict, isWarn) = ClassifyAppLockerPosture(appIdStart, enforcement, ruleCounts, haveSystem, haveSoftware);
+            section.Items.Add(new AnalysisItem
+            {
+                Name = "Status",
+                Value = verdict,
+                IsWarning = isWarn,
+                RegistryPath = appIdSvcPath ?? @"Policies\Microsoft\Windows\SrpV2"
+            });
+
+            // ── Service state (SYSTEM hive) ──
+            if (haveSystem && appIdSvcPath != null)
+            {
+                section.Items.Add(new AnalysisItem
+                {
+                    Name = "AppIDSvc Start",
+                    Value = DecodeServiceStart(appIdStart),
+                    IsWarning = appIdStart == "4",
+                    RegistryPath = appIdSvcPath,
+                    RegistryValue = $"Start = {(string.IsNullOrEmpty(appIdStart) ? "(not set)" : appIdStart)}"
+                });
+            }
+
+            // ── Enforcement modes + rule counts (SOFTWARE hive) ──
+            if (haveSoftware)
+            {
+                foreach (var coll in new[] { "Exe", "Dll", "Script", "Msi", "Appx" })
+                {
+                    var val = enforcement.TryGetValue(coll, out var v) ? v : null;
+                    var count = ruleCounts.TryGetValue(coll, out var c) ? c : 0;
+                    var collPath = $@"Policies\Microsoft\Windows\SrpV2\{coll}";
+                    var (decoded, warn) = DecodeEnforcementMode(val, count);
+                    section.Items.Add(new AnalysisItem
+                    {
+                        Name = $"{coll} EnforcementMode",
+                        Value = decoded,
+                        IsWarning = warn,
+                        RegistryPath = collPath,
+                        RegistryValue = $"EnforcementMode = {(string.IsNullOrEmpty(val) ? "(not set)" : val)}; Rules = {count}"
+                    });
+                }
+            }
+
+            return section;
+        }
+
+        /// <summary>
+        /// AppLocker posture: AppIDSvc Start (SYSTEM) + SrpV2 enforcement modes (SOFTWARE).
+        /// Single-hive convenience wrapper around CollectAppLockerData + BuildAppLockerSection.
+        /// </summary>
+        public AnalysisSection GetAppLockerAnalysis()
+        {
+            var data = CollectAppLockerData();
+            return BuildAppLockerSection(
+                data?.HaveSystem == true ? data : null,
+                data?.HaveSoftware == true ? data : null);
+        }
+
+        private static string DecodeServiceStart(string? raw)
+        {
+            return raw switch
+            {
+                "0" => "0 \u2014 Boot",
+                "1" => "1 \u2014 System",
+                "2" => "2 \u2014 Automatic (normal for active AppLocker)",
+                "3" => "3 \u2014 Manual",
+                "4" => "4 \u2014 Disabled (AppLocker will not enforce)",
+                null => "(not set)",
+                ""   => "(not set)",
+                _    => raw
+            };
+        }
+
+        private static (string Decoded, bool IsWarning) DecodeEnforcementMode(string? raw, int ruleCount)
+        {
+            string suffix = ruleCount > 0 ? $", {ruleCount} rule{(ruleCount == 1 ? "" : "s")}" : ", no rules";
+            return raw switch
+            {
+                "0"  => ($"0 \u2014 NotConfigured{suffix}", false),
+                "1"  => ($"1 \u2014 AuditOnly (logged, not blocked){suffix}", false),
+                "2"  => ($"2 \u2014 Enforce (blocking active){suffix}", ruleCount > 0),
+                null => ruleCount > 0 ? ($"(not set){suffix}", false) : ("(not set)", false),
+                ""   => ruleCount > 0 ? ($"(not set){suffix}", false) : ("(not set)", false),
+                _    => ($"{raw}{suffix}", false)
+            };
+        }
+
+        private static (string Verdict, bool IsWarning) ClassifyAppLockerPosture(
+            string? appIdStart,
+            Dictionary<string, string?> enforcement,
+            Dictionary<string, int> ruleCounts,
+            bool haveSystem,
+            bool haveSoftware)
+        {
+            // A collection only has effect if EnforcementMode is 1 or 2 AND it has at least one rule.
+            int RuleCount(string coll) => ruleCounts.TryGetValue(coll, out var n) ? n : 0;
+
+            var enforcingWithRules = enforcement.Where(kv => kv.Value == "2" && RuleCount(kv.Key) > 0).Select(kv => $"{kv.Key} ({RuleCount(kv.Key)})").ToList();
+            var enforcingNoRules   = enforcement.Where(kv => kv.Value == "2" && RuleCount(kv.Key) == 0).Select(kv => kv.Key).ToList();
+            var auditingWithRules  = enforcement.Where(kv => kv.Value == "1" && RuleCount(kv.Key) > 0).Select(kv => $"{kv.Key} ({RuleCount(kv.Key)})").ToList();
+            var auditingNoRules    = enforcement.Where(kv => kv.Value == "1" && RuleCount(kv.Key) == 0).Select(kv => kv.Key).ToList();
+            var anyConfigured      = enforcement.Any(kv => kv.Value == "1" || kv.Value == "2");
+            var anyEffective       = enforcingWithRules.Count > 0 || auditingWithRules.Count > 0;
+            var totalRules         = ruleCounts.Values.Sum();
+
+            if (haveSystem && !haveSoftware)
+            {
+                // Service info only
+                return appIdStart switch
+                {
+                    "2" => ("\u26a0 Partial \u2014 AppIDSvc Auto, but enforcement modes unknown (load SOFTWARE hive)", true),
+                    "4" => ("\u2705 AppLocker disabled (service Disabled)", false),
+                    _   => ($"\u2139 Partial \u2014 AppIDSvc Start = {appIdStart ?? "(not set)"}; enforcement modes unknown", false)
+                };
+            }
+
+            if (haveSoftware && !haveSystem)
+            {
+                // Enforcement only
+                if (enforcingWithRules.Count > 0)
+                    return ($"\u26a0 Partial \u2014 Enforce on: {string.Join(", ", enforcingWithRules)}; service state unknown (load SYSTEM hive)", true);
+                if (enforcingNoRules.Count > 0)
+                    return ($"\u2139 Partial \u2014 Enforce mode set on {string.Join(", ", enforcingNoRules)} but no rules; service state unknown", false);
+                if (auditingWithRules.Count > 0)
+                    return ($"\u2139 Partial \u2014 AuditOnly on: {string.Join(", ", auditingWithRules)}; service state unknown", false);
+                return ("\u2705 No effective enforcement configured (service state unknown)", false);
+            }
+
+            // Both hives loaded — full picture
+            if (haveSystem && haveSoftware)
+            {
+                if (!anyConfigured && totalRules == 0)
+                {
+                    return appIdStart switch
+                    {
+                        "4" => ("\u2705 AppLocker disabled (service Disabled, no policy)", false),
+                        "2" => ("\u2139 AppIDSvc Auto, but no enforcement or rules configured", false),
+                        _   => ($"\u2705 AppLocker inactive (AppIDSvc Start={appIdStart ?? "(not set)"}, no policy)", false)
+                    };
+                }
+
+                // Mode set but every collection has 0 rules — policy exists but is a no-op
+                if (anyConfigured && !anyEffective)
+                    return ($"\u26a0 Misconfigured \u2014 enforcement mode set ({string.Join(", ", enforcingNoRules.Concat(auditingNoRules))}) but no rules defined", true);
+
+                // Effective rules exist but service isn't Auto
+                if (anyEffective && appIdStart != "2")
+                {
+                    var affected = enforcingWithRules.Concat(auditingWithRules);
+                    return ($"\u26a0 Misconfigured \u2014 rules present ({string.Join(", ", affected)}) but AppIDSvc not Auto (Start={appIdStart ?? "(not set)"})", true);
+                }
+
+                if (enforcingWithRules.Count > 0)
+                    return ($"\u26a0 Active \u2014 Enforce on: {string.Join(", ", enforcingWithRules)}", true);
+                if (auditingWithRules.Count > 0)
+                    return ($"\u2139 Audit-only on: {string.Join(", ", auditingWithRules)}", false);
+            }
+
+            return ("\u2705 Disabled", false);
         }
 
         #endregion
