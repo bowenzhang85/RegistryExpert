@@ -1015,22 +1015,18 @@ namespace RegistryExpert.Wpf.ViewModels
         /// </summary>
         private RegistryKeyNode? FindRootNode(RegistryKeyNode node)
         {
-            if (node.IsRootNode)
-                return node;
-
-            // Match by key path prefix: the root node's RegistryKey.KeyPath should be
-            // a prefix of the given node's KeyPath
-            foreach (var root in TreeRoots)
+            // Walk up via Parent (set in RegistryKeyNode.LoadChildren) until we reach
+            // a hive root node. Root nodes have IsRootNode==true and Parent==null.
+            // Prefix-matching on KeyPath is unreliable because every hive's underlying
+            // root has the same key path (e.g. "ROOT"), so it would always resolve to
+            // the first hive in TreeRoots regardless of which hive the node belongs to.
+            var current = node;
+            while (current != null)
             {
-                if (root.RegistryKey == null) continue;
-
-                var rootPath = root.RegistryKey.KeyPath;
-                var nodePath = node.KeyPath;
-
-                if (nodePath.StartsWith(rootPath, StringComparison.OrdinalIgnoreCase))
-                    return root;
+                if (current.IsRootNode)
+                    return current;
+                current = current.Parent;
             }
-
             return null;
         }
 

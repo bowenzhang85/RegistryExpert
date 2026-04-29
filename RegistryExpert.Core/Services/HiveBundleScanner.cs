@@ -219,26 +219,37 @@ namespace RegistryExpert.Core.Services
             var fileName = Path.GetFileName(filePath);
             var fileNameUpper = fileName.ToUpperInvariant();
             var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName).ToUpperInvariant();
+            var ext = Path.GetExtension(filePath); // includes leading dot, "" if none
 
-            // Check exact known names (e.g., SYSTEM, SOFTWARE, SAM)
-            if (KnownHiveNames.Contains(nameWithoutExt) || KnownHiveNames.Contains(fileNameUpper))
+            // Exact known names (SYSTEM, SOFTWARE, SAM, SECURITY, DEFAULT, BCD, COMPONENTS)
+            // must be extensionless — real hives in \Windows\System32\config\ have no extension.
+            // Without this filter, files like Security.evtx (event log) would falsely match.
+            if (KnownHiveNames.Contains(nameWithoutExt) && string.IsNullOrEmpty(ext))
             {
                 hiveType = DetectTypeFromName(fileNameUpper);
                 return true;
             }
 
-            // Check known prefixes (e.g., NTUSER.DAT, USRCLASS.DAT, Amcache.hve)
+            // Prefix matches (NTUSER, USRCLASS, AMCACHE) allow no extension, .DAT, or .HVE only.
+            // This rejects e.g. NTUSER.LOG1, NTUSER.evtx while still accepting NTUSER.DAT and Amcache.hve.
             foreach (var prefix in KnownHivePrefixes)
             {
-                if (fileNameUpper.StartsWith(prefix, StringComparison.Ordinal))
+                if (nameWithoutExt.StartsWith(prefix, StringComparison.Ordinal))
                 {
-                    hiveType = DetectTypeFromName(fileNameUpper);
-                    return true;
+                    if (string.IsNullOrEmpty(ext) ||
+                        ext.Equals(".DAT", StringComparison.OrdinalIgnoreCase) ||
+                        ext.Equals(".HVE", StringComparison.OrdinalIgnoreCase))
+                    {
+                        hiveType = DetectTypeFromName(fileNameUpper);
+                        return true;
+                    }
+                    // Prefix matched but extension is rejected — a file can only match one prefix
+                    // so stop here and fall through to the .hiv check below.
+                    break;
                 }
             }
 
             // Check .hiv extension
-            var ext = Path.GetExtension(filePath);
             if (ext.Equals(".hiv", StringComparison.OrdinalIgnoreCase))
             {
                 // Handle TSS pattern: {hostname}_reg_{name}.hiv

@@ -1654,9 +1654,9 @@
                                         ToolTip="Policy scope info"
                                         Click="GpInfoButton_Click">
                                     <Grid Width="18" Height="18">
-                                        <Ellipse Stroke="{DynamicResource TextSecondaryBrush}" StrokeThickness="1.2" Fill="Transparent" />
+                                        <Ellipse Stroke="{DynamicResource WarningBrush}" StrokeThickness="1.2" Fill="Transparent" />
                                         <TextBlock Text="i" FontSize="11" FontStyle="Italic" FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   Foreground="{DynamicResource WarningBrush}"
                                                    HorizontalAlignment="Center" VerticalAlignment="Center"
                                                    Margin="0,-1,0,0" />
                                     </Grid>
