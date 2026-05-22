@@ -48,12 +48,48 @@ namespace RegistryExpert.Wpf.Helpers
         /// text-class glyphs and given a themed colored Foreground; everything
         /// else passes through as a plain Run that inherits the cell foreground.
         /// </summary>
+        /// <summary>
+        /// Literal text markers that should be emitted as a bold, themed Run
+        /// instead of plain text. Order matters only if markers can overlap.
+        /// </summary>
+        private static readonly (string Marker, string BrushKey, Brush Fallback)[] TextMarkers =
+        {
+            ("(EXPIRED)", "ErrorBrush", Brushes.Red),
+        };
+
         private static IEnumerable<Run> Parse(string text)
         {
             var buffer = new System.Text.StringBuilder();
 
             for (int i = 0; i < text.Length; i++)
             {
+                // Literal-text marker match (e.g. "(EXPIRED)") takes precedence
+                // over codepoint scanning at this position.
+                bool matchedMarker = false;
+                foreach (var (marker, brushKey, fallback) in TextMarkers)
+                {
+                    if (i + marker.Length <= text.Length &&
+                        string.CompareOrdinal(text, i, marker, 0, marker.Length) == 0)
+                    {
+                        if (buffer.Length > 0)
+                        {
+                            yield return new Run(buffer.ToString());
+                            buffer.Clear();
+                        }
+
+                        yield return new Run(marker)
+                        {
+                            FontWeight = FontWeights.Bold,
+                            Foreground = ResolveBrush(brushKey, fallback),
+                        };
+
+                        i += marker.Length - 1; // -1 because the for-loop will i++
+                        matchedMarker = true;
+                        break;
+                    }
+                }
+                if (matchedMarker) continue;
+
                 int codepoint;
                 int consumed;
 
