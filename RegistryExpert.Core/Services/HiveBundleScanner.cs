@@ -13,14 +13,17 @@ namespace RegistryExpert.Core.Services
     /// </summary>
     public class HiveBundleScanner
     {
-        // Exact filenames (case-insensitive) that are known registry hives
-        private static readonly HashSet<string> KnownHiveNames = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT", "BCD", "COMPONENTS"
-        };
+        // Exact filenames (case-insensitive) that are known registry hives.
+        // Public so other components (e.g. ShellIntegrationService) can share this canonical list.
+        public static readonly IReadOnlySet<string> KnownHiveNames =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT", "BCD", "COMPONENTS"
+            };
 
-        // Filename prefixes that indicate registry hives (e.g., NTUSER.DAT, USRCLASS.DAT, Amcache.hve)
-        private static readonly string[] KnownHivePrefixes = { "NTUSER", "USRCLASS", "AMCACHE" };
+        // Filename prefixes that indicate registry hives (e.g., NTUSER.DAT, USRCLASS.DAT, Amcache.hve).
+        public static readonly IReadOnlyList<string> KnownHivePrefixes =
+            new[] { "NTUSER", "USRCLASS", "AMCACHE" };
 
         // Minimum file size to consider (skip tiny files that can't be valid hives)
         private const long MinHiveFileSize = 4096;

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:RegistryExpert.Wpf.ViewModels"
         xmlns:helpers="clr-namespace:RegistryExpert.Wpf.Helpers"
+        xmlns:views="clr-namespace:RegistryExpert.Wpf.Views"
         Title="Analyze Registry"
         Width="1100" Height="700"
         MinWidth="900" MinHeight="500"
@@ -12,8 +13,18 @@
 
     <Window.Resources>
         <helpers:ContentModeToVisibilityConverter x:Key="ModeToVis" />
+        <helpers:InverseContentModeToVisibilityConverter x:Key="ModeNotToVis" />
         <helpers:GridColumnCountToVisibilityConverter x:Key="ColCountToVis" />
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <helpers:InverseBoolToVisibilityConverter x:Key="InvBoolToVis" />
+        <helpers:BoolToInferredMarkerConverter x:Key="BoolToInferredMarker" />
+        <helpers:PartitionCapacityFormatterConverter x:Key="PartitionCapacityFormatter" />
+        <helpers:PartitionOffsetFormatterConverter x:Key="PartitionOffsetFormatter" />
+        <helpers:OrphanSignatureFormatterConverter x:Key="OrphanSignatureFormatter" />
+        <helpers:FreeSpaceConverter x:Key="FreeSpaceFormatter" />
+        <helpers:PercentFreeConverter x:Key="PercentFreeFormatter" />
+        <helpers:DiskMgmtStatusConverter x:Key="DiskMgmtStatusFormatter" />
+        <helpers:DiskMgmtVolumeNameConverter x:Key="DiskMgmtVolumeName" />
 
         <!-- Converters (must be declared before templates that reference them) -->
         <helpers:BoolToDoubleConverter x:Key="EnabledToOpacityConverter" TrueValue="1.0" FalseValue="0.35" />
@@ -178,8 +189,8 @@
                 <RowDefinition Height="Auto" />  <!-- Content header -->
                 <RowDefinition Height="Auto" />  <!-- Subcategory bar -->
                 <RowDefinition Height="*" />     <!-- Content area -->
-                <RowDefinition Height="3" />     <!-- Splitter -->
-                <RowDefinition Height="150" />   <!-- Detail pane -->
+                <RowDefinition Height="Auto" />  <!-- Splitter (collapses to 0 when child Collapsed) -->
+                <RowDefinition Height="Auto" />  <!-- Detail pane (collapses to 0 when hidden) -->
             </Grid.RowDefinitions>
 
             <!-- Content Header -->
@@ -532,44 +543,105 @@
                                        FontSize="11" FontWeight="SemiBold"
                                        Foreground="{DynamicResource TextSecondaryBrush}" />
                         </Border>
-                        <DataGrid ItemsSource="{Binding MountedDevices}"
-                                  AutomationProperties.Name="Mounted devices"
-                                  SelectedItem="{Binding SelectedMountedDevice}"
-                                  AlternationCount="2"
-                                  HeadersVisibility="Column">
-                            <DataGrid.Columns>
-                                <DataGridTemplateColumn Header="Mount Point" Width="120" MinWidth="80"
-                                                        SortMemberPath="MountPoint">
-                                    <DataGridTemplateColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding MountPoint}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Margin="8,2" />
-                                        </DataTemplate>
-                                    </DataGridTemplateColumn.CellTemplate>
-                                </DataGridTemplateColumn>
-                                <DataGridTemplateColumn Header="Device" Width="*"
-                                                        SortMemberPath="FriendlyName">
-                                    <DataGridTemplateColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding FriendlyName}"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       Margin="8,2" />
-                                        </DataTemplate>
-                                    </DataGridTemplateColumn.CellTemplate>
-                                </DataGridTemplateColumn>
-                            </DataGrid.Columns>
 
-                            <DataGrid.RowStyle>
-                                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding StaleStatus}" Value="Stale">
-                                            <Setter Property="Foreground" Value="{DynamicResource WarningTextBrush}" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </DataGrid.RowStyle>
-                        </DataGrid>
+                        <!-- Filter chip bar -->
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SurfaceBrush}"
+                                Padding="6,6"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="0,0,0,1">
+                            <WrapPanel Orientation="Horizontal">
+                                <ToggleButton Style="{StaticResource FilterChipStyle}"
+                                              IsChecked="{Binding FilterDriveLetters}"
+                                              Visibility="{Binding HasDriveLetterEntries, Converter={StaticResource BoolToVis}}"
+                                              ToolTip="Show entries that map a drive letter (e.g. C:, D:)">
+                                    <TextBlock TextTrimming="CharacterEllipsis"
+                                               TextAlignment="Center"
+                                               Text="{Binding DriveLetterCount, StringFormat='Letters ({0})'}" />
+                                </ToggleButton>
+                                <ToggleButton Style="{StaticResource FilterChipStyle}"
+                                              IsChecked="{Binding FilterVolumeGuids}"
+                                              Visibility="{Binding HasVolumeGuidEntries, Converter={StaticResource BoolToVis}}"
+                                              ToolTip="Show entries identified only by Volume{GUID} (no drive letter)">
+                                    <TextBlock TextTrimming="CharacterEllipsis"
+                                               TextAlignment="Center"
+                                               Text="{Binding VolumeGuidCount, StringFormat='Volumes ({0})'}" />
+                                </ToggleButton>
+                                <ToggleButton Style="{StaticResource FilterChipStyle}"
+                                              IsChecked="{Binding FilterOther}"
+                                              Visibility="{Binding HasOtherEntries, Converter={StaticResource BoolToVis}}"
+                                              ToolTip="Show entries with non-standard mount names">
+                                    <TextBlock TextTrimming="CharacterEllipsis"
+                                               TextAlignment="Center"
+                                               Text="{Binding OtherCount, StringFormat='Other ({0})'}" />
+                                </ToggleButton>
+                                <Rectangle Style="{StaticResource VerticalChipSeparatorStyle}"
+                                           Visibility="{Binding HasStaleEntries, Converter={StaticResource BoolToVis}}" />
+                                <ToggleButton Style="{StaticResource FilterChipStyle}"
+                                              IsChecked="{Binding FilterStaleOnly}"
+                                              IsEnabled="{Binding HasStaleEntries}"
+                                              Visibility="{Binding HasStaleEntries, Converter={StaticResource BoolToVis}}"
+                                              ToolTip="Restrict the list to entries flagged as stale (orphan registrations)">
+                                    <TextBlock TextTrimming="CharacterEllipsis"
+                                               TextAlignment="Center"
+                                               Text="{Binding StaleCount, StringFormat='Stale ({0})'}" />
+                                </ToggleButton>
+                            </WrapPanel>
+                        </Border>
+
+                        <Grid>
+                            <DataGrid ItemsSource="{Binding MountedDevices}"
+                                      AutomationProperties.Name="Mounted devices"
+                                      SelectedItem="{Binding SelectedMountedDevice}"
+                                      AlternationCount="2"
+                                      HeadersVisibility="Column">
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="Mount Point" Width="120" MinWidth="80"
+                                                            SortMemberPath="MountPoint">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding MountPoint}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="8,2" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Device" Width="*"
+                                                            SortMemberPath="FriendlyName">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding FriendlyName}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           Margin="8,2" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding StaleStatus}" Value="Stale">
+                                                <Setter Property="Foreground" Value="{DynamicResource WarningTextBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.RowStyle>
+                            </DataGrid>
+
+                            <!-- Empty-state overlay (shown when the filter excludes everything
+                                 or the hive has no mounted devices) -->
+                            <TextBlock Text="{Binding MountedDevicesEmptyMessage}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Margin="16"
+                                       TextWrapping="Wrap"
+                                       TextAlignment="Center"
+                                       FontStyle="Italic"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       IsHitTestVisible="False"
+                                       Visibility="{Binding HasFilteredMountedDevices, Converter={StaticResource InvBoolToVis}}" />
+                        </Grid>
                     </DockPanel>
 
                     <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" />
@@ -755,6 +827,288 @@
                             </DataGrid.RowStyle>
                         </DataGrid>
                     </DockPanel>
+                </Grid>
+
+                <!-- ═══ Disk Layout View (diskmgmt.msc-style) ═══ -->
+                <Grid Visibility="{Binding CurrentMode, Converter={StaticResource ModeToVis}, ConverterParameter=DiskLayout}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />              <!-- Row 0: Header summary -->
+                        <RowDefinition Height="*" MinHeight="120" /> <!-- Row 1: Volume table -->
+                        <RowDefinition Height="3" />                 <!-- Row 2: Splitter -->
+                        <RowDefinition Height="Auto" />              <!-- Row 3: Orphan section (conditional) -->
+                        <RowDefinition Height="3" />                 <!-- Row 4: Splitter (conditional) -->
+                        <RowDefinition Height="*" MinHeight="140" /> <!-- Row 5: Graphical Layout -->
+                        <RowDefinition Height="Auto" />              <!-- Row 6: Volume Details Expander -->
+                    </Grid.RowDefinitions>
+
+                    <!-- (Header summary removed per A6.2-Match-3: match diskmgmt's bare table) -->
+                    <!-- Row 0 stays Auto-sized at 0px since no child is placed in it. -->
+
+                    <!-- Volume table (top pane) -->
+                    <DockPanel Grid.Row="1">
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SurfaceBrush}"
+                                Padding="8,4"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="0,0,0,1">
+                            <TextBlock Text="Volumes"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </Border>
+                        <DataGrid ItemsSource="{Binding AllVolumes}"
+                                  AutomationProperties.Name="Volumes"
+                                  SelectedItem="{Binding SelectedVolume}"
+                                  AlternationCount="2"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <!-- Volume: "Windows (C:)" / "E:" / "(Disk 0 partition 3)" -->
+                                <DataGridTemplateColumn Header="Volume" Width="*" MinWidth="180"
+                                                        SortMemberPath="DriveLetter">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock TextTrimming="CharacterEllipsis" Margin="8,2">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource DiskMgmtVolumeName}">
+                                                        <Binding Path="." />
+                                                        <Binding RelativeSource="{RelativeSource AncestorType=Window}"
+                                                                 Path="DataContext.DiskLayoutDisks" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- Layout: always "Simple" (we don't yet detect spanned/striped volumes) -->
+                                <DataGridTemplateColumn Header="Layout" Width="70">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="Simple" Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- Type: always "Basic" (Dynamic disk detection not yet implemented) -->
+                                <DataGridTemplateColumn Header="Type" Width="60">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="Basic" Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- File System column intentionally removed:
+                                     offline registry cannot reliably identify the
+                                     filesystem type for any partition (Services\Ntfs\Instances
+                                     is empty offline; no per-volume DEVPROPKEY contains FS).
+                                     See AGENTS / Phase A.6 investigation for details. -->
+
+                                <!-- Status: "Healthy (Boot, System, Page File, Crash Dump, ...)" diskmgmt-style -->
+                                <DataGridTemplateColumn Header="Status" Width="*" MinWidth="200"
+                                                        SortMemberPath="Status">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock TextTrimming="CharacterEllipsis" Margin="8,2">
+                                                <TextBlock.Text>
+                                                    <MultiBinding Converter="{StaticResource DiskMgmtStatusFormatter}">
+                                                        <Binding Path="." />
+                                                        <Binding RelativeSource="{RelativeSource AncestorType=Window}"
+                                                                 Path="DataContext.DiskLayoutDisks" />
+                                                    </MultiBinding>
+                                                </TextBlock.Text>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- Capacity: total partition size, em dash when unknown -->
+                                <DataGridTemplateColumn Header="Capacity" Width="100"
+                                                        SortMemberPath="EstimatedLengthBytes">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="8,2" HorizontalAlignment="Right"
+                                                       Text="{Binding ., Converter={StaticResource PartitionCapacityFormatter}}"
+                                                       ToolTip="Tilde prefix indicates estimated by subtracting consecutive partition offsets. Authoritative values come from diskinfo.txt when available." />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- Free Space: from diskinfo.txt enrichment, em dash otherwise -->
+                                <DataGridTemplateColumn Header="Free Space" Width="100"
+                                                        SortMemberPath="FreeSpaceBytes">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="8,2" HorizontalAlignment="Right"
+                                                       Text="{Binding FreeSpaceBytes, Converter={StaticResource FreeSpaceFormatter}}"
+                                                       ToolTip="Free space from diskinfo.txt (InspectIaaSDisk bundle). Em dash means no enrichment available — registry alone cannot provide free-space data." />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+
+                                <!-- % Free: computed from Free / Capacity -->
+                                <DataGridTemplateColumn Header="% Free" Width="70">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="8,2" HorizontalAlignment="Right"
+                                                       Text="{Binding ., Converter={StaticResource PercentFreeFormatter}}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Status}" Value="Stale">
+                                            <Setter Property="Foreground" Value="{DynamicResource WarningTextBrush}" />
+                                        </DataTrigger>
+                                        <DataTrigger Binding="{Binding DriveLetter}" Value="{x:Null}">
+                                            <Setter Property="FontStyle" Value="Italic" />
+                                            <Setter Property="Opacity" Value="0.75" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </DataGrid.RowStyle>
+                        </DataGrid>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="2" HorizontalAlignment="Stretch" />
+
+                    <!-- Orphan volumes section (visible only when present) -->
+                    <DockPanel Grid.Row="3"
+                               Visibility="{Binding HasOrphanVolumes, Converter={StaticResource BoolToVis}}">
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SurfaceBrush}"
+                                Padding="8,4"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="0,0,0,1">
+                            <TextBlock Text="Orphan volumes (registered but no parent disk found in this hive)"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       ToolTip="Volume registrations whose underlying disk is no longer present. Typically residue of detached data disks or replaced storage." />
+                        </Border>
+                        <DataGrid ItemsSource="{Binding OrphanVolumes}"
+                                  AutomationProperties.Name="Orphan volumes"
+                                  SelectedItem="{Binding SelectedVolume}"
+                                  AlternationCount="2"
+                                  MaxHeight="180"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Volume GUID" Width="*" MinWidth="200"
+                                                        SortMemberPath="VolumeGuid">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding VolumeGuid}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Style" Width="60"
+                                                        SortMemberPath="PartitionStyle">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding PartitionStyle}"
+                                                       Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Signature" Width="120">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Margin="8,2"
+                                                       Text="{Binding ., Converter={StaticResource OrphanSignatureFormatter}}" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Last seen" Width="160"
+                                                        SortMemberPath="LastArrivalAt">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding LastArrivalAt, StringFormat=u, TargetNullValue=''}"
+                                                       Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+
+                            <DataGrid.RowStyle>
+                                <Style TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+                                    <Setter Property="Foreground" Value="{DynamicResource WarningTextBrush}" />
+                                    <Setter Property="FontStyle" Value="Italic" />
+                                </Style>
+                            </DataGrid.RowStyle>
+                        </DataGrid>
+                    </DockPanel>
+
+                    <GridSplitter Grid.Row="4" HorizontalAlignment="Stretch"
+                                  Visibility="{Binding HasOrphanVolumes, Converter={StaticResource BoolToVis}}" />
+
+                    <!-- Row 5: Graphical Layout (diskmgmt.msc-style bars) -->
+                    <DockPanel Grid.Row="5">
+                        <Border DockPanel.Dock="Top"
+                                Background="{DynamicResource SurfaceBrush}"
+                                Padding="8,4"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="0,0,0,1">
+                            <TextBlock Text="Graphical Layout"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </Border>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
+                            <ItemsControl ItemsSource="{Binding DiskLayoutDisks}"
+                                          AutomationProperties.Name="Disk bars">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <views:DiskBarView Disk="{Binding}" Height="80" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+
+                    <!-- Row 6: Volume Details Expander (collapsed by default, persists state) -->
+                    <Expander Grid.Row="6"
+                              IsExpanded="{Binding DiskLayoutDetailsExpanded, Mode=TwoWay}"
+                              BorderBrush="{DynamicResource BorderBrush}"
+                              BorderThickness="0,1,0,0"
+                              Background="{DynamicResource SurfaceBrush}"
+                              Padding="0">
+                        <Expander.Header>
+                            <TextBlock Text="{Binding DiskLayoutSelectedHeader}"
+                                       FontSize="11" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextSecondaryBrush}" />
+                        </Expander.Header>
+                        <DataGrid ItemsSource="{Binding VolumeDetails}"
+                                  AutomationProperties.Name="Volume properties"
+                                  AlternationCount="2"
+                                  MaxHeight="280"
+                                  HeadersVisibility="Column">
+                            <DataGrid.Columns>
+                                <DataGridTemplateColumn Header="Property" Width="180" MinWidth="100">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Column1}"
+                                                       Foreground="{DynamicResource AccentBrush}"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="Value" Width="*">
+                                    <DataGridTemplateColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Column2}"
+                                                       TextWrapping="Wrap"
+                                                       Margin="8,2" />
+                                        </DataTemplate>
+                                    </DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Expander>
                 </Grid>
 
                 <!-- ═══ Services View ═══ -->
@@ -1884,16 +2238,20 @@
 
             </Grid>
 
-            <!-- Detail pane splitter -->
+            <!-- Detail pane splitter (hidden for DiskLayout — that view has its own Expander) -->
             <GridSplitter Grid.Row="3"
+                          Height="3"
                           HorizontalAlignment="Stretch"
-                          VerticalAlignment="Stretch" />
+                          VerticalAlignment="Stretch"
+                          Visibility="{Binding CurrentMode, Converter={StaticResource ModeNotToVis}, ConverterParameter=DiskLayout}" />
 
-            <!-- ═══ Detail Pane ═══ -->
+            <!-- ═══ Detail Pane (hidden for DiskLayout) ═══ -->
             <Border Grid.Row="4"
+                    Height="150"
                     Background="{DynamicResource SurfaceBrush}"
                     BorderBrush="{DynamicResource BorderBrush}"
-                    BorderThickness="0,0,0,0">
+                    BorderThickness="0,0,0,0"
+                    Visibility="{Binding CurrentMode, Converter={StaticResource ModeNotToVis}, ConverterParameter=DiskLayout}">
                 <DockPanel>
                     <!-- Registry path -->
                     <TextBox DockPanel.Dock="Top"

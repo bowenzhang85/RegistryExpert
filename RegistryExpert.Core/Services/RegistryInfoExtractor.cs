@@ -5047,6 +5047,16 @@ namespace RegistryExpert.Core
             });
             sections.Add(physicalDisksSection);
 
+            // Disk Layout section (placeholder — actual data loaded via DiskLayoutExtractor).
+            // diskmgmt.msc-style volume table with capacity, status, role tags, and orphan list.
+            var diskLayoutSection = new AnalysisSection { Title = "🗂 Disk Layout" };
+            diskLayoutSection.Items.Add(new AnalysisItem
+            {
+                Name = "Disk Layout",
+                Value = "diskmgmt.msc-style volume table reconstructed from registry + optional bundle enrichments"
+            });
+            sections.Add(diskLayoutSection);
+
             return sections;
         }
 

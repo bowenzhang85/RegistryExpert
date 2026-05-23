@@ -5,11 +5,13 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using RegistryExpert.Core;
 using RegistryExpert.Core.Models;
+using RegistryExpert.Core.Services;
 using RegistryExpert.Wpf.Helpers;
 using RegistryExpert.Wpf.ViewModels;
 
@@ -50,9 +52,15 @@ namespace RegistryExpert.Wpf.Views
             ViewModel.RequestOpenTimeline += OnRequestOpenTimeline;
             ViewModel.RequestOpenAbout += OnRequestOpenAbout;
             ViewModel.RequestShowUpdateResult += OnRequestShowUpdateResult;
+            ViewModel.RequestShowReleaseNotes += OnRequestShowReleaseNotes;
             ViewModel.RequestScrollToNode += OnRequestScrollToNode;
             ViewModel.RequestShowHivePicker += OnRequestShowHivePicker;
             ViewModel.RequestShowRecentBundles += OnRequestShowRecentBundles;
+
+            // Subscribe to remote-instance events (a second invocation forwarded
+            // file paths and/or an activate request to us via the named pipe).
+            App.RemoteOpenRequested += OnRemoteOpenRequested;
+            App.RemoteActivateRequested += OnRemoteActivateRequested;
 
             // Auto-check for updates on startup
             _ = CheckForUpdatesOnStartupAsync();
@@ -60,6 +68,9 @@ namespace RegistryExpert.Wpf.Views
             // If launched after an auto-update (or if version changed since last
             // run), show the green "Updated successfully" banner at the top.
             CheckAndShowUpdatedBanner();
+
+            // Load any files supplied as CLI args (e.g. from the shell verb).
+            _ = ProcessStartupFilesAsync();
         }
 
         private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -76,9 +87,13 @@ namespace RegistryExpert.Wpf.Views
             ViewModel.RequestOpenTimeline -= OnRequestOpenTimeline;
             ViewModel.RequestOpenAbout -= OnRequestOpenAbout;
             ViewModel.RequestShowUpdateResult -= OnRequestShowUpdateResult;
+            ViewModel.RequestShowReleaseNotes -= OnRequestShowReleaseNotes;
             ViewModel.RequestScrollToNode -= OnRequestScrollToNode;
             ViewModel.RequestShowHivePicker -= OnRequestShowHivePicker;
             ViewModel.RequestShowRecentBundles -= OnRequestShowRecentBundles;
+
+            App.RemoteOpenRequested -= OnRemoteOpenRequested;
+            App.RemoteActivateRequested -= OnRemoteActivateRequested;
         }
 
         private void OnThemeChanged(object? sender, EventArgs e)
@@ -317,6 +332,117 @@ namespace RegistryExpert.Wpf.Views
             aboutWindow.ShowDialog();
         }
 
+        // ── Release notes window ──────────────────────────────────────────
+
+        private void OnRequestShowReleaseNotes(UpdateInfo info)
+        {
+            ShowReleaseNotesWindow(info);
+        }
+
+        private void ShowReleaseNotesWindow(UpdateInfo info)
+        {
+            try
+            {
+                var window = new ReleaseNotesWindow(
+                    version: info.LatestVersion,
+                    publishedAt: info.PublishedAt,
+                    markdownBody: info.ReleaseNotes,
+                    githubUrl: string.IsNullOrWhiteSpace(info.ReleaseUrl) ? null : info.ReleaseUrl)
+                {
+                    Owner = this
+                };
+                window.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to open ReleaseNotesWindow: {ex.Message}");
+                MessageBox.Show(this,
+                    "Could not open the release notes window.\n\n" + ex.Message,
+                    "Release Notes", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        // ── Shell integration: CLI args, remote-instance handling, registration refresh ──
+
+        /// <summary>
+        /// Load any hive file paths that were supplied on the command line
+        /// (e.g. when launched from the Explorer "Open with Registry Expert" verb).
+        /// </summary>
+        private async Task ProcessStartupFilesAsync()
+        {
+            var files = App.StartupFilePaths;
+            if (files == null || files.Count == 0) return;
+
+            foreach (var path in files)
+            {
+                try
+                {
+                    await ViewModel.LoadHiveFileAsync(path);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Startup file load failed for '{path}': {ex.Message}");
+                    ViewModel.StatusText = $"Failed to load {System.IO.Path.GetFileName(path)}: {ex.Message}";
+                }
+            }
+        }
+
+        /// <summary>
+        /// Called by App when a second instance forwards file paths through the named pipe.
+        /// Activate ourselves and load each hive sequentially.
+        /// </summary>
+        private async void OnRemoteOpenRequested(IReadOnlyList<string> paths)
+        {
+            try
+            {
+                BringSelfToForeground();
+                foreach (var path in paths)
+                {
+                    try
+                    {
+                        await ViewModel.LoadHiveFileAsync(path);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Remote-open load failed for '{path}': {ex.Message}");
+                        ViewModel.StatusText = $"Failed to load {System.IO.Path.GetFileName(path)}: {ex.Message}";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"OnRemoteOpenRequested failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>Called when a second instance only asked us to come to the foreground.</summary>
+        private void OnRemoteActivateRequested() => BringSelfToForeground();
+
+        private void BringSelfToForeground()
+        {
+            try
+            {
+                if (WindowState == WindowState.Minimized)
+                    WindowState = WindowState.Normal;
+
+                Activate();
+                Topmost = true;
+                Topmost = false;
+
+                var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (handle != IntPtr.Zero)
+                    SetForegroundWindow(handle);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"BringSelfToForeground failed: {ex.Message}");
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
         // ── Update check ──────────────────────────────────────────────────
 
         // Once a downloaded update is ready (silent background flow), we cache
@@ -545,7 +671,7 @@ namespace RegistryExpert.Wpf.Views
             {
                 Title = title,
                 Width = 500,
-                Height = 470,
+                Height = 410,
                 ResizeMode = ResizeMode.NoResize,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 Owner = this,
@@ -610,21 +736,43 @@ namespace RegistryExpert.Wpf.Views
                 Margin = new Thickness(0, 0, 0, 8)
             });
 
-            mainPanel.Children.Add(new TextBox
+            // Short preview of the release body (first 3 lines or ~240 chars).
+            // The full notes are available via the "View full release notes" link below.
+            var previewBorder = new Border
             {
-                Text = info.ReleaseNotes,
-                IsReadOnly = true,
-                TextWrapping = TextWrapping.Wrap,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 Background = (Brush)FindResource("SurfaceBrush"),
-                Foreground = (Brush)FindResource("TextPrimaryBrush"),
-                CaretBrush = (Brush)FindResource("TextPrimaryBrush"),
-                BorderThickness = new Thickness(1),
                 BorderBrush = (Brush)FindResource("BorderBrush"),
-                Padding = new Thickness(12, 8, 12, 8),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(12, 10, 12, 10),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            previewBorder.Child = new TextBlock
+            {
+                Text = BuildReleaseNotesPreview(info.ReleaseNotes),
+                Foreground = (Brush)FindResource("TextPrimaryBrush"),
                 FontSize = 12,
-                Height = 130
-            });
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 18,
+                MaxHeight = 80,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            mainPanel.Children.Add(previewBorder);
+
+            // "View full release notes…" link → opens the pretty in-app window.
+            var fullLinkText = new TextBlock
+            {
+                FontSize = 12,
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            var fullLink = new Hyperlink(new Run("View full release notes \u2192"))
+            {
+                Foreground = (Brush)FindResource("AccentBrush"),
+                TextDecorations = TextDecorations.Underline
+            };
+            fullLink.Click += (s, e) => ShowReleaseNotesWindow(info);
+            fullLinkText.Inlines.Add(fullLink);
+            mainPanel.Children.Add(fullLinkText);
 
             // Host for optional progress UI (used by ShowUpdateAvailableDialog)
             progressHost = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
@@ -698,6 +846,60 @@ namespace RegistryExpert.Wpf.Views
             };
 
             installingDialog.ShowDialog();
+        }
+
+        /// <summary>
+        /// Build a short, plain-text preview of release notes for use in the update dialogs.
+        /// Strips markdown syntax (headings, list markers, bold/italic, code ticks) and
+        /// truncates to ~240 chars with an ellipsis. Falls back to an em-dash when empty.
+        /// </summary>
+        private static string BuildReleaseNotesPreview(string? markdown)
+        {
+            if (string.IsNullOrWhiteSpace(markdown))
+                return "\u2014  (no release notes provided)";
+
+            var sb = new StringBuilder(256);
+            var lines = markdown.Replace("\r\n", "\n").Split('\n');
+
+            foreach (var raw in lines)
+            {
+                var line = raw.TrimEnd();
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                // Skip fenced code block delimiters entirely
+                if (line.TrimStart().StartsWith("```", StringComparison.Ordinal)) continue;
+
+                // Strip leading heading marks
+                var t = line.TrimStart();
+                while (t.StartsWith("#", StringComparison.Ordinal)) t = t.Substring(1);
+                t = t.TrimStart();
+
+                // Strip leading list markers ("- ", "* ", "+ ", "1. ")
+                if (t.Length >= 2 && (t[0] == '-' || t[0] == '*' || t[0] == '+') && t[1] == ' ')
+                    t = t.Substring(2);
+                else
+                {
+                    int j = 0;
+                    while (j < t.Length && char.IsDigit(t[j])) j++;
+                    if (j > 0 && j < t.Length - 1 && t[j] == '.' && t[j + 1] == ' ')
+                        t = t.Substring(j + 2);
+                }
+
+                // Strip inline markdown: backticks, ** and * pairs (best-effort)
+                t = t.Replace("`", "").Replace("**", "").Replace("__", "");
+                t = t.Replace('*', ' ').Replace('_', ' ');
+
+                if (sb.Length > 0) sb.Append("  \u2022  ");
+                sb.Append(t);
+
+                if (sb.Length > 240) break;
+            }
+
+            var preview = sb.ToString().Trim();
+            if (preview.Length > 240)
+                preview = preview.Substring(0, 237).TrimEnd() + "\u2026";
+
+            return preview.Length > 0 ? preview : "\u2014  (no release notes provided)";
         }
 
         // Compact "Installing update..." modal with indeterminate progress bar.
@@ -836,55 +1038,70 @@ namespace RegistryExpert.Wpf.Views
         private void UpdatedBannerCloseBtn_Click(object sender, RoutedEventArgs e)
             => HideUpdatedBanner();
 
-        private void UpdatedBannerReleaseNotesBtn_Click(object sender, RoutedEventArgs e)
+        private async void UpdatedBannerReleaseNotesBtn_Click(object sender, RoutedEventArgs e)
         {
+            // Prefer the in-app Release Notes window. If we cannot fetch the release
+            // data (offline, API failure), fall back to opening the GitHub URL in
+            // the browser so the user still gets to read the notes.
             try
             {
                 var version = UpdateChecker.GetCurrentVersion();
+                var tag = "v" + version;
 
-                // Smart URL: if REGEXPERT_UPDATE_URL is set, derive the test repo
-                // release URL from it; otherwise use the production repo URL.
-                string url;
-                if (UpdateChecker.IsUsingOverrideUrl)
+                UpdatedBannerReleaseNotesBtn.IsEnabled = false;
+                try
                 {
-                    // Try to derive owner/repo from the override URL.
-                    // Expected shape: https://api.github.com/repos/<owner>/<repo>/releases/latest
-                    var apiUrl = UpdateChecker.GitHubApiUrl;
-                    var marker = "/repos/";
-                    var ownerStart = apiUrl.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                    if (ownerStart >= 0)
+                    var info = await UpdateChecker.GetReleaseByTagAsync(tag);
+                    if (info != null)
                     {
-                        var rest = apiUrl.Substring(ownerStart + marker.Length);
-                        var slash = rest.IndexOf('/');
-                        if (slash > 0)
-                        {
-                            var owner = rest.Substring(0, slash);
-                            var afterOwner = rest.Substring(slash + 1);
-                            var nextSlash = afterOwner.IndexOf('/');
-                            var repo = nextSlash > 0 ? afterOwner.Substring(0, nextSlash) : afterOwner;
-                            url = $"https://github.com/{owner}/{repo}/releases/tag/v{version}";
-                        }
-                        else
-                        {
-                            url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
-                        }
-                    }
-                    else
-                    {
-                        url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
+                        ShowReleaseNotesWindow(info);
+                        return;
                     }
                 }
-                else
+                finally
                 {
-                    url = $"https://github.com/bowenzhang85/RegistryExpert/releases/tag/v{version}";
+                    UpdatedBannerReleaseNotesBtn.IsEnabled = true;
                 }
 
+                // Fallback — open the release URL in the user's browser.
+                var url = BuildGitHubReleaseTagUrl(version);
                 Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Release notes link failed: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Build a GitHub releases-tag URL that respects REGEXPERT_UPDATE_URL when set,
+        /// so a private/test repo can be targeted without rebuilding.
+        /// </summary>
+        private static string BuildGitHubReleaseTagUrl(string version)
+        {
+            string owner = "bowenzhang85";
+            string repo = "RegistryExpert";
+
+            if (UpdateChecker.IsUsingOverrideUrl)
+            {
+                var apiUrl = UpdateChecker.GitHubApiUrl;
+                const string marker = "/repos/";
+                var ownerStart = apiUrl.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (ownerStart >= 0)
+                {
+                    var rest = apiUrl.Substring(ownerStart + marker.Length);
+                    var slash = rest.IndexOf('/');
+                    if (slash > 0)
+                    {
+                        owner = rest.Substring(0, slash);
+                        var afterOwner = rest.Substring(slash + 1);
+                        var nextSlash = afterOwner.IndexOf('/');
+                        repo = nextSlash > 0 ? afterOwner.Substring(0, nextSlash) : afterOwner;
+                    }
+                }
+            }
+
+            return $"https://github.com/{owner}/{repo}/releases/tag/v{version}";
         }
 
         private async Task CheckForUpdatesOnStartupAsync()

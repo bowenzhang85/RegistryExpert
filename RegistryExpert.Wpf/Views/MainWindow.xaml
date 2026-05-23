@@ -92,6 +92,7 @@
                 <MenuItem Header="_Compare" InputGestureText="Ctrl+M" Command="{Binding OpenCompareCommand}" />
             </MenuItem>
             <MenuItem Header="_Help">
+                <MenuItem Header="_What's New" Command="{Binding ShowReleaseNotesCommand}" />
                 <MenuItem Header="Check for _Updates" Command="{Binding CheckForUpdatesCommand}" />
                 <Separator />
                 <MenuItem Header="_About" Command="{Binding AboutCommand}" />
@@ -106,29 +107,89 @@
                 Visibility="Collapsed"
                 Background="{DynamicResource AccentBrush}"
                 Padding="16,8">
+            <Border.Resources>
+                <!-- Banner buttons: transparent over accent background, hover keeps white text -->
+                <Style x:Key="BannerIconButtonStyle" TargetType="Button">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="BorderThickness" Value="0" />
+                    <Setter Property="Cursor" Value="Hand" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="BannerBtnBorder"
+                                        Background="{TemplateBinding Background}"
+                                        CornerRadius="3"
+                                        Padding="{TemplateBinding Padding}">
+                                    <ContentPresenter HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"
+                                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="BannerBtnBorder" Property="Background" Value="#33FFFFFF" />
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="BannerBtnBorder" Property="Background" Value="#55FFFFFF" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+                <Style x:Key="BannerOutlineButtonStyle" TargetType="Button">
+                    <Setter Property="Background" Value="Transparent" />
+                    <Setter Property="Foreground" Value="White" />
+                    <Setter Property="BorderBrush" Value="White" />
+                    <Setter Property="BorderThickness" Value="1" />
+                    <Setter Property="Cursor" Value="Hand" />
+                    <Setter Property="FontWeight" Value="SemiBold" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="BannerBtnBorder"
+                                        Background="{TemplateBinding Background}"
+                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                        CornerRadius="3"
+                                        Padding="{TemplateBinding Padding}">
+                                    <ContentPresenter HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"
+                                                      TextElement.Foreground="{TemplateBinding Foreground}" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter TargetName="BannerBtnBorder" Property="Background" Value="#33FFFFFF" />
+                                    </Trigger>
+                                    <Trigger Property="IsPressed" Value="True">
+                                        <Setter TargetName="BannerBtnBorder" Property="Background" Value="#55FFFFFF" />
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter Property="Opacity" Value="0.55" />
+                                        <Setter Property="Cursor" Value="Arrow" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Border.Resources>
             <DockPanel LastChildFill="True">
                 <Button x:Name="UpdatedBannerCloseBtn"
                         DockPanel.Dock="Right"
+                        Style="{StaticResource BannerIconButtonStyle}"
                         Content="✕"
-                        Background="Transparent"
-                        BorderThickness="0"
-                        Foreground="White"
                         FontSize="14"
                         Padding="8,2"
                         Margin="8,0,0,0"
-                        Cursor="Hand"
                         ToolTip="Dismiss"
                         Click="UpdatedBannerCloseBtn_Click" />
                 <Button x:Name="UpdatedBannerReleaseNotesBtn"
                         DockPanel.Dock="Right"
+                        Style="{StaticResource BannerOutlineButtonStyle}"
                         Content="View Release Notes"
-                        Background="Transparent"
-                        BorderThickness="1"
-                        BorderBrush="White"
-                        Foreground="White"
                         Padding="10,3"
                         Margin="8,0,0,0"
-                        Cursor="Hand"
                         Visibility="Collapsed"
                         Click="UpdatedBannerReleaseNotesBtn_Click" />
                 <TextBlock x:Name="UpdatedBannerText"
@@ -448,18 +509,44 @@
                         <Border Style="{DynamicResource SectionHeaderBorderStyle}">
                             <DockPanel>
                                 <Button DockPanel.Dock="Right"
+                                        Style="{DynamicResource MutedButtonStyle}"
+                                        Command="{Binding CloseAllHivesCommand}"
+                                        Padding="8,2"
+                                        FontSize="11"
+                                        ToolTip="Unload all currently loaded hives"
+                                        AutomationProperties.Name="Unload all hives">
+                                    <StackPanel Orientation="Horizontal">
+                                        <Path Width="10" Height="10"
+                                              Stretch="Uniform"
+                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.6"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              Data="M 0,0 L 10,10 M 10,0 L 0,10"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,5,0" />
+                                        <TextBlock Text="Unload All" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Button>
+                                <Button DockPanel.Dock="Right"
                                         Style="{DynamicResource AccentButtonStyle}"
                                         Command="{Binding OpenHiveCommand}"
                                         Padding="8,2"
                                         FontSize="11"
-                                        ToolTip="Load another hive file"
+                                        Margin="0,0,6,0"
+                                        ToolTip="Load a hive file"
                                         AutomationProperties.Name="Load hive">
                                     <StackPanel Orientation="Horizontal">
-                                        <Image Source="pack://application:,,,/Assets/registry_icon_load-hive.png"
-                                               Width="14" Height="14"
-                                               RenderOptions.BitmapScalingMode="HighQuality"
-                                               Margin="0,0,4,0" />
-                                        <TextBlock Text="Load Hive" VerticalAlignment="Center" />
+                                        <Path Width="10" Height="10"
+                                              Stretch="Uniform"
+                                              Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.8"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              Data="M 5,0 L 5,10 M 0,5 L 10,5"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,5,0" />
+                                        <TextBlock Text="Load Hive…" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </Button>
                                 <TextBlock Text="Registry Keys"

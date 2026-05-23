@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Windows.Data;
 using System.Windows.Input;
 using RegistryExpert.Core;
 using RegistryExpert.Core.Models;
+using RegistryExpert.Core.Services;
 using HiveType = RegistryExpert.Core.OfflineRegistryParser.HiveType;
 
 namespace RegistryExpert.Wpf.ViewModels
@@ -19,6 +22,7 @@ namespace RegistryExpert.Wpf.ViewModels
         RolesFeatures,
         DiskPartitions,
         PhysicalDisks,
+        DiskLayout,
         Health,
         CbsPackages,
         ComponentsOverview,
@@ -178,6 +182,7 @@ namespace RegistryExpert.Wpf.ViewModels
         // ── State ───────────────────────────────────────────────────────────
 
         private readonly IReadOnlyList<LoadedHiveInfo> _loadedHives;
+        private readonly AppSettings _settings = AppSettings.Load();
         private readonly Dictionary<string, List<LoadedHiveInfo>> _categoryHiveMap = new();
         private readonly HashSet<string> _enabledCategories = new();
         private readonly Dictionary<string, List<AnalysisSection>> _contentCache = new();
@@ -732,6 +737,118 @@ namespace RegistryExpert.Wpf.ViewModels
             set => SetProperty(ref _mountedDeviceDetailHeader, value);
         }
 
+        // ── Mounted Devices filter chips ───────────────────────────────────
+
+        private ICollectionView? _mountedDevicesView;
+        private bool _suppressFilterPersist;
+
+        private bool _filterDriveLetters = true;
+        public bool FilterDriveLetters
+        {
+            get => _filterDriveLetters;
+            set
+            {
+                if (SetProperty(ref _filterDriveLetters, value))
+                    OnMountedDevicesFilterChanged();
+            }
+        }
+
+        private bool _filterVolumeGuids;
+        public bool FilterVolumeGuids
+        {
+            get => _filterVolumeGuids;
+            set
+            {
+                if (SetProperty(ref _filterVolumeGuids, value))
+                    OnMountedDevicesFilterChanged();
+            }
+        }
+
+        private bool _filterOther;
+        public bool FilterOther
+        {
+            get => _filterOther;
+            set
+            {
+                if (SetProperty(ref _filterOther, value))
+                    OnMountedDevicesFilterChanged();
+            }
+        }
+
+        private bool _filterStaleOnly;
+        public bool FilterStaleOnly
+        {
+            get => _filterStaleOnly;
+            set
+            {
+                if (SetProperty(ref _filterStaleOnly, value))
+                    OnMountedDevicesFilterChanged();
+            }
+        }
+
+        private int _driveLetterCount;
+        public int DriveLetterCount
+        {
+            get => _driveLetterCount;
+            private set
+            {
+                if (SetProperty(ref _driveLetterCount, value))
+                    OnPropertyChanged(nameof(HasDriveLetterEntries));
+            }
+        }
+
+        private int _volumeGuidCount;
+        public int VolumeGuidCount
+        {
+            get => _volumeGuidCount;
+            private set
+            {
+                if (SetProperty(ref _volumeGuidCount, value))
+                    OnPropertyChanged(nameof(HasVolumeGuidEntries));
+            }
+        }
+
+        private int _otherCount;
+        public int OtherCount
+        {
+            get => _otherCount;
+            private set
+            {
+                if (SetProperty(ref _otherCount, value))
+                    OnPropertyChanged(nameof(HasOtherEntries));
+            }
+        }
+
+        private int _staleCount;
+        public int StaleCount
+        {
+            get => _staleCount;
+            private set
+            {
+                if (SetProperty(ref _staleCount, value))
+                    OnPropertyChanged(nameof(HasStaleEntries));
+            }
+        }
+
+        public bool HasDriveLetterEntries => DriveLetterCount > 0;
+        public bool HasVolumeGuidEntries => VolumeGuidCount > 0;
+        public bool HasOtherEntries => OtherCount > 0;
+        public bool HasStaleEntries => StaleCount > 0;
+
+        private bool _hasFilteredMountedDevices;
+        public bool HasFilteredMountedDevices
+        {
+            get => _hasFilteredMountedDevices;
+            private set => SetProperty(ref _hasFilteredMountedDevices, value);
+        }
+
+        private string _mountedDevicesEmptyMessage = "";
+        public string MountedDevicesEmptyMessage
+        {
+            get => _mountedDevicesEmptyMessage;
+            private set => SetProperty(ref _mountedDevicesEmptyMessage, value);
+        }
+
         // ── Physical Disks properties ─────────────────────────────────────
 
         public ObservableCollection<PhysicalDiskEntry> PhysicalDisksList { get; } = new();
@@ -767,11 +884,89 @@ namespace RegistryExpert.Wpf.ViewModels
             set => SetProperty(ref _physicalDiskDetailHeader, value);
         }
 
+        // ── Disk Layout (diskmgmt-style) properties ───────────────────────
+
+        /// <summary>Flattened volume list across all disks plus orphans. Bound to the top pane.</summary>
+        public ObservableCollection<DiskLayoutPartition> AllVolumes { get; } = new();
+
+        /// <summary>Disks (with their partitions) for the bottom graphical layout pane.</summary>
+        public ObservableCollection<DiskLayoutDisk> DiskLayoutDisks { get; } = new();
+
+        /// <summary>Orphan volumes (registered but no parent disk). Bound to the orphan section.</summary>
+        public ObservableCollection<DiskLayoutPartition> OrphanVolumes { get; } = new();
+
+        private DiskLayoutPartition? _selectedVolume;
+        public DiskLayoutPartition? SelectedVolume
+        {
+            get => _selectedVolume;
+            set
+            {
+                if (SetProperty(ref _selectedVolume, value))
+                    OnVolumeSelected();
+            }
+        }
+
+        public ObservableCollection<AnalyzeGridRow> VolumeDetails { get; } = new();
+
+        private string _diskLayoutHeader = "Disk Layout";
+        public string DiskLayoutHeader
+        {
+            get => _diskLayoutHeader;
+            private set => SetProperty(ref _diskLayoutHeader, value);
+        }
+
+        private string _diskLayoutSourceText = "";
+        public string DiskLayoutSourceText
+        {
+            get => _diskLayoutSourceText;
+            private set => SetProperty(ref _diskLayoutSourceText, value);
+        }
+
+        private string _diskLayoutSelectedHeader = "Volume Details";
+        public string DiskLayoutSelectedHeader
+        {
+            get => _diskLayoutSelectedHeader;
+            private set => SetProperty(ref _diskLayoutSelectedHeader, value);
+        }
+
+        private bool _hasOrphanVolumes;
+        public bool HasOrphanVolumes
+        {
+            get => _hasOrphanVolumes;
+            private set => SetProperty(ref _hasOrphanVolumes, value);
+        }
+
+        private bool _diskLayoutDetailsExpanded;
+        public bool DiskLayoutDetailsExpanded
+        {
+            get => _diskLayoutDetailsExpanded;
+            set
+            {
+                if (SetProperty(ref _diskLayoutDetailsExpanded, value) && !_suppressFilterPersist)
+                {
+                    _settings.DiskLayoutDetailsExpanded = value;
+                    _settings.Save();
+                }
+            }
+        }
+
+        private DiskLayoutModel? _currentDiskLayout;
+
         // ── Constructor ─────────────────────────────────────────────────────
 
         public AnalyzeViewModel(IReadOnlyList<LoadedHiveInfo> loadedHives)
         {
             _loadedHives = loadedHives;
+
+            // Restore Mounted Devices filter chip state from persisted settings.
+            // Use the field directly so we don't trigger persistence / refresh during construction.
+            _suppressFilterPersist = true;
+            _filterDriveLetters = _settings.MountedDevicesShowDriveLetters;
+            _filterVolumeGuids = _settings.MountedDevicesShowVolumeGuids;
+            _filterOther = _settings.MountedDevicesShowOther;
+            _filterStaleOnly = _settings.MountedDevicesStaleOnly;
+            _diskLayoutDetailsExpanded = _settings.DiskLayoutDetailsExpanded;
+            _suppressFilterPersist = false;
 
             // Set initial active parser/extractor from first hive
             if (loadedHives.Count > 0)
@@ -1844,6 +2039,11 @@ namespace RegistryExpert.Wpf.ViewModels
             if (title.Contains("Physical Disks"))
             {
                 DisplayPhysicalDisks();
+                return;
+            }
+            if (title.Contains("Disk Layout"))
+            {
+                DisplayDiskLayout();
                 return;
             }
             if (title.Contains("Appx") || title.Contains("AppX"))
@@ -3417,6 +3617,9 @@ namespace RegistryExpert.Wpf.ViewModels
 
             foreach (var device in mountedDevices)
             {
+                // Hide floppy and CD-ROM drives from the Mounted Devices list
+                if (IsFloppyDrive(device) || IsCdRomDrive(device)) continue;
+
                 // Pre-compute display-friendly FriendlyName for the grid column
                 var displayName = !string.IsNullOrEmpty(device.FriendlyName)
                     ? device.FriendlyName
@@ -3430,10 +3633,139 @@ namespace RegistryExpert.Wpf.ViewModels
                 MountedDevices.Add(device);
             }
 
-            // Auto-select first device
-            if (MountedDevices.Count > 0)
-                SelectedMountedDevice = MountedDevices[0];
+            // Recompute filter counts for chip labels (absolute counts, not filtered)
+            RecomputeMountedDeviceCounts();
+
+            // Install the filter predicate on the default collection view (idempotent)
+            if (_mountedDevicesView == null)
+            {
+                _mountedDevicesView = CollectionViewSource.GetDefaultView(MountedDevices);
+                _mountedDevicesView.Filter = MountedDeviceFilterPredicate;
+            }
+            else
+            {
+                _mountedDevicesView.Refresh();
+            }
+
+            UpdateMountedDevicesEmptyState();
+
+            // Auto-select first visible (filtered) device, if any
+            SelectFirstVisibleMountedDevice();
         }
+
+        private void RecomputeMountedDeviceCounts()
+        {
+            int drive = 0, guid = 0, other = 0, stale = 0;
+            foreach (var d in MountedDevices)
+            {
+                switch (d.MountType)
+                {
+                    case "Drive Letter": drive++; break;
+                    case "Volume GUID": guid++; break;
+                    case "Other": other++; break;
+                }
+                if (d.StaleStatus == "Stale") stale++;
+            }
+            DriveLetterCount = drive;
+            VolumeGuidCount = guid;
+            OtherCount = other;
+            StaleCount = stale;
+
+            // If the persisted "Stale only" chip is on but this hive has no stale
+            // entries, silently disable it so the user can see all results.
+            if (_filterStaleOnly && stale == 0)
+            {
+                _suppressFilterPersist = true;
+                FilterStaleOnly = false;
+                _suppressFilterPersist = false;
+            }
+        }
+
+        private bool MountedDeviceFilterPredicate(object item)
+        {
+            if (item is not MountedDeviceEntry d) return false;
+
+            bool typeMatch =
+                (_filterDriveLetters && d.MountType == "Drive Letter") ||
+                (_filterVolumeGuids && d.MountType == "Volume GUID") ||
+                (_filterOther && d.MountType == "Other");
+
+            if (!typeMatch) return false;
+            if (_filterStaleOnly && d.StaleStatus != "Stale") return false;
+            return true;
+        }
+
+        private void OnMountedDevicesFilterChanged()
+        {
+            if (!_suppressFilterPersist)
+            {
+                _settings.MountedDevicesShowDriveLetters = _filterDriveLetters;
+                _settings.MountedDevicesShowVolumeGuids = _filterVolumeGuids;
+                _settings.MountedDevicesShowOther = _filterOther;
+                _settings.MountedDevicesStaleOnly = _filterStaleOnly;
+                _settings.Save();
+            }
+
+            _mountedDevicesView?.Refresh();
+            UpdateMountedDevicesEmptyState();
+
+            // If current selection got filtered out, auto-select the first visible entry
+            if (SelectedMountedDevice != null && !MountedDeviceFilterPredicate(SelectedMountedDevice))
+                SelectFirstVisibleMountedDevice();
+        }
+
+        private void UpdateMountedDevicesEmptyState()
+        {
+            int visible = 0;
+            if (_mountedDevicesView != null)
+            {
+                foreach (var _ in _mountedDevicesView) visible++;
+            }
+
+            HasFilteredMountedDevices = visible > 0;
+
+            if (visible > 0)
+            {
+                MountedDevicesEmptyMessage = "";
+            }
+            else if (MountedDevices.Count == 0)
+            {
+                MountedDevicesEmptyMessage = "No mounted devices found in this hive.";
+            }
+            else
+            {
+                MountedDevicesEmptyMessage = "No entries match the current filter.";
+            }
+        }
+
+        private void SelectFirstVisibleMountedDevice()
+        {
+            if (_mountedDevicesView == null)
+            {
+                if (MountedDevices.Count > 0)
+                    SelectedMountedDevice = MountedDevices[0];
+                return;
+            }
+
+            MountedDeviceEntry? first = null;
+            foreach (var item in _mountedDevicesView)
+            {
+                first = item as MountedDeviceEntry;
+                break;
+            }
+            SelectedMountedDevice = first;
+        }
+
+        private static bool IsFloppyDrive(MountedDeviceEntry d) =>
+            string.Equals(d.DeviceService, "flpydisk", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(d.BusType, "FDC", StringComparison.OrdinalIgnoreCase)
+            || (d.EnumPath?.StartsWith("FDC\\", StringComparison.OrdinalIgnoreCase) ?? false);
+
+        private static bool IsCdRomDrive(MountedDeviceEntry d) =>
+            string.Equals(d.DeviceService, "cdrom", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(d.DeviceClass, "CDROM", StringComparison.OrdinalIgnoreCase)
+            || (d.EnumPath?.IndexOf("\\CdRom", StringComparison.OrdinalIgnoreCase) >= 0)
+            || (d.DevicePath?.IndexOf("#CdRom", StringComparison.OrdinalIgnoreCase) >= 0);
 
         private void OnMountedDeviceSelected()
         {
@@ -3548,6 +3880,221 @@ namespace RegistryExpert.Wpf.ViewModels
             // Auto-select first disk
             if (PhysicalDisksList.Count > 0)
                 SelectedPhysicalDisk = PhysicalDisksList[0];
+        }
+
+        // ── Disk Layout (diskmgmt-style) ──────────────────────────────────
+
+        private void DisplayDiskLayout()
+        {
+            CurrentMode = ContentMode.DiskLayout;
+
+            AllVolumes.Clear();
+            OrphanVolumes.Clear();
+            VolumeDetails.Clear();
+            DiskLayoutDisks.Clear();
+            _currentDiskLayout = null;
+            HasOrphanVolumes = false;
+            DiskLayoutSourceText = "";
+            DiskLayoutHeader = "Disk Layout";
+
+            if (_activeParser == null) return;
+
+            DiskLayoutModel model;
+            try
+            {
+                var extractor = new DiskLayoutExtractor(_activeParser);
+                model = extractor.BuildModel();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"DiskLayoutExtractor failed: {ex.Message}");
+                return;
+            }
+
+            // Step A2.5: opportunistic diskinfo.txt enrichment
+            try
+            {
+                var hivePath = _activeParser.FilePath;
+                if (!string.IsNullOrEmpty(hivePath))
+                {
+                    var diskInfoPath = DiskInfoTxtEnricher.DetectBundleDiskInfo(hivePath);
+                    if (diskInfoPath != null)
+                    {
+                        var records = DiskInfoTxtEnricher.Parse(diskInfoPath);
+                        DiskInfoTxtEnricher.Enrich(model, records);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"DiskInfoTxtEnricher failed: {ex.Message}");
+            }
+
+            _currentDiskLayout = model;
+
+            // Flatten partitions across disks for the volume list (sorted by drive letter,
+            // then by volume GUID for unmounted — per OQ-Phase-A-3 = (a)).
+            var allParts = model.Disks
+                .SelectMany(d => d.Partitions)
+                .OrderBy(p => p.DriveLetter == null ? 1 : 0)
+                .ThenBy(p => p.DriveLetter, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(p => p.VolumeGuid, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            foreach (var p in allParts)
+                AllVolumes.Add(p);
+
+            foreach (var o in model.OrphanPartitions)
+                OrphanVolumes.Add(o);
+
+            foreach (var d in model.Disks)
+                DiskLayoutDisks.Add(d);
+
+            HasOrphanVolumes = OrphanVolumes.Count > 0;
+
+            // Header summary
+            int volCount = AllVolumes.Count;
+            int diskCount = model.Disks.Count;
+            int orphanCount = OrphanVolumes.Count;
+            DiskLayoutHeader = $"{volCount} volume{(volCount == 1 ? "" : "s")} across " +
+                               $"{diskCount} disk{(diskCount == 1 ? "" : "s")} · " +
+                               $"{orphanCount} orphan{(orphanCount == 1 ? "" : "s")}";
+
+            // Source flags rendered as a friendly chip-style string
+            DiskLayoutSourceText = "Sources: " + FormatSources(model.Sources);
+
+            // Auto-select first volume
+            if (AllVolumes.Count > 0)
+                SelectedVolume = AllVolumes[0];
+        }
+
+        private static string FormatSources(DiskLayoutSourceFlags sources)
+        {
+            var parts = new List<string>();
+            if ((sources & DiskLayoutSourceFlags.System) != 0) parts.Add("SYSTEM hive");
+            if ((sources & DiskLayoutSourceFlags.Software) != 0) parts.Add("SOFTWARE hive");
+            if ((sources & DiskLayoutSourceFlags.NtUser) != 0) parts.Add("NTUSER.DAT");
+            if ((sources & DiskLayoutSourceFlags.Bcd) != 0) parts.Add("BCD hive");
+            if ((sources & DiskLayoutSourceFlags.DiskInfoTxt) != 0) parts.Add("InspectIaaSDisk bundle");
+            if ((sources & DiskLayoutSourceFlags.Components) != 0) parts.Add("COMPONENTS hive");
+            return parts.Count == 0 ? "(none)" : string.Join(" · ", parts);
+        }
+
+        private void OnVolumeSelected()
+        {
+            VolumeDetails.Clear();
+            var v = SelectedVolume;
+            if (v == null)
+            {
+                DiskLayoutSelectedHeader = "Volume Details";
+                return;
+            }
+
+            // Header reflects current selection
+            DiskLayoutSelectedHeader = !string.IsNullOrEmpty(v.DriveLetter)
+                ? $"Volume Details — {v.DriveLetter}"
+                : $"Volume Details — {Truncate(v.VolumeGuid, 38)}";
+
+            AddRow("Volume GUID", v.VolumeGuid);
+            if (!string.IsNullOrEmpty(v.DriveLetter))
+                AddRow("Drive letter", v.DriveLetter);
+            if (!string.IsNullOrEmpty(v.VolumeLabel))
+                AddRow("Volume label", v.VolumeLabel + (v.VolumeLabelIsInferred ? "  (inferred)" : ""));
+
+            if (v.ParentDiskNumber.HasValue && _currentDiskLayout != null)
+            {
+                var parent = _currentDiskLayout.Disks.FirstOrDefault(d => d.DiskNumber == v.ParentDiskNumber);
+                if (parent != null)
+                    AddRow("Parent disk", $"Disk {parent.DiskNumber} — {parent.FriendlyName} ({parent.BusType})");
+            }
+            else
+            {
+                AddRow("Parent disk", "(orphan — no parent disk found in this hive)");
+            }
+
+            AddRow("Partition style", v.PartitionStyle);
+            if (v.MbrDiskSignature.HasValue)
+                AddRow("MBR disk signature", $"0x{v.MbrDiskSignature.Value:X8}");
+            if (!string.IsNullOrEmpty(v.GptPartitionTypeGuid))
+                AddRow("GPT partition type", v.GptPartitionTypeGuid);
+            AddRow("Partition offset", $"{v.PartitionOffsetBytes:N0} bytes (LBA {v.PartitionOffsetBytes / 512:N0})");
+
+            if (v.EstimatedLengthBytes.HasValue)
+            {
+                var sizeText = $"{FormatBytesLong(v.EstimatedLengthBytes.Value)}";
+                if (v.LengthIsEstimated) sizeText = "~" + sizeText + " (estimated from next partition offset)";
+                else if (v.CapacityFromExternalSource) sizeText += "  (from diskinfo.txt)";
+                AddRow("Capacity", sizeText);
+            }
+            else
+            {
+                AddRow("Capacity", "Unknown");
+            }
+
+            if (v.FreeSpaceBytes.HasValue)
+                AddRow("Free space", $"{FormatBytesLong(v.FreeSpaceBytes.Value)}  (from diskinfo.txt)");
+            if (v.UsedSpaceBytes.HasValue)
+                AddRow("Used space", $"{FormatBytesLong(v.UsedSpaceBytes.Value)}  (from diskinfo.txt)");
+            if (v.ClusterSizeBytes.HasValue)
+                AddRow("Cluster size", $"{v.ClusterSizeBytes:N0} bytes");
+
+            // Filesystem row intentionally removed: offline registry cannot
+            // reliably identify FS type for any partition. See Phase A.6 explorer
+            // findings (Services\<fs>\Instances is empty offline).
+
+            // Use the shared diskmgmt-style friendly role names so the details pane
+            // matches the volume table and graph
+            var roleTags = Helpers.DiskMgmtFormat.RoleTags(v);
+            if (roleTags.Count > 0)
+                AddRow("Roles", string.Join(", ", roleTags));
+
+            // diskmgmt-style status word ("Healthy" not "Online")
+            string statusWord = v.Status switch
+            {
+                PartitionStatus.Online => "Healthy",
+                PartitionStatus.Offline => "Offline",
+                PartitionStatus.Stale => "Stale",
+                _ => "Unknown",
+            };
+            AddRow("Status", statusWord);
+
+            if (v.InstalledAt.HasValue)
+                AddRow("Volume installed", v.InstalledAt.Value.ToString("u"));
+            if (v.LastArrivalAt.HasValue)
+                AddRow("Last seen online", v.LastArrivalAt.Value.ToString("u"));
+
+            // Raw locations (multi-line in a single row for now)
+            if (v.RawRegistryLocations.Count > 0)
+            {
+                var raw = string.Join("\n",
+                    v.RawRegistryLocations.Select(kvp => $"{kvp.Key}: {kvp.Value}"));
+                AddRow("Raw locations", raw);
+            }
+
+            void AddRow(string name, string value)
+            {
+                VolumeDetails.Add(new AnalyzeGridRow
+                {
+                    Column1 = name,
+                    Column2 = value
+                });
+            }
+        }
+
+        private static string Truncate(string s, int max) =>
+            string.IsNullOrEmpty(s) ? "" : s.Length <= max ? s : s.Substring(0, max - 1) + "…";
+
+        private static string FormatBytesLong(long bytes)
+        {
+            if (bytes < 1024) return $"{bytes} B";
+            double kb = bytes / 1024.0;
+            if (kb < 1024) return $"{kb:F1} KB";
+            double mb = kb / 1024;
+            if (mb < 1024) return $"{mb:F1} MB";
+            double gb = mb / 1024;
+            if (gb < 1024) return $"{gb:F2} GB";
+            double tb = gb / 1024;
+            return $"{tb:F2} TB";
         }
 
         private void OnPhysicalDiskSelected()

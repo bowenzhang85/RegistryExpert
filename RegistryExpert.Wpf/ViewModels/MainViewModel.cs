@@ -148,6 +148,7 @@ namespace RegistryExpert.Wpf.ViewModels
 
         public AsyncRelayCommand OpenHiveCommand { get; }
         public RelayCommand CloseHiveCommand { get; }
+        public RelayCommand CloseAllHivesCommand { get; }
         public RelayCommand ExportKeyCommand { get; }
         public RelayCommand CopyPathCommand { get; }
         public RelayCommand CopyValueCommand { get; }
@@ -163,6 +164,7 @@ namespace RegistryExpert.Wpf.ViewModels
         public RelayCommand OpenTimelineCommand { get; }
         public RelayCommand AboutCommand { get; }
         public AsyncRelayCommand CheckForUpdatesCommand { get; }
+        public AsyncRelayCommand ShowReleaseNotesCommand { get; }
         public AsyncRelayCommand OpenFolderCommand { get; }
 
         // ── Events ──────────────────────────────────────────────────────────
@@ -188,6 +190,9 @@ namespace RegistryExpert.Wpf.ViewModels
         /// <summary>Raised when the View should show the update check result.</summary>
         public event Action<UpdateInfo?, bool>? RequestShowUpdateResult;
 
+        /// <summary>Raised when the View should show the in-app Release Notes window.</summary>
+        public event Action<UpdateInfo>? RequestShowReleaseNotes;
+
         /// <summary>Raised when the View should scroll a navigated node (and optional value) into view.</summary>
         public event Action<RegistryKeyNode, string?>? RequestScrollToNode;
 
@@ -205,6 +210,7 @@ namespace RegistryExpert.Wpf.ViewModels
 
             OpenHiveCommand = new AsyncRelayCommand(OnOpenHive);
             CloseHiveCommand = new RelayCommand(p => OnCloseHive(p));
+            CloseAllHivesCommand = new RelayCommand(OnCloseAllHives, () => HasLoadedHives);
             ExportKeyCommand = new RelayCommand(OnExportKey, CanExportKey);
             CopyPathCommand = new RelayCommand(OnCopyPath, CanCopyPath);
             CopyValueCommand = new RelayCommand(OnCopyValue, CanCopyValue);
@@ -220,6 +226,7 @@ namespace RegistryExpert.Wpf.ViewModels
             OpenTimelineCommand = new RelayCommand(() => RequestOpenTimeline?.Invoke(), () => HasLoadedHives);
             AboutCommand = new RelayCommand(() => RequestOpenAbout?.Invoke());
             CheckForUpdatesCommand = new AsyncRelayCommand(OnCheckForUpdates);
+            ShowReleaseNotesCommand = new AsyncRelayCommand(OnShowReleaseNotes);
             OpenFolderCommand = new AsyncRelayCommand(OnOpenFolder);
         }
 
@@ -397,6 +404,34 @@ namespace RegistryExpert.Wpf.ViewModels
             }
         }
 
+        private void OnCloseAllHives()
+        {
+            if (_loadedHives.Count == 0) return;
+
+            var count = _loadedHives.Count;
+            var message = count == 1
+                ? "Unload the currently loaded hive?"
+                : $"Unload all {count} loaded hives?";
+
+            var result = System.Windows.MessageBox.Show(
+                message,
+                "Unload Hives",
+                System.Windows.MessageBoxButton.YesNo,
+                System.Windows.MessageBoxImage.Warning,
+                System.Windows.MessageBoxResult.No);
+
+            if (result != System.Windows.MessageBoxResult.Yes) return;
+
+            // Snapshot keys because CloseHive mutates _loadedHives
+            var keys = _loadedHives.Keys.ToList();
+            foreach (var key in keys)
+            {
+                CloseHive(key);
+            }
+
+            StatusText = $"Unloaded all hives ({keys.Count})";
+        }
+
         private void OnExportKey()
         {
             var node = SelectedTreeNode;
@@ -506,6 +541,36 @@ namespace RegistryExpert.Wpf.ViewModels
             finally
             {
                 StatusText = "Ready";
+            }
+        }
+
+        private async Task OnShowReleaseNotes(object? _)
+        {
+            StatusText = "Loading release notes...";
+            try
+            {
+                var current = UpdateChecker.GetCurrentVersion();
+                var info = await UpdateChecker.GetReleaseByTagAsync("v" + current);
+                if (info == null)
+                {
+                    // Fall back to the latest release if the tagged lookup fails (e.g. local dev build)
+                    info = await UpdateChecker.CheckForUpdatesAsync();
+                }
+
+                if (info != null)
+                {
+                    RequestShowReleaseNotes?.Invoke(info);
+                    StatusText = "Ready";
+                }
+                else
+                {
+                    StatusText = "Could not load release notes (network error?)";
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"OnShowReleaseNotes failed: {ex.Message}");
+                StatusText = "Could not load release notes";
             }
         }
 

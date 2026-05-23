@@ -17,6 +17,7 @@ namespace RegistryExpert.Core
         public string ReleaseNotes { get; init; } = "";
         public string DownloadUrl { get; init; } = "";
         public long DownloadSize { get; init; }
+        public DateTimeOffset? PublishedAt { get; init; }
     }
 
     /// <summary>
@@ -25,6 +26,24 @@ namespace RegistryExpert.Core
     public static class UpdateChecker
     {
         private const string DefaultGitHubApiUrl = "https://api.github.com/repos/bowenzhang85/RegistryExpert/releases/latest";
+
+        /// <summary>
+        /// Base of the GitHub releases API (everything before "/latest" or "/tags/...").
+        /// Derived from GitHubApiUrl so the override env var also redirects tag lookups.
+        /// </summary>
+        private static string GitHubReleasesApiBase
+        {
+            get
+            {
+                var url = GitHubApiUrl;
+                const string latestSuffix = "/latest";
+                if (url.EndsWith(latestSuffix, StringComparison.OrdinalIgnoreCase))
+                    return url.Substring(0, url.Length - latestSuffix.Length);
+                // Fall back to trimming everything after "/releases"
+                var idx = url.IndexOf("/releases", StringComparison.OrdinalIgnoreCase);
+                return idx > 0 ? url.Substring(0, idx + "/releases".Length) : url;
+            }
+        }
 
         /// <summary>
         /// The endpoint queried for release info. Can be overridden via the
@@ -127,7 +146,8 @@ namespace RegistryExpert.Core
                     ReleaseUrl = htmlUrl,
                     ReleaseNotes = body,
                     DownloadUrl = downloadUrl,
-                    DownloadSize = downloadSize
+                    DownloadSize = downloadSize,
+                    PublishedAt = TryParsePublishedAt(root)
                 };
             }
             catch (Exception ex)
@@ -135,6 +155,66 @@ namespace RegistryExpert.Core
                 System.Diagnostics.Debug.WriteLine($"Update check failed: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Fetch release info for a specific tag (e.g. "v2.2.1"). Returns null on failure.
+        /// Used by the in-app "What's New" / release notes window to look up the currently
+        /// installed version regardless of whether it is the latest.
+        /// </summary>
+        public static async Task<UpdateInfo?> GetReleaseByTagAsync(string tag)
+        {
+            if (string.IsNullOrWhiteSpace(tag)) return null;
+
+            try
+            {
+                var url = $"{GitHubReleasesApiBase}/tags/{Uri.EscapeDataString(tag)}";
+                using var response = await _httpClient.GetAsync(url).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    System.Diagnostics.Debug.WriteLine($"GitHub API (tags/{tag}) returned {response.StatusCode}");
+                    return null;
+                }
+
+                var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+
+                var tagName = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? tag : tag;
+                var htmlUrl = root.TryGetProperty("html_url", out var h) ? h.GetString() ?? "" : "";
+                var body = root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "";
+
+                var version = tagName.StartsWith("v", StringComparison.OrdinalIgnoreCase)
+                    ? tagName.Substring(1) : tagName;
+
+                return new UpdateInfo
+                {
+                    UpdateAvailable = false, // not a comparison; just a lookup
+                    CurrentVersion = GetCurrentVersion(),
+                    LatestVersion = version,
+                    ReleaseUrl = htmlUrl,
+                    ReleaseNotes = body,
+                    DownloadUrl = "",
+                    DownloadSize = 0,
+                    PublishedAt = TryParsePublishedAt(root)
+                };
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"GetReleaseByTagAsync({tag}) failed: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static DateTimeOffset? TryParsePublishedAt(JsonElement root)
+        {
+            if (root.TryGetProperty("published_at", out var pa)
+                && pa.ValueKind == JsonValueKind.String
+                && DateTimeOffset.TryParse(pa.GetString(), out var dto))
+            {
+                return dto;
+            }
+            return null;
         }
 
         /// <summary>

@@ -34,6 +34,33 @@ namespace RegistryExpert.Core
         /// </summary>
         public string LastSeenVersion { get; set; } = "";
 
+        /// <summary>
+        /// Storage tab → Mounted Devices: show entries whose MountType is "Drive Letter".
+        /// </summary>
+        public bool MountedDevicesShowDriveLetters { get; set; } = true;
+
+        /// <summary>
+        /// Storage tab → Mounted Devices: show entries whose MountType is "Volume GUID".
+        /// </summary>
+        public bool MountedDevicesShowVolumeGuids { get; set; } = false;
+
+        /// <summary>
+        /// Storage tab → Mounted Devices: show entries whose MountType is "Other".
+        /// </summary>
+        public bool MountedDevicesShowOther { get; set; } = false;
+
+        /// <summary>
+        /// Storage tab → Mounted Devices: restrict displayed entries to only those
+        /// flagged as stale (orphan volume registrations).
+        /// </summary>
+        public bool MountedDevicesStaleOnly { get; set; } = false;
+
+        /// <summary>
+        /// Storage tab → Disk Layout: whether the "Volume Details" Expander is
+        /// expanded. Persisted so the user's preference survives app restart.
+        /// </summary>
+        public bool DiskLayoutDetailsExpanded { get; set; } = false;
+
         private static readonly string SettingsDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "RegistryExpert");
