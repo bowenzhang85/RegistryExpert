@@ -17,15 +17,23 @@ namespace RegistryExpert.Core
     {
         private const string CacheFolderName = "RegistryExpert";
         private const string ProcessName = "RegistryExpert.exe";
+        private const string PortableFileName = "RegistryExpert.exe";
+        // Cache filename for installer downloads. Generic — the on-disk cache
+        // doesn't need to match the GitHub asset name (which is versioned,
+        // e.g. RegistryExpert-installer-v2.3.0.exe). The per-version cache
+        // folder already disambiguates between releases.
+        private const string InstallerFileName = "RegistryExpert-installer.exe";
 
         /// <summary>
-        /// Returns the cache path used to store the downloaded installer for a
-        /// specific version, e.g. %TEMP%\RegistryExpert\1.2.3\RegistryExpert.exe.
+        /// Returns the cache path used to store the downloaded payload for a
+        /// specific version, e.g. %TEMP%\RegistryExpert\1.2.3\RegistryExpert-Setup.exe
+        /// (installer) or %TEMP%\RegistryExpert\1.2.3\RegistryExpert.exe (portable).
         /// </summary>
-        public static string GetDownloadCachePath(string version)
+        public static string GetDownloadCachePath(string version, DownloadKind kind = DownloadKind.PortableExe)
         {
             var dir = Path.Combine(Path.GetTempPath(), CacheFolderName, version);
-            return Path.Combine(dir, "RegistryExpert.exe");
+            var fileName = kind == DownloadKind.Installer ? InstallerFileName : PortableFileName;
+            return Path.Combine(dir, fileName);
         }
 
         /// <summary>
@@ -36,7 +44,7 @@ namespace RegistryExpert.Core
             if (string.IsNullOrEmpty(info.LatestVersion) || info.DownloadSize <= 0)
                 return false;
 
-            var path = GetDownloadCachePath(info.LatestVersion);
+            var path = GetDownloadCachePath(info.LatestVersion, info.DownloadKind);
             try
             {
                 var fi = new FileInfo(path);
@@ -63,7 +71,7 @@ namespace RegistryExpert.Core
                 return null;
             }
 
-            var targetPath = GetDownloadCachePath(info.LatestVersion);
+            var targetPath = GetDownloadCachePath(info.LatestVersion, info.DownloadKind);
             var targetDir = Path.GetDirectoryName(targetPath)!;
             try
             {
@@ -270,6 +278,66 @@ namespace RegistryExpert.Core
             catch (Exception ex)
             {
                 Debug.WriteLine($"AutoUpdater: LaunchUpdater failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Launches the Inno Setup installer silently and exits the current process.
+        /// The installer's /CLOSEAPPLICATIONS flag will wait for our process to
+        /// terminate (Restart Manager), then write the new files and relaunch
+        /// via the [Run] section in the .iss script with "--just-updated &lt;version&gt;".
+        /// </summary>
+        /// <param name="setupExePath">Local path to the downloaded RegistryExpert-Setup.exe.</param>
+        /// <param name="currentVersionForArg">
+        /// Version of the currently running build; passed to the installer's [Run]
+        /// section so the relaunched new build can show the post-update banner.
+        /// </param>
+        /// <returns>true if the installer process was launched successfully.</returns>
+        public static bool LaunchInstallerAndExit(string setupExePath, string currentVersionForArg)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(setupExePath) || !File.Exists(setupExePath))
+                {
+                    Debug.WriteLine($"AutoUpdater: installer file not found: {setupExePath}");
+                    return false;
+                }
+
+                // Sanitize the from-version arg to avoid shell injection. Inno Setup's
+                // {param:...} substitution permits letters, digits, dots, hyphens.
+                var safeVer = string.IsNullOrEmpty(currentVersionForArg)
+                    ? "unknown"
+                    : new string(currentVersionForArg.Where(c => char.IsLetterOrDigit(c) || c == '.' || c == '-').ToArray());
+                if (string.IsNullOrEmpty(safeVer)) safeVer = "unknown";
+
+                var args =
+                    "/VERYSILENT " +
+                    "/SUPPRESSMSGBOXES " +
+                    "/CLOSEAPPLICATIONS " +
+                    "/NORESTART " +
+                    $"/fromversion={safeVer}";
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = setupExePath,
+                    Arguments = args,
+                    UseShellExecute = true,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                Process.Start(psi);
+                return true;
+            }
+            catch (Win32Exception wex)
+            {
+                Debug.WriteLine($"AutoUpdater: LaunchInstaller failed (Win32: {wex.NativeErrorCode}): {wex.Message}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"AutoUpdater: LaunchInstaller failed: {ex.Message}");
                 return false;
             }
         }

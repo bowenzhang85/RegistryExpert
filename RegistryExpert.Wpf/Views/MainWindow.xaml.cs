@@ -473,7 +473,7 @@ namespace RegistryExpert.Wpf.Views
             if (AutoUpdater.IsUpdateAlreadyDownloaded(info))
             {
                 _pendingUpdateInfo = info;
-                _pendingUpdateLocalPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion);
+                _pendingUpdateLocalPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion, info.DownloadKind);
                 ShowUpdateReadyDialog(info);
             }
             else
@@ -620,41 +620,35 @@ namespace RegistryExpert.Wpf.Views
 
         // Dialog used once the update has been downloaded & verified.
         // Provides "Restart & Update" and "Later".
+        // Dialog used once the update has been downloaded & verified.
+        // Reuses the polished ReleaseNotesWindow (full markdown rendering, themed
+        // header band) in its install-mode constructor. Footer shows Install +
+        // Later buttons; the dialog result drives the next action.
         private void ShowUpdateReadyDialog(UpdateInfo info)
         {
-            var dialog = BuildUpdateDialogShell(
-                title: "Update Ready to Install",
-                heading: "Update downloaded \u2014 ready to install",
-                info: info,
-                out var buttonPanel,
-                out _);
-
-            var restartBtn = new Button
+            var window = new ReleaseNotesWindow(
+                version: info.LatestVersion,
+                publishedAt: info.PublishedAt,
+                markdownBody: info.ReleaseNotes,
+                githubUrl: string.IsNullOrWhiteSpace(info.ReleaseUrl) ? null : info.ReleaseUrl,
+                titleOverride: "Update Ready to Install",
+                installButtonText: "Install and update",
+                secondaryButtonText: "Later")
             {
-                Content = "Restart & Update",
-                Style = (Style)FindResource("AccentButtonStyle"),
-                Width = 150,
-                Margin = new Thickness(0, 0, 8, 0)
-            };
-            var laterBtn = new Button
-            {
-                Content = "Later",
-                Style = (Style)FindResource("SecondaryButtonStyle"),
-                Width = 100
+                Owner = this
             };
 
-            restartBtn.Click += (s, e) =>
+            var result = window.ShowDialog();
+            if (result == true)
             {
-                dialog.Close();
                 ApplyPendingUpdate();
-            };
-            laterBtn.Click += (s, e) => dialog.Close();
-
-            buttonPanel.Children.Add(restartBtn);
-            buttonPanel.Children.Add(laterBtn);
-
-            dialog.Loaded += (s, e) => ThemeManager.ApplyWindowChrome(dialog);
-            dialog.ShowDialog();
+            }
+            else
+            {
+                // User clicked Later or closed via title-bar X -> show the
+                // persistent bottom-right reminder for the rest of this session.
+                ShowUpdateToastForPendingUpdate(info);
+            }
         }
 
         // Shared layout used by both update dialogs above.
@@ -803,6 +797,65 @@ namespace RegistryExpert.Wpf.Views
                 return;
             }
 
+            // Branch on payload kind: installer (silent in-place upgrade) vs portable
+            // (legacy batch-script swap). Installer path is preferred for any release
+            // that ships RegistryExpert-Setup.exe; the portable batch path remains for
+            // backward compatibility with releases that only ship the single-file exe.
+            var info = _pendingUpdateInfo;
+            var isInstaller = info?.DownloadKind == DownloadKind.Installer;
+
+            if (isInstaller)
+            {
+                ApplyPendingUpdateViaInstaller();
+            }
+            else
+            {
+                ApplyPendingUpdateViaBatchScript();
+            }
+        }
+
+        /// <summary>
+        /// Installer path: silently launches RegistryExpert-Setup.exe with
+        /// /VERYSILENT /CLOSEAPPLICATIONS — the installer waits for our process
+        /// to exit, swaps the files, and relaunches the new exe with
+        /// --just-updated &lt;version&gt;. No UAC prompt for per-user installs.
+        /// </summary>
+        private void ApplyPendingUpdateViaInstaller()
+        {
+            var installingDialog = BuildInstallingDialog();
+            var setupExe = _pendingUpdateLocalPath!;
+            var fromVersion = UpdateChecker.GetCurrentVersion();
+
+            installingDialog.Loaded += async (s, e) =>
+            {
+                // Allow the user ~700ms to see the "installing" message
+                await Task.Delay(700);
+
+                var ok = AutoUpdater.LaunchInstallerAndExit(setupExe, fromVersion);
+                if (!ok)
+                {
+                    installingDialog.Close();
+                    MessageBox.Show(this,
+                        "Failed to launch the installer. The update was not applied.",
+                        "Update Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                // The installer's /CLOSEAPPLICATIONS waits for our process to exit,
+                // then writes the new files and runs the [Run] section to relaunch.
+                Application.Current.Shutdown();
+            };
+
+            installingDialog.ShowDialog();
+        }
+
+        /// <summary>
+        /// Legacy portable path: writes a batch script to %TEMP% that waits for
+        /// our process to exit, then renames the downloaded exe over the running
+        /// one and relaunches. Used when the release does not include the installer.
+        /// </summary>
+        private void ApplyPendingUpdateViaBatchScript()
+        {
             var currentExe = AutoUpdater.GetCurrentExecutablePath();
             var canWrite = AutoUpdater.CanWriteToInstallLocation(currentExe);
             bool elevated = false;
@@ -846,6 +899,34 @@ namespace RegistryExpert.Wpf.Views
             };
 
             installingDialog.ShowDialog();
+        }
+
+        // ── Update toast (bottom-right) ──────────────────────────────────
+
+        /// <summary>
+        /// Show the bottom-right "Install and update" reminder toast. Called from
+        /// the "Later" button on the Update Ready dialog and from the on-launch
+        /// path when a cached update is still pending.
+        /// </summary>
+        private void ShowUpdateToastForPendingUpdate(UpdateInfo info)
+        {
+            ViewModel.PendingUpdateVersion = info.LatestVersion;
+            ViewModel.IsUpdateToastVisible = true;
+        }
+
+        /// <summary>Toast "Install and update" button: launches the update flow.</summary>
+        private void InstallUpdateNow_Click(object sender, RoutedEventArgs e)
+        {
+            ViewModel.IsUpdateToastVisible = false;
+            ApplyPendingUpdate();
+        }
+
+        /// <summary>Toast ✕: hides the toast for THIS session only.</summary>
+        private void DismissUpdateToast_Click(object sender, RoutedEventArgs e)
+        {
+            ViewModel.IsUpdateToastVisible = false;
+            // Note: don't clear PendingUpdateVersion — keep VM state so we can
+            // re-show on next launch if the cached download is still applicable.
         }
 
         /// <summary>
@@ -901,14 +982,18 @@ namespace RegistryExpert.Wpf.Views
 
             return preview.Length > 0 ? preview : "\u2014  (no release notes provided)";
         }
-
-        // Compact "Installing update..." modal with indeterminate progress bar.
-        // No close button, no chrome buttons -- displayed briefly before exit.
-        private Window BuildInstallingDialog()
+        // Compact modal with indeterminate progress bar. No close button,
+        // no chrome buttons -- displayed briefly before exit.
+        // Default heading is "Installing update..."; callers can override for
+        // contexts like the legacy-portable -> installer silent migration.
+        private Window BuildInstallingDialog(
+            string title = "Installing Update",
+            string heading = "Installing update\u2026",
+            string subtitle = "Registry Expert will restart automatically in a moment.")
         {
             var dialog = new Window
             {
-                Title = "Installing Update",
+                Title = title,
                 Width = 380,
                 Height = 200,
                 ResizeMode = ResizeMode.NoResize,
@@ -926,7 +1011,7 @@ namespace RegistryExpert.Wpf.Views
 
             stack.Children.Add(new TextBlock
             {
-                Text = "Installing update\u2026",
+                Text = heading,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontWeight = FontWeights.SemiBold,
                 FontSize = 15,
@@ -947,7 +1032,7 @@ namespace RegistryExpert.Wpf.Views
 
             stack.Children.Add(new TextBlock
             {
-                Text = "Registry Expert will restart automatically in a moment.",
+                Text = subtitle,
                 Foreground = (Brush)FindResource("TextSecondaryBrush"),
                 FontSize = 12,
                 TextWrapping = TextWrapping.Wrap,
@@ -1122,7 +1207,7 @@ namespace RegistryExpert.Wpf.Views
                     string? localPath;
                     if (AutoUpdater.IsUpdateAlreadyDownloaded(info))
                     {
-                        localPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion);
+                        localPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion, info.DownloadKind);
                     }
                     else
                     {

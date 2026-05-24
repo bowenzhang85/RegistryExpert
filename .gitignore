@@ -4,6 +4,8 @@ obj/
 out/
 publish/
 publish-wpf/
+publish-installer/
+publish-wpf-test/
 
 # User-specific files
 *.user

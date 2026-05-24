@@ -30,6 +30,8 @@ namespace RegistryExpert.Wpf.ViewModels
         private string _detailsText = "";
         private bool _isBookmarkPanelExpanded;
         private bool _hasBookmarks;
+        private bool _isUpdateToastVisible;
+        private string _pendingUpdateVersion = "";
 
         private readonly Dictionary<string, LoadedHiveInfo> _loadedHives = new();
         private CancellationTokenSource? _loadCts;
@@ -115,6 +117,25 @@ namespace RegistryExpert.Wpf.ViewModels
         {
             get => _hasBookmarks;
             set => SetProperty(ref _hasBookmarks, value);
+        }
+
+        /// <summary>
+        /// Visibility flag for the bottom-right "Install and update" reminder toast.
+        /// Becomes true after the user clicks "Later" on the Update Ready modal;
+        /// reset to false when the user dismisses (✕) the toast or when the update
+        /// is applied. Session-only — re-shows on next launch if update still pending.
+        /// </summary>
+        public bool IsUpdateToastVisible
+        {
+            get => _isUpdateToastVisible;
+            set => SetProperty(ref _isUpdateToastVisible, value);
+        }
+
+        /// <summary>Version string shown in the update toast (e.g. "2.2.2").</summary>
+        public string PendingUpdateVersion
+        {
+            get => _pendingUpdateVersion;
+            set => SetProperty(ref _pendingUpdateVersion, value);
         }
 
         public IReadOnlyDictionary<string, LoadedHiveInfo> LoadedHives => _loadedHives;

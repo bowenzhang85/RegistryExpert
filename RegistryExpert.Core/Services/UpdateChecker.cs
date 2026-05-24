@@ -5,6 +5,15 @@ using System.Threading.Tasks;
 
 namespace RegistryExpert.Core
 {
+    /// <summary>Indicates the kind of payload referenced by an UpdateInfo's DownloadUrl.</summary>
+    public enum DownloadKind
+    {
+        /// <summary>Portable single-file RegistryExpert.exe (legacy / fallback path).</summary>
+        PortableExe = 0,
+        /// <summary>Inno Setup installer RegistryExpert-Setup.exe (preferred when available).</summary>
+        Installer = 1,
+    }
+
     /// <summary>
     /// Contains information about an available update.
     /// </summary>
@@ -18,6 +27,13 @@ namespace RegistryExpert.Core
         public string DownloadUrl { get; init; } = "";
         public long DownloadSize { get; init; }
         public DateTimeOffset? PublishedAt { get; init; }
+
+        /// <summary>
+        /// Indicates whether DownloadUrl points to the installer or the portable exe.
+        /// AutoUpdater branches on this to choose between silent installer invocation
+        /// and the legacy in-place batch-script swap.
+        /// </summary>
+        public DownloadKind DownloadKind { get; init; } = DownloadKind.PortableExe;
     }
 
     /// <summary>
@@ -119,24 +135,8 @@ namespace RegistryExpert.Core
                     updateAvailable = latest.CompareTo(current) > 0;
                 }
 
-                // Locate the RegistryExpert.exe asset (browser_download_url + size)
-                string downloadUrl = "";
-                long downloadSize = 0;
-                if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var asset in assets.EnumerateArray())
-                    {
-                        var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
-                        if (string.Equals(name, "RegistryExpert.exe", StringComparison.OrdinalIgnoreCase))
-                        {
-                            downloadUrl = asset.TryGetProperty("browser_download_url", out var u)
-                                ? u.GetString() ?? "" : "";
-                            downloadSize = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sz)
-                                ? sz : 0;
-                            break;
-                        }
-                    }
-                }
+                // Pick the preferred download asset (installer first, then portable).
+                var (downloadUrl, downloadSize, downloadKind) = ParseAssetsFromRoot(root);
 
                 return new UpdateInfo
                 {
@@ -147,7 +147,8 @@ namespace RegistryExpert.Core
                     ReleaseNotes = body,
                     DownloadUrl = downloadUrl,
                     DownloadSize = downloadSize,
-                    PublishedAt = TryParsePublishedAt(root)
+                    PublishedAt = TryParsePublishedAt(root),
+                    DownloadKind = downloadKind
                 };
             }
             catch (Exception ex)
@@ -187,6 +188,12 @@ namespace RegistryExpert.Core
                 var version = tagName.StartsWith("v", StringComparison.OrdinalIgnoreCase)
                     ? tagName.Substring(1) : tagName;
 
+                // Populate the download fields from the release's assets too —
+                // the migration code path (TryMigrateToInstallerAsync) calls
+                // GetReleaseByTagAsync to look up the installer for its current
+                // version, so we must surface DownloadUrl/Size/Kind here.
+                var (downloadUrl, downloadSize, downloadKind) = ParseAssetsFromRoot(root);
+
                 return new UpdateInfo
                 {
                     UpdateAvailable = false, // not a comparison; just a lookup
@@ -194,9 +201,10 @@ namespace RegistryExpert.Core
                     LatestVersion = version,
                     ReleaseUrl = htmlUrl,
                     ReleaseNotes = body,
-                    DownloadUrl = "",
-                    DownloadSize = 0,
-                    PublishedAt = TryParsePublishedAt(root)
+                    DownloadUrl = downloadUrl,
+                    DownloadSize = downloadSize,
+                    PublishedAt = TryParsePublishedAt(root),
+                    DownloadKind = downloadKind
                 };
             }
             catch (Exception ex)
@@ -204,6 +212,74 @@ namespace RegistryExpert.Core
                 System.Diagnostics.Debug.WriteLine($"GetReleaseByTagAsync({tag}) failed: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Scan the "assets" array of a GitHub release JSON for our preferred payload.
+        /// Prefer the Inno Setup installer (filename matches "RegistryExpert-installer-v*.exe")
+        /// when present; fall back to RegistryExpert.exe (portable) for older releases that
+        /// don't yet ship the installer. Returns ("", 0, PortableExe) when neither matches.
+        /// </summary>
+        private static (string Url, long Size, DownloadKind Kind) ParseAssetsFromRoot(JsonElement root)
+        {
+            string downloadUrl = "";
+            long downloadSize = 0;
+            DownloadKind downloadKind = DownloadKind.PortableExe;
+
+            if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
+            {
+                string portableUrl = "";
+                long portableSize = 0;
+
+                foreach (var asset in assets.EnumerateArray())
+                {
+                    var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
+                    if (string.IsNullOrEmpty(name)) continue;
+
+                    var url = asset.TryGetProperty("browser_download_url", out var u)
+                        ? u.GetString() ?? "" : "";
+                    var size = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var sz)
+                        ? sz : 0;
+
+                    if (IsInstallerAssetName(name))
+                    {
+                        downloadUrl = url;
+                        downloadSize = size;
+                        downloadKind = DownloadKind.Installer;
+                        // Installer is preferred — stop scanning; we don't need the portable fallback.
+                        break;
+                    }
+                    else if (string.Equals(name, "RegistryExpert.exe", StringComparison.OrdinalIgnoreCase))
+                    {
+                        portableUrl = url;
+                        portableSize = size;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(downloadUrl) && !string.IsNullOrEmpty(portableUrl))
+                {
+                    downloadUrl = portableUrl;
+                    downloadSize = portableSize;
+                    downloadKind = DownloadKind.PortableExe;
+                }
+            }
+
+            return (downloadUrl, downloadSize, downloadKind);
+        }
+
+        /// <summary>
+        /// Returns true if a release-asset filename matches our installer naming convention.
+        /// Accepts both the current versioned form (e.g. "RegistryExpert-installer-v2.3.0.exe")
+        /// and the legacy unversioned form (e.g. "RegistryExpert-Setup.exe") for backward
+        /// compatibility with any local builds or test releases that used the older name.
+        /// </summary>
+        private static bool IsInstallerAssetName(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            if (string.Equals(name, "RegistryExpert-Setup.exe", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return name.StartsWith("RegistryExpert-installer-v", StringComparison.OrdinalIgnoreCase)
+                && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
         }
 
         private static DateTimeOffset? TryParsePublishedAt(JsonElement root)

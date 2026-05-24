@@ -26,12 +26,48 @@ jobs:
     
     - name: Build and Publish
       run: |
-        dotnet publish RegistryExpert.Wpf/RegistryExpert.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./publish
-    
+        dotnet publish RegistryExpert.Wpf/RegistryExpert.Wpf.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o ./publish-wpf
+
+    - name: Derive version from tag
+      id: get_version
+      shell: pwsh
+      run: |
+        # Tag is "vX.Y.Z" — strip the leading "v" for APP_VERSION
+        $tag = "${{ github.ref_name }}"
+        $version = $tag.TrimStart('v', 'V')
+        "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        Write-Host "App version: $version"
+
+    - name: Build Inno Setup installer
+      shell: pwsh
+      env:
+        APP_VERSION: ${{ steps.get_version.outputs.version }}
+      run: |
+        # Inno Setup 6 is preinstalled on windows-latest GitHub runners at this path
+        $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\iscc.exe"
+        if (-not (Test-Path $iscc)) {
+          Write-Host "Installing Inno Setup via Chocolatey..."
+          choco install innosetup --no-progress -y
+        }
+        & $iscc installer\registry-expert.iss
+        $installerName = "RegistryExpert-installer-v$($env:APP_VERSION).exe"
+        if (-not (Test-Path "publish-installer\$installerName")) {
+          throw "Installer build did not produce publish-installer\$installerName"
+        }
+        Get-Item "publish-installer\$installerName" | Select-Object Name, Length
+
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        files: ./publish/RegistryExpert.exe
+        # NOTE: portable RegistryExpert.exe is published as a BRIDGE asset for the
+        # v2.3.0 release only, so existing legacy v2.2.1 users can be silently
+        # migrated to the installer (see TryMigrateToInstallerAsync in
+        # MainWindow.xaml.cs). After v2.3.0 ships and legacy users have migrated,
+        # REMOVE the './publish-wpf/RegistryExpert.exe' line below so v2.4.0+
+        # ships installer-only.
+        files: |
+          ./publish-wpf/RegistryExpert.exe
+          ./publish-installer/RegistryExpert-installer-v*.exe
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

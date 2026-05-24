@@ -89,7 +89,25 @@
                         Margin="0,0,8,0"
                         Click="ViewOnGitHubButton_Click"
                         AutomationProperties.Name="View release on GitHub" />
-                <Button Content="Close"
+                <!-- Install-mode buttons (visibility toggled via the install-mode constructor) -->
+                <Button x:Name="InstallButton"
+                        Visibility="Collapsed"
+                        Style="{DynamicResource AccentButtonStyle}"
+                        Padding="14,6"
+                        FontSize="12"
+                        Margin="0,0,8,0"
+                        Click="InstallButton_Click"
+                        AutomationProperties.Name="Install update now" />
+                <Button x:Name="LaterButton"
+                        Visibility="Collapsed"
+                        Style="{DynamicResource SecondaryButtonStyle}"
+                        Padding="14,6"
+                        FontSize="12"
+                        Click="LaterButton_Click"
+                        AutomationProperties.Name="Install later" />
+                <!-- Default Close button (hidden in install mode) -->
+                <Button x:Name="CloseButton"
+                        Content="Close"
                         Style="{DynamicResource AccentButtonStyle}"
                         Padding="22,6"
                         FontSize="12"

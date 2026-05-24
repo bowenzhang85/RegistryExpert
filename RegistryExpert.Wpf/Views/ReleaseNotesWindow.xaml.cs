@@ -38,6 +38,39 @@ namespace RegistryExpert.Wpf.Views
             }
         }
 
+        /// <summary>
+        /// Install-mode constructor: used when an update has been downloaded and the
+        /// user is about to apply it. Replaces the footer's Close button with an
+        /// accent Install button + a Later button, hides the View on GitHub
+        /// (users can still click any link in the rendered notes), and overrides
+        /// the window title bar. Distinguish user intent via ShowDialog() result:
+        ///   true   = Install clicked
+        ///   false  = Later clicked
+        ///   null   = window closed via title-bar X (treat as Later)
+        /// </summary>
+        public ReleaseNotesWindow(
+            string version,
+            DateTimeOffset? publishedAt,
+            string markdownBody,
+            string? githubUrl,
+            string titleOverride,
+            string installButtonText,
+            string secondaryButtonText)
+            : this(version, publishedAt, markdownBody, githubUrl)
+        {
+            if (!string.IsNullOrEmpty(titleOverride))
+                Title = titleOverride;
+
+            InstallButton.Content = installButtonText;
+            LaterButton.Content = secondaryButtonText;
+
+            // Show install-mode buttons; hide default Close + GitHub (per design decision)
+            InstallButton.Visibility = Visibility.Visible;
+            LaterButton.Visibility = Visibility.Visible;
+            CloseButton.Visibility = Visibility.Collapsed;
+            GitHubButton.Visibility = Visibility.Collapsed;
+        }
+
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
@@ -107,5 +140,19 @@ namespace RegistryExpert.Wpf.Views
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+        // ── Install-mode handlers ─────────────────────────────────────────
+
+        private void InstallButton_Click(object sender, RoutedEventArgs e)
+        {
+            DialogResult = true;
+            Close();
+        }
+
+        private void LaterButton_Click(object sender, RoutedEventArgs e)
+        {
+            DialogResult = false;
+            Close();
+        }
     }
 }
