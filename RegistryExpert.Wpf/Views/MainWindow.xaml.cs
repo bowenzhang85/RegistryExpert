@@ -71,6 +71,12 @@ namespace RegistryExpert.Wpf.Views
 
             // Load any files supplied as CLI args (e.g. from the shell verb).
             _ = ProcessStartupFilesAsync();
+
+            // Bridge-release one-shot silent migration: if this build was just upgraded
+            // from a legacy portable v2.2.1 via the legacy batch-script swap, silently
+            // download the matching installer and migrate to %LOCALAPPDATA%\Programs\.
+            // Best-effort; no UI on failure, user just keeps the bridge portable.
+            _ = TryMigrateToInstallerAsync();
         }
 
         private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
@@ -982,6 +988,123 @@ namespace RegistryExpert.Wpf.Views
 
             return preview.Length > 0 ? preview : "\u2014  (no release notes provided)";
         }
+
+        // ── Bridge-release one-shot silent migration ─────────────────────
+
+        /// <summary>
+        /// When a legacy v2.2.1 portable user just got upgraded via the legacy
+        /// batch-script swap to this bridge release, silently download the matching
+        /// installer and let it migrate the user to %LOCALAPPDATA%\Programs\.
+        /// One-click migration from the user's perspective: they clicked
+        /// "Restart &amp; Update" in the legacy dialog and this finishes the job.
+        ///
+        /// Trigger conditions (all must be true):
+        ///   1. App.UpgradedFromVersion is set (we were launched with --just-updated &lt;v&gt;)
+        ///   2. We are NOT already running from the installed location
+        ///   3. The release for our current version on GitHub exposes an installer asset
+        ///
+        /// Best-effort: any failure (network, missing asset, install location detection)
+        /// leaves the user on the bridge portable. No error UI; they can continue using it
+        /// and will eventually update again via the normal auto-update flow.
+        /// </summary>
+        private async Task TryMigrateToInstallerAsync()
+        {
+            // Trigger 1: must have been launched with --just-updated
+            if (string.IsNullOrEmpty(App.UpgradedFromVersion)) return;
+
+            // Trigger 2: must NOT already be running from the installer location
+            var currentExe = Environment.ProcessPath
+                ?? System.Reflection.Assembly.GetEntryAssembly()?.Location
+                ?? "";
+            if (string.IsNullOrEmpty(currentExe)) return;
+
+            var installedExe = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "RegistryExpert", "RegistryExpert.exe");
+
+            if (string.Equals(currentExe, installedExe, StringComparison.OrdinalIgnoreCase))
+                return; // already installed; nothing to migrate
+
+            try
+            {
+                // Trigger 3: installer for our current version must be downloadable
+                var currentVersion = UpdateChecker.GetCurrentVersion();
+                var info = await UpdateChecker.GetReleaseByTagAsync("v" + currentVersion);
+                if (info == null
+                    || info.DownloadKind != DownloadKind.Installer
+                    || string.IsNullOrEmpty(info.DownloadUrl))
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        "Migration skipped: installer asset not available for current version.");
+                    return;
+                }
+
+                // Show a small modal while we silently install. Cannot be closed by the
+                // user; will close when this process exits via Application.Shutdown().
+                var dlg = BuildInstallingDialog(
+                    title: "Setting up Registry Expert",
+                    heading: "Setting up Registry Expert\u2026",
+                    subtitle: "Moving to the installed location. The app will restart in a moment.");
+
+                dlg.Loaded += async (s, e) =>
+                {
+                    try
+                    {
+                        // Reuse cached download if we have it; otherwise fetch from the release.
+                        string? localPath;
+                        if (AutoUpdater.IsUpdateAlreadyDownloaded(info))
+                        {
+                            localPath = AutoUpdater.GetDownloadCachePath(info.LatestVersion, info.DownloadKind);
+                        }
+                        else
+                        {
+                            localPath = await AutoUpdater.DownloadUpdateAsync(info);
+                        }
+
+                        if (string.IsNullOrEmpty(localPath))
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                "Migration aborted: installer download failed; continuing as portable.");
+                            dlg.Close();
+                            return;
+                        }
+
+                        // Hand off to the installer; this exits our process.
+                        // Inno Setup's [Run] section will relaunch the new exe from the
+                        // installed location with --just-updated <prev> so the post-update
+                        // banner fires there.
+                        var ok = AutoUpdater.LaunchInstallerAndExit(
+                            setupExePath: localPath,
+                            currentVersionForArg: App.UpgradedFromVersion!);
+                        if (ok)
+                        {
+                            Application.Current.Shutdown();
+                        }
+                        else
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                "Migration aborted: installer launch failed; continuing as portable.");
+                            dlg.Close();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"TryMigrateToInstallerAsync (download/launch) failed: {ex.Message}");
+                        dlg.Close();
+                    }
+                };
+
+                dlg.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"TryMigrateToInstallerAsync failed: {ex.Message}");
+                // Swallow — best-effort migration, user keeps the bridge portable.
+            }
+        }
+
         // Compact modal with indeterminate progress bar. No close button,
         // no chrome buttons -- displayed briefly before exit.
         // Default heading is "Installing update..."; callers can override for
