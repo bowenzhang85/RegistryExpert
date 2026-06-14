@@ -13,6 +13,7 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <helpers:ValueImageKeyConverter x:Key="ValueImageKeyConverter" />
+        <helpers:StringToVisibilityConverter x:Key="StringToVis" />
 
         <!-- Toggle button for TreeViewItem expand/collapse -->
         <Style x:Key="CompareExpandCollapseToggleStyle" TargetType="ToggleButton">
@@ -507,11 +508,19 @@
                             </Border>
                         </Popup>
 
-                        <TextBlock Text="{Binding LeftFileName}"
-                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                   FontWeight="SemiBold" FontSize="13"
-                                   VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding LeftFileName}"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       FontWeight="SemiBold" FontSize="13"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding LeftFilePathDisplay}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontSize="10"
+                                       Margin="0,1,0,0"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding LeftFilePathDisplay}"
+                                       Visibility="{Binding LeftFilePathDisplay, Converter={StaticResource StringToVis}}" />
+                        </StackPanel>
                     </DockPanel>
                 </Border>
 
@@ -610,11 +619,19 @@
                         Padding="8,6" BorderThickness="0,0,0,1"
                         BorderBrush="{DynamicResource BorderBrush}">
                     <DockPanel>
-                        <TextBlock Text="{Binding RightFileName}"
-                                   Foreground="{DynamicResource TextPrimaryBrush}"
-                                   FontWeight="SemiBold" FontSize="13"
-                                   VerticalAlignment="Center"
-                                   TextTrimming="CharacterEllipsis" />
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding RightFileName}"
+                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                       FontWeight="SemiBold" FontSize="13"
+                                       TextTrimming="CharacterEllipsis" />
+                            <TextBlock Text="{Binding RightFilePathDisplay}"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       FontSize="10"
+                                       Margin="0,1,0,0"
+                                       TextTrimming="CharacterEllipsis"
+                                       ToolTip="{Binding RightFilePathDisplay}"
+                                       Visibility="{Binding RightFilePathDisplay, Converter={StaticResource StringToVis}}" />
+                        </StackPanel>
                     </DockPanel>
                 </Border>
 

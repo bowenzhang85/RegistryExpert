@@ -27,6 +27,19 @@ namespace RegistryExpert.Wpf.Helpers
             => value is Visibility.Collapsed;
     }
 
+    /// <summary>
+    /// Converts a string to Visibility: non-empty -> Visible, null/empty/whitespace -> Collapsed.
+    /// Used in CompareWindow to hide the file-path subtitle row when no path is set.
+    /// </summary>
+    public class StringToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+            => string.IsNullOrWhiteSpace(value as string) ? Visibility.Collapsed : Visibility.Visible;
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => throw new NotImplementedException();
+    }
+
     public class ValueImageKeyConverter : IValueConverter
     {
         private static readonly Dictionary<string, BitmapImage> _cache = new();

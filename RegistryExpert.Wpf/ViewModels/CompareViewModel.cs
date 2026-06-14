@@ -97,6 +97,7 @@ namespace RegistryExpert.Wpf.ViewModels
         private OfflineRegistryParser? _leftParser;
         private string _leftFilePath = "";
         private string _leftFileName = "";
+        private string _leftFilePathDisplay = "";
         private string _leftStatusText = "";
         private bool _leftIsLoaded;
         private bool _leftIsLoading;
@@ -108,6 +109,7 @@ namespace RegistryExpert.Wpf.ViewModels
         private OfflineRegistryParser? _rightParser;
         private string _rightFilePath = "";
         private string _rightFileName = "";
+        private string _rightFilePathDisplay = "";
         private string _rightStatusText = "Load the first hive first";
         private bool _rightIsLoaded;
         private bool _rightIsLoading;
@@ -140,6 +142,8 @@ namespace RegistryExpert.Wpf.ViewModels
 
         // Left
         public string LeftFileName { get => _leftFileName; set => SetProperty(ref _leftFileName, value); }
+        /// <summary>Full file path of the loaded left hive (shown as a subtitle in the comparison view header).</summary>
+        public string LeftFilePathDisplay { get => _leftFilePathDisplay; set => SetProperty(ref _leftFilePathDisplay, value); }
         public string LeftStatusText { get => _leftStatusText; set => SetProperty(ref _leftStatusText, value); }
         public bool LeftIsLoaded { get => _leftIsLoaded; set { if (SetProperty(ref _leftIsLoaded, value)) { OnPropertyChanged(nameof(CanCompare)); OnPropertyChanged(nameof(RightCanLoad)); } } }
         public bool LeftIsLoading { get => _leftIsLoading; set { if (SetProperty(ref _leftIsLoading, value)) OnPropertyChanged(nameof(CanCompare)); } }
@@ -159,6 +163,8 @@ namespace RegistryExpert.Wpf.ViewModels
 
         // Right
         public string RightFileName { get => _rightFileName; set => SetProperty(ref _rightFileName, value); }
+        /// <summary>Full file path of the loaded right hive (shown as a subtitle in the comparison view header).</summary>
+        public string RightFilePathDisplay { get => _rightFilePathDisplay; set => SetProperty(ref _rightFilePathDisplay, value); }
         public string RightStatusText { get => _rightStatusText; set => SetProperty(ref _rightStatusText, value); }
         public bool RightIsLoaded { get => _rightIsLoaded; set { if (SetProperty(ref _rightIsLoaded, value)) OnPropertyChanged(nameof(CanCompare)); } }
         public bool RightIsLoading { get => _rightIsLoading; set { if (SetProperty(ref _rightIsLoading, value)) OnPropertyChanged(nameof(CanCompare)); } }
@@ -258,7 +264,7 @@ namespace RegistryExpert.Wpf.ViewModels
             {
                 Title = isLeft ? "Open First Registry Hive" : "Open Second Registry Hive",
                 Filter = "All Files|*.*|Registry Hives|*.hiv;NTUSER.DAT;SAM;SECURITY;SOFTWARE;SYSTEM;USRCLASS.DAT;DEFAULT;Amcache.hve;BCD",
-                FilterIndex = 1
+                FilterIndex = 2
             };
 
             if (dialog.ShowDialog() == true)
@@ -315,6 +321,7 @@ namespace RegistryExpert.Wpf.ViewModels
                     _leftParser = parser;
                     _leftFilePath = filePath;
                     LeftFileName = $"{parser.FriendlyName}: {System.IO.Path.GetFileName(filePath)}";
+                    LeftFilePathDisplay = filePath;
                     LeftStatusText = "Loaded successfully";
                     LeftIsLoaded = true;
 
@@ -341,6 +348,7 @@ namespace RegistryExpert.Wpf.ViewModels
                     _rightParser = parser;
                     _rightFilePath = filePath;
                     RightFileName = $"{parser.FriendlyName}: {System.IO.Path.GetFileName(filePath)}";
+                    RightFilePathDisplay = filePath;
                     RightStatusText = "Loaded successfully";
                     RightIsLoaded = true;
                 }

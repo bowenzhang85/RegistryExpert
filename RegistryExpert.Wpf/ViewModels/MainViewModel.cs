@@ -259,7 +259,7 @@ namespace RegistryExpert.Wpf.ViewModels
             {
                 Title = "Open Registry Hive",
                 Filter = "Registry Hive Files|*.dat;*.hiv;SYSTEM;SOFTWARE;SAM;SECURITY;NTUSER*;USRCLASS*;DEFAULT;AMCACHE*;BCD;COMPONENTS|All Files|*.*",
-                FilterIndex = 2,
+                FilterIndex = 1,
                 CheckFileExists = true,
                 Multiselect = true
             };
