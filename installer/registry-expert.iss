@@ -55,6 +55,10 @@ CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 
+; Refresh Explorer's file-association cache (SHChangeNotify) after install/uninstall
+; so the hive associations and the right-click verb appear immediately.
+ChangesAssociations=yes
+
 ; Modern wizard style + branded uninstall icon
 WizardStyle=modern
 SetupIconFile=..\Assets\registry_fixed.ico
@@ -84,6 +88,30 @@ Source: "..\publish-wpf\RegistryExpert.exe"; DestDir: "{app}"; Flags: ignorevers
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; ── Right-click "Open with Registry Expert" verb for ALL hive filenames ──
+; The AppliesTo filter limits the menu item to known hive names so it does NOT
+; pollute every file's context menu. This list MUST stay in sync with
+; HiveBundleScanner.KnownHiveNames + KnownHivePrefixes, and the key/command
+; format MUST match ShellIntegrationService (the app's stale-cleanup pass parses
+; this exact key via GetRegisteredExePath).
+; NOTE: on Windows 11 this verb appears under "Show more options" (legacy menu).
+Root: HKCU; Subkey: "Software\Classes\*\shell\OpenWithRegistryExpert"; ValueType: string; ValueData: "Open with Registry Expert"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\*\shell\OpenWithRegistryExpert"; ValueType: string; ValueName: "Icon"; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\*\shell\OpenWithRegistryExpert"; ValueType: string; ValueName: "AppliesTo"; ValueData: "System.FileName:=""SYSTEM"" OR System.FileName:=""SOFTWARE"" OR System.FileName:=""SAM"" OR System.FileName:=""SECURITY"" OR System.FileName:=""DEFAULT"" OR System.FileName:=""BCD"" OR System.FileName:=""COMPONENTS"" OR System.FileName:~<""NTUSER"" OR System.FileName:~<""USRCLASS"" OR System.FileName:~<""AMCACHE"""
+Root: HKCU; Subkey: "Software\Classes\*\shell\OpenWithRegistryExpert\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+
+; ── ProgID for true double-click default on .hiv / .hve ──
+Root: HKCU; Subkey: "Software\Classes\RegistryExpert.HiveFile"; ValueType: string; ValueData: "Registry Hive File"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\RegistryExpert.HiveFile\DefaultIcon"; ValueType: string; ValueData: "{app}\{#MyAppExeName},0"
+Root: HKCU; Subkey: "Software\Classes\RegistryExpert.HiveFile\shell\open\command"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
+
+; ── Associate .hiv and .hve with the ProgID (default action + Open-with list) ──
+Root: HKCU; Subkey: "Software\Classes\.hiv"; ValueType: string; ValueData: "RegistryExpert.HiveFile"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.hiv\OpenWithProgIds"; ValueType: string; ValueName: "RegistryExpert.HiveFile"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.hve"; ValueType: string; ValueData: "RegistryExpert.HiveFile"; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Classes\.hve\OpenWithProgIds"; ValueType: string; ValueName: "RegistryExpert.HiveFile"; ValueData: ""; Flags: uninsdeletevalue
 
 [Run]
 ; Always relaunch the just-installed exe at end of install (works in both

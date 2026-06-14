@@ -17,6 +17,14 @@ namespace RegistryExpert.Core
     /// On Windows 11 the verb appears in the legacy menu accessed via
     /// "Show more options" or Shift+F10 (a limitation of non-MSIX,
     /// non-IExplorerCommand shell verbs).
+    ///
+    /// NOTE: The installer (installer/registry-expert.iss [Registry] section) is
+    /// the production owner of this verb — it writes the SAME key
+    /// (Software\Classes\*\shell\OpenWithRegistryExpert) and the SAME command
+    /// format ("&lt;exe&gt;" "%1"). The app uses IsRegistered() + GetRegisteredExePath()
+    /// here only for stale-leftover cleanup at startup. If you change VerbName or the
+    /// command format here, update the .iss to match. The AppliesTo filename list in
+    /// the .iss must also mirror HiveBundleScanner.KnownHiveNames / KnownHivePrefixes.
     /// </summary>
     public static class ShellIntegrationService
     {

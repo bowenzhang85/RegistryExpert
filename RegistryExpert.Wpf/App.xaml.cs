@@ -83,19 +83,32 @@ namespace RegistryExpert.Wpf
             WritePidFile();
             StartPipeServer();
 
-            // One-time cleanup: earlier dev builds shipped a Help > Windows Shell
-            // Integration toggle that wrote HKCU keys. The toggle has since been
-            // removed (installer will own shell integration), so silently unregister
-            // any leftover keys on launch. Idempotent — once cleaned, subsequent
-            // calls are a no-op (IsRegistered returns false).
+            // Stale shell-verb cleanup. The installer now OWNS the right-click
+            // "Open with Registry Expert" verb (pointing at the install location).
+            // Only remove the verb if it points at a *different / stale* exe path
+            // (e.g. a leftover from an old in-app dev toggle or a moved portable) —
+            // never the current install. Order is safe: the installer writes the
+            // verb -> install path, then launches us from that same path, so
+            // registered == current -> kept.
             try
             {
                 if (ShellIntegrationService.IsRegistered())
-                    ShellIntegrationService.Unregister();
+                {
+                    var registered = ShellIntegrationService.GetRegisteredExePath();
+                    var currentExe = Environment.ProcessPath
+                        ?? System.Reflection.Assembly.GetEntryAssembly()?.Location ?? "";
+                    if (!string.IsNullOrEmpty(registered)
+                        && !string.IsNullOrEmpty(currentExe)
+                        && !string.Equals(Path.GetFullPath(registered), Path.GetFullPath(currentExe),
+                                          StringComparison.OrdinalIgnoreCase))
+                    {
+                        ShellIntegrationService.Unregister(); // stale leftover -> remove
+                    }
+                }
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Legacy shell-integration cleanup failed: {ex.Message}");
+                Debug.WriteLine($"Shell-verb stale cleanup failed: {ex.Message}");
             }
 
             // Register code page encoding support (required by Lib/Registry parser)
