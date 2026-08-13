@@ -2,15 +2,25 @@
 
 Offline Windows registry hive viewer and analyzer for Azure VM support engineers.
 
-![.NET](https://img.shields.io/badge/.NET-8.0-blue) ![Windows](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
+![Version](https://img.shields.io/badge/version-3.0.1-brightgreen) ![.NET](https://img.shields.io/badge/.NET-8.0-blue) ![Windows](https://img.shields.io/badge/platform-Windows%20x64-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
 
-![Main Window](docs/images/main_windows.png)
+> **Screenshot placeholder** — add a capture of the main window here.
+>
+> Drag a PNG into any GitHub issue comment to get a hosted URL, then replace this block with:
+> `![Main Window](<url>)`
+
+<!-- ![Main Window](docs/images/main_windows.png) -->
 
 ## Download
 
-**[Download Latest Release](../../releases/latest)**
+**[Download Latest Release](../../releases/latest)** — current version **3.0.1**
 
-Single portable `.exe` — no installation required. Download `RegistryExpert.exe` and run it.
+| | |
+|---|---|
+| **`RegistryExpert-Setup-v3.0.1.msi`** | Recommended. Installs the app, registers hive file associations, and enables in-app updates. |
+| **`RegistryExpert.exe`** | Portable single file — no installation required. Download and run. |
+
+Both are signed by Microsoft Corporation.
 
 ## Features
 
@@ -18,13 +28,13 @@ Single portable `.exe` — no installation required. Download `RegistryExpert.ex
 
 Open and browse registry hive files extracted from offline VMs. Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, USRCLASS.DAT, DEFAULT, Amcache.hve, and BCD. Drag-and-drop a hive file onto the window or use File > Open.
 
-![Browse](docs/images/browse.png)
+<!-- ![Browse](docs/images/browse.png) -->
 
 ### Search
 
 Full-text search across key paths, key names, value names, and value data. Results show matching keys and values with highlighted preview. Double-click any result to navigate directly to that key in the tree.
 
-![Search](docs/images/search.png)
+<!-- ![Search](docs/images/search.png) -->
 
 ### Analyze
 
@@ -42,31 +52,38 @@ One-click deep analysis of the loaded hive, organized into categories based on h
 | **RDP** | SYSTEM | RDP configuration (port, NLA, encryption, security layer), session limits, Citrix detection, RDP licensing, RDS license servers, grace period |
 | **Update** | SOFTWARE | Windows Update settings |
 
-![Analyze](docs/images/analyze.png)
+Results are sortable by column.
+
+<!-- ![Analyze](docs/images/analyze.png) -->
+
+### Insights
+
+Rule-based findings surfaced from the loaded hives, including ghosted network adapters left behind when a NIC is replaced.
 
 ### Statistics
 
 Dashboard showing hive file size, total keys, total values, and hive type. Includes two tabs for **Key Counts (Bloat Detection)** and **Data Sizes** with expandable tree views and bar charts to identify registry bloat.
 
-![Statistics](docs/images/statistics.png)
+<!-- ![Statistics](docs/images/statistics.png) -->
 
 ### Timeline
 
 Scans all registry keys by last-modified timestamp. Filter by time range (last hour, 24 hours, 7 days, 30 days, or custom range) and sort by date. Useful for identifying what changed during an incident window. Export results to CSV.
 
-![Timeline](docs/images/timeline.png)
+<!-- ![Timeline](docs/images/timeline.png) -->
 
 ### Compare
 
 Side-by-side comparison of two registry hives of the same type. Color-coded diff view: green highlights keys unique to one hive, red highlights keys with changed values. Synchronized tree navigation between left and right panes.
 
-![Compare](docs/images/compare.png)
+<!-- ![Compare](docs/images/compare.png) -->
 
 ### Additional
 
 - **Export Key** — Export any selected key and all its subkeys to a text file
 - **Value Inspector** — Double-click any value to see interpreted data and raw hex dump
 - **Dark / Light Theme** — Switch via View menu; preference is remembered
+- **Accessibility** — Screen reader and keyboard navigation support across all windows
 - **High DPI Support** — Scales correctly on 125%, 150%, 200% displays and across monitors
 - **Auto-Update Check** — Checks GitHub releases for new versions on startup
 
@@ -85,6 +102,14 @@ Side-by-side comparison of two registry hives of the same type. Color-coded diff
 6. **Compare** — Press **Ctrl+M** to compare two hives. Load a second hive of the same type and run the diff. Green nodes are unique to one side; red nodes have value differences.
 
 7. **Statistics** — Press **Ctrl+I** to see key counts and data sizes. Use the bloat detection tab to find keys with excessive subkeys or large data.
+
+## Privacy
+
+Registry Expert sends anonymous usage telemetry: a per-install identifier, the app version, and which features are opened. It never transmits registry keys or values, hive or file paths, search terms, user names, or machine names. Turn it off any time under **Help > About**.
+
+## Source
+
+Development happens in an internal Microsoft repository. This repository hosts releases; source for version 2.3.0 and earlier remains browsable under the [tags](../../tags).
 
 ## License
 
