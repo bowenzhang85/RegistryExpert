@@ -1,3 +1,0 @@
-@echo off
-echo Starting Registry Expert...
-dotnet run --project RegistryExpert.Wpf\RegistryExpert.Wpf.csproj
