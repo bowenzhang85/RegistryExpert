@@ -4,12 +4,8 @@ Offline Windows registry hive viewer and analyzer for Azure VM support engineers
 
 ![Version](https://img.shields.io/badge/version-3.0.1-brightgreen) ![.NET](https://img.shields.io/badge/.NET-8.0-blue) ![Windows](https://img.shields.io/badge/platform-Windows%20x64-lightgrey) ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Screenshot placeholder** — add a capture of the main window here.
->
-> Drag a PNG into any GitHub issue comment to get a hosted URL, then replace this block with:
-> `![Main Window](<url>)`
+<img width="1196" height="807" alt="image" src="https://github.com/user-attachments/assets/9033459b-c0be-4436-87f6-b54a9306db1c" />
 
-<!-- ![Main Window](docs/images/main_windows.png) -->
 
 ## Download
 
@@ -17,7 +13,7 @@ Offline Windows registry hive viewer and analyzer for Azure VM support engineers
 
 | | |
 |---|---|
-| **`RegistryExpert-Setup-v3.0.1.msi`** | Recommended. Installs the app, registers hive file associations, and enables in-app updates. |
+| **`RegistryExpert-Setup-vx.x.x.msi`** | Recommended. Installs the app, registers hive file associations, and enables in-app updates. |
 | **`RegistryExpert.exe`** | Portable single file — no installation required. Download and run. |
 
 Both are signed by Microsoft Corporation.
@@ -28,13 +24,15 @@ Both are signed by Microsoft Corporation.
 
 Open and browse registry hive files extracted from offline VMs. Supports SYSTEM, SOFTWARE, SAM, SECURITY, NTUSER.DAT, USRCLASS.DAT, DEFAULT, Amcache.hve, and BCD. Drag-and-drop a hive file onto the window or use File > Open.
 
-<!-- ![Browse](docs/images/browse.png) -->
+<img width="1193" height="804" alt="image" src="https://github.com/user-attachments/assets/75defe59-09d1-44ae-b42a-12f13d582178" />
+
 
 ### Search
 
 Full-text search across key paths, key names, value names, and value data. Results show matching keys and values with highlighted preview. Double-click any result to navigate directly to that key in the tree.
 
-<!-- ![Search](docs/images/search.png) -->
+<img width="946" height="675" alt="image" src="https://github.com/user-attachments/assets/76819369-8bcd-4b7c-93dd-6e11afb649ee" />
+
 
 ### Analyze
 
@@ -54,7 +52,8 @@ One-click deep analysis of the loaded hive, organized into categories based on h
 
 Results are sortable by column.
 
-<!-- ![Analyze](docs/images/analyze.png) -->
+<img width="1098" height="729" alt="image" src="https://github.com/user-attachments/assets/11dfd59b-bd8b-41fa-8dfd-7288691e3c2d" />
+
 
 ### Insights
 
@@ -64,19 +63,22 @@ Rule-based findings surfaced from the loaded hives, including ghosted network ad
 
 Dashboard showing hive file size, total keys, total values, and hive type. Includes two tabs for **Key Counts (Bloat Detection)** and **Data Sizes** with expandable tree views and bar charts to identify registry bloat.
 
-<!-- ![Statistics](docs/images/statistics.png) -->
+<img width="899" height="680" alt="image" src="https://github.com/user-attachments/assets/395606df-fba4-4768-99b5-f8beccb0ed25" />
+
 
 ### Timeline
 
 Scans all registry keys by last-modified timestamp. Filter by time range (last hour, 24 hours, 7 days, 30 days, or custom range) and sort by date. Useful for identifying what changed during an incident window. Export results to CSV.
 
-<!-- ![Timeline](docs/images/timeline.png) -->
+<img width="999" height="729" alt="image" src="https://github.com/user-attachments/assets/e43532aa-c113-4753-8490-18d4c1ea13eb" />
+
 
 ### Compare
 
 Side-by-side comparison of two registry hives of the same type. Color-coded diff view: green highlights keys unique to one hive, red highlights keys with changed values. Synchronized tree navigation between left and right panes.
 
-<!-- ![Compare](docs/images/compare.png) -->
+<img width="1194" height="778" alt="image" src="https://github.com/user-attachments/assets/d50c1bb1-ff8e-458f-b85a-428926a31521" />
+
 
 ### Additional
 
